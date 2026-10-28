@@ -21,6 +21,9 @@ const STABLE_THRESHOLD = 0.55;
 const TTL_STABLE = 604800; // 7 days
 const TTL_VOLATILE = 3600; // 1 hour
 
+// Text layer: Workers AI models in this order, then OpenRouter.
+const CF_TEXT_MODELS = ["@cf/ibm-granite/granite-4.0-h-micro"];
+
 // Domain packs kept in code, so the router carries its own context for the
 // domains it sees most. `web` is the prior that live sources help; `noWeb`
 // pins a domain to reasoning only.
@@ -334,6 +337,7 @@ export default {
         websearch: !!(env.AI && typeof env.AI.websearch === "function"),
         search_provider: env.SEARCH_PROVIDER || "ceramic",
         gateway: env.AI_GATEWAY_ID || "default",
+        text_models: CF_TEXT_MODELS,
         openrouter: !!env.OPENROUTER_API_KEY,
         chat_model: env.CF_CHAT_MODEL || null,
         kv: !!env.KV,
@@ -573,8 +577,12 @@ async function handleRoute(request, env) {
   if (body.search && plan.search) {
     try {
       sources = await webSearch(env, prompt);
+      if (!sources.length) {
+        searchError = "web search returned no results";
+        failures.push("web search: " + searchError);
+      }
     } catch (err) {
-      searchError = err.message;
+      searchError = "web search failed: " + err.message;
     }
   }
 
@@ -605,7 +613,17 @@ async function handleChat(request, env) {
   const state = buildState(prompt, contextCards);
   const failures = [];
 
-  // 1. Cache — answered before?
+  // 1. Decide — clef-flash classifies the request.
+  let decision = null;
+  let decisionError = null;
+  try {
+    decision = await decide(env, state, body.questions);
+  } catch (err) {
+    decisionError = err.message;
+    failures.push("clef-flash: " + err.message);
+  }
+
+  // 2. Cache — answered before?
   const key = await cacheKeyFor(prompt, contextCards, body, env);
   if (env.KV && body.use_cache !== false) {
     try {
@@ -617,16 +635,6 @@ async function handleChat(request, env) {
         return json(parsed);
       }
     } catch (err) {}
-  }
-
-  // 2. Decide — clef-flash classifies the request.
-  let decision = null;
-  let decisionError = null;
-  try {
-    decision = await decide(env, state, body.questions);
-  } catch (err) {
-    decisionError = err.message;
-    failures.push("clef-flash: " + err.message);
   }
 
   const plan = planRoute(decision);
@@ -641,8 +649,12 @@ async function handleChat(request, env) {
   if (plan.search && body.use_web !== false) {
     try {
       sources = await webSearch(env, prompt);
+      if (!sources.length) {
+        searchError = "web search returned no results";
+        failures.push("web search: " + searchError);
+      }
     } catch (err) {
-      searchError = err.message;
+      searchError = "web search failed: " + err.message;
       failures.push("web search: " + err.message);
     }
   }
@@ -682,6 +694,45 @@ async function handleChat(request, env) {
   messages.push({ role: "user", content: prompt });
 
   const route = sources.length ? "web → llm" : "llm";
+
+  // 5. Text: Workers AI models in order, then OpenRouter.
+  const cfModels = unique(
+    []
+      .concat(
+        Array.isArray(body.cf_models) ? body.cf_models : [],
+        env.CF_TEXT_MODELS ? String(env.CF_TEXT_MODELS).split(",") : [],
+        CF_TEXT_MODELS
+      )
+      .map((m) => String(m || "").trim())
+      .filter(Boolean)
+  );
+  if (env.AI) {
+    for (const cfModel of cfModels) {
+      try {
+        const aiResponse = await env.AI.run(cfModel, {
+          messages,
+          max_tokens: body.max_tokens || 2000,
+          temperature: body.temperature ?? 0.7,
+        });
+        const raw = aiResponse && (aiResponse.response ?? aiResponse);
+        const text = typeof raw === "string" ? raw : JSON.stringify(raw);
+        if (text && text !== "null") {
+          return finish(env, key, plan, {
+            answer: text,
+            provider: "clef-flash \u2192 " + cfModel,
+            route,
+            decision,
+            sources,
+            trace: [{ source: "workers-ai", model: cfModel }],
+            searchError,
+          });
+        }
+        failures.push(cfModel + ": empty response");
+      } catch (err) {
+        failures.push(cfModel + ": " + err.message);
+      }
+    }
+  }
 
   if (env.OPENROUTER_API_KEY) {
     const models = unique([body.model, env.OPENROUTER_MODEL, ...OR_MODELS].filter(Boolean));
