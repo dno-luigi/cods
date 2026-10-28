@@ -982,15 +982,14 @@ async function handleChat(request, env) {
           max_tokens: body.max_tokens || 2000,
           temperature: body.temperature ?? 0.7,
         });
-        const raw = aiResponse && (aiResponse.response ?? aiResponse);
-        const text = typeof raw === "string" ? raw : JSON.stringify(raw);
-        if (text && text !== "null") {
+        const text = textFrom(aiResponse);
+        if (text) {
           return finish(env, key, plan, {
-          prompt,
-          related,
-          relatedError,
+            prompt,
+            related,
+            relatedError,
             answer: text,
-            provider: "clef-flash \u2192 " + cfModel,
+            provider: "clef-flash → " + cfModel,
             route,
             decision,
             sources,
@@ -1040,9 +1039,8 @@ async function handleChat(request, env) {
         max_tokens: body.max_tokens || 2000,
         temperature: body.temperature ?? 0.7,
       });
-      const raw = aiResponse && (aiResponse.response ?? aiResponse);
-      const answer = typeof raw === "string" ? raw : JSON.stringify(raw);
-      if (answer && answer !== "null") {
+      const answer = textFrom(aiResponse);
+      if (answer) {
         return finish(env, key, plan, {
           prompt,
           related,
@@ -1075,6 +1073,34 @@ async function handleChat(request, env) {
     },
     502
   );
+}
+
+// Workers AI returns either a plain string, {response: "..."}, or a full
+// OpenAI-shaped envelope {choices:[{message:{content}}]}. Cards need the text.
+function textFrom(aiResponse) {
+  if (aiResponse == null) return "";
+  if (typeof aiResponse === "string") return aiResponse.trim();
+
+  const inner = aiResponse.response ?? aiResponse.result ?? aiResponse;
+  if (typeof inner === "string") return inner.trim();
+  if (!inner || typeof inner !== "object") return "";
+
+  const choice = Array.isArray(inner.choices) ? inner.choices[0] : null;
+  if (choice) {
+    const msg = choice.message || choice.delta || {};
+    const content = msg.content;
+    if (typeof content === "string" && content.trim()) return content.trim();
+    if (Array.isArray(content)) {
+      const joined = content
+        .map((part) => (typeof part === "string" ? part : (part && part.text) || ""))
+        .join("");
+      if (joined.trim()) return joined.trim();
+    }
+  }
+
+  if (typeof inner.text === "string" && inner.text.trim()) return inner.text.trim();
+  if (typeof inner.output_text === "string" && inner.output_text.trim()) return inner.output_text.trim();
+  return "";
 }
 
 function unique(list) {

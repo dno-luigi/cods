@@ -255,9 +255,17 @@
           cards: this.cards.filter((c) => c.id !== skipId).map((c) => ({ q: c.q, r: c.r })),
         }),
       });
-      const data = await res.json().catch(() => null);
+      const body = await res.text();
+      let data = null;
+      try {
+        data = JSON.parse(body);
+      } catch (e) {}
       const answer = data && (data.response || data.answer);
-      if (!answer) throw new Error((data && data.error) || 'HTTP ' + res.status);
+      if (!answer) {
+        const detail =
+          (data && data.error) || String(body || '').trim().slice(0, 160) || 'no body';
+        throw new Error('HTTP ' + res.status + ' from ' + ENDPOINT + ': ' + detail);
+      }
       return answer;
     },
     async send(text) {

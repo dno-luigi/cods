@@ -188,5 +188,37 @@ function check(name, cond, extra) {
   }
 }
 
+// 10. Workers AI answers with a full OpenAI envelope: the card must show the text
+{
+  calls = []; searchChunks = [];
+  const env = makeEnv();
+  env.AI.run = async (model) => {
+    if (String(model).startsWith("@cf/cloudflare/clef")) return clef();
+    if (String(model).startsWith("@cf/ibm-granite"))
+      return {
+        id: "chatcmpl-1",
+        object: "chat.completion",
+        model: String(model),
+        choices: [{ index: 0, message: { role: "assistant", content: "The calculation 2+2 equals 4." } }],
+        usage: { total_tokens: 40 },
+      };
+    throw new Error("no such model: " + model);
+  };
+  const d = await (await post("/chat", { prompt: "what is 2+2", cards: [] }, env)).json();
+  check("envelope unwrapped to text", d.answer === "The calculation 2+2 equals 4.", d.answer);
+  check("no JSON blob on the card", !String(d.answer).includes("chat.completion"), d.answer);
+  check("the note it saved is text too", !String(d.indexed).includes("chat.completion"));
+
+  const env2 = makeEnv(); // fresh KV: the first answer is cached under this prompt
+  env2.AI.run = async (model) => {
+    if (String(model).startsWith("@cf/cloudflare/clef")) return clef();
+    if (String(model).startsWith("@cf/ibm-granite"))
+      return { choices: [{ message: { content: [{ type: "text", text: "part one " }, { type: "text", text: "part two" }] } }] };
+    throw new Error("no such model: " + model);
+  };
+  const parts = await (await post("/chat", { prompt: "what is 2+2", cards: [] }, env2)).json();
+  check("content parts joined", parts.answer === "part one part two", parts.answer);
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
