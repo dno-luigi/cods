@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  const ENDPOINT = '/chat';
+  const ENDPOINT = 'https://cods.ai-n.workers.dev/chat';
   const LS_KEY = 'ai_ncards';
 
   const ge = (id) => document.getElementById(id);

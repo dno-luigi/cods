@@ -80,7 +80,7 @@ async function send() {
   render();
 
   try {
-    const r = await fetch('/chat', {
+    const r = await fetch('https://cods.ai-n.workers.dev/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

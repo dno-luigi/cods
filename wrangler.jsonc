@@ -1,5 +1,5 @@
 {
-  "name": "cards",
+  "name": "cods",
   "main": "worker.js",
   "workers_dev": true,
   "preview_urls": false,
