@@ -19,11 +19,5 @@
       "binding": "KV",
       "id": "4a9bfbffb4d440cba86badc508e2045a"
     }
-  ],
-  "routes": [
-    {
-      "pattern": "ai.nspired.cc",
-      "custom_domain": true
-    }
   ]
 }
