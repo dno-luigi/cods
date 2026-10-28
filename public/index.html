@@ -1,63 +1,110 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
-  <title>kards — AI Card Generator</title>
-  <link rel="stylesheet" href="style.css" />
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>cards</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
-<body>
-  <div id="app">
-    <header class="app-header">
-      <h1>kards</h1>
-      <p class="subtitle">AI-generated cards — powered by your backend</p>
-    </header>
-
-    <main class="container">
-      <section class="input-section">
-        <label for="promptInput" class="visually-hidden">Prompt</label>
-        <textarea id="promptInput" placeholder="Describe the card you want…"></textarea>
-        <div class="actions">
-          <button id="sendBtn" class="primary">Generate</button>
-          <button id="stopBtn" class="ghost" title="Stop">✕</button>
-        </div>
-        <small class="hint">Supports streaming — toggle in Settings.</small>
-      </section>
-
-      <section class="settings" id="settingsSection">
-        <details>
-          <summary>Settings</summary>
-          <div class="setting">
-            <label>
-              <input type="checkbox" id="toggleStream" />
-              Stream responses (SSE)
-            </label>
-          </div>
-          <div class="setting">
-            <label>
-              <input type="checkbox" id="toggleTTS" />
-              Use TTS (if supported)
-            </label>
-          </div>
-          <div class="setting">
-            <label for="proxyInput">Proxy / Custom Endpoint (optional)</label>
-            <input id="proxyInput" placeholder="https://your-endpoint/chat" />
-          </div>
-          <div class="setting">
-            <button id="saveSettings">Save</button>
-            <button id="clearAll" class="danger">Clear all cards</button>
-          </div>
-        </details>
-      </section>
-
-      <div id="traceInfo" style="font-size:12px;color:#666;margin-bottom:8px;min-height:20px;"></div>
-      <div id="traceInfo2" style="font-size:12px;color:#666;margin-bottom:8px;min-height:20px;"></div>
-      <section class="cards" id="cardContainer" aria-live="polite"></section>
-    </main>
+<body class="view-list">
+<div id="topBar">
+ <div class="t-left"><span id="brand">cards</span><span class="badge" id="count">0</span></div>
+  <div class="t-right">
+  <button class="icon-btn" id="settingsBtn" title="Settings"><i class="fas fa-cog"></i></button>
+  <button class="icon-btn" id="undoBtn" title="Undo"><i class="fas fa-undo"></i></button>
+  <button class="icon-btn" id="viewFab" title="View"><i class="fas fa-th"></i></button>
   </div>
-
-  <div id="toastContainer" aria-live="polite" aria-atomic="true"></div>
-
-  <script src="script.js"></script>
+</div>
+<div id="grid"></div>
+<div class="empty-state">
+ <div class="empty-icon">🃏</div>
+ <h3>No cards yet</h3>
+ <p>Type below to create your first card</p>
+ <div class="empty-hints"><span>Tap card to flip</span><span>Double-tap for fullscreen</span><span>Long-press for menu</span></div>
+</div>
+<div id="selectionBar">
+ <div class="sel-left"><button class="sel-btn" id="cancelSel"><i class="fas fa-times"></i></button><span id="selCount">0</span></div>
+ <div class="sel-right">
+  <button class="sel-btn" id="mergeSel"><i class="fas fa-code-branch"></i> Merge</button>
+  <button class="sel-btn" id="splitSel"><i class="fas fa-expand"></i> Split</button>
+  <button class="sel-btn danger" id="deleteSel"><i class="fas fa-trash"></i> Delete</button>
+ </div>
+</div>
+<div class="input-area">
+ <input type="text" id="input" placeholder="Type a prompt..." autocomplete="off">
+ <button id="sendBtn"><i class="fas fa-paper-plane"></i></button>
+</div>
+<button class="fab view-fab" id="viewFab2" style="display:none"></button>
+<div class="overlay" id="modalPrompt">
+ <div class="modal">
+  <div class="modal-h"><h3 id="promptTitle">Prompt</h3><button class="btn" onclick="app.closeModal('modalPrompt')"><i class="fas fa-times"></i></button></div>
+  <div class="modal-b">
+   <small id="promptDesc"></small>
+   <textarea id="promptInput" placeholder="Enter prompt..."></textarea>
+   <textarea id="promptRad" placeholder="Additional context (optional)..." style="min-height:40px"></textarea>
+  </div>
+  <div class="modal-f"><button class="btn" onclick="app.closeModal('modalPrompt')">Cancel</button><button class="btn primary" id="promptGo">Go</button></div>
+ </div>
+</div>
+<div class="overlay" id="fullscreen">
+ <div class="fs-header">
+  <div class="fs-left"><button class="icon-btn" onclick="app.closeFs()"><i class="fas fa-arrow-left"></i></button></div>
+  <div class="fs-right"><button class="icon-btn" onclick="document.querySelector('.card[data-id=\''+app.fsId+'\']')?.classList.toggle('flip')"><i class="fas fa-sync"></i></button></div>
+ </div>
+ <div class="fs-body" id="fsBody"></div>
+</div>
+<div class="ctx-menu" id="ctxMenu">
+ <button data-act="edit"><i class="fas fa-pen"></i> Edit</button>
+ <button data-act="magic"><i class="fas fa-magic"></i> Magic Rewrite</button>
+ <button data-act="continue"><i class="fas fa-forward"></i> Continue</button>
+ <button data-act="split"><i class="fas fa-expand"></i> Split</button>
+ <hr>
+ <button data-act="view"><i class="fas fa-expand-arrows-alt"></i> Fullscreen</button>
+ <button data-act="undo"><i class="fas fa-undo"></i> Undo</button>
+ <hr>
+ <button class="danger" data-act="delete"><i class="fas fa-trash"></i> Delete</button>
+</div>
+<div class="overlay" id="modalSettings">
+ <div class="modal">
+  <div class="modal-h"><h3>Settings</h3><button class="btn" onclick="app.closeModal('modalSettings')"><i class="fas fa-times"></i></button></div>
+  <div class="modal-b">
+   <div class="section">
+    <h4><i class="fas fa-palette"></i> Theme</h4>
+    <div class="cp"><label>Primary</label><input type="color" id="setPrimary" value="#c41e3a"></div>
+    <div class="cp"><label>Background</label><input type="color" id="setBg" value="#0d0d0d"></div>
+    <div class="cp"><label>Card BG</label><input type="color" id="setCardBg" value="#1a1a2e"></div>
+    <div class="cp"><label>Text</label><input type="color" id="setText" value="#e8e8e8"></div>
+    <div class="cp"><label>Border</label><input type="color" id="setBorder" value="#2a2a3e"></div>
+    <button class="btn primary" id="applyThemeBtn" style="margin-top:8px">Apply Theme</button>
+    <div style="margin-top:8px">
+     <label style="font-size:12px;opacity:.7">Theme Name</label>
+     <input type="text" id="themeName" placeholder="My Theme" style="margin-top:4px">
+     <button class="btn" id="exportThemeBtn" style="margin-top:6px">Export Theme Command</button>
+    </div>
+   </div>
+   <div class="section">
+    <h4><i class="fas fa-th"></i> View</h4>
+    <div class="btn-group">
+     <button class="tgl" data-view="list">List</button>
+     <button class="tgl" data-view="grid">Grid</button>
+     <button class="tgl" data-view="full">Full</button>
+    </div>
+   </div>
+   <div class="section">
+    <h4><i class="fas fa-lock"></i> Lock Theme</h4>
+    <div class="ck"><input type="checkbox" id="lockTheme"> <label for="lockTheme">Prevent AI from changing theme</label></div>
+   </div>
+   <div class="section">
+    <h4><i class="fas fa-database"></i> Data</h4>
+    <button class="btn" id="exportBtn">Export Cards (JSON)</button>
+    <button class="btn" id="importBtn">Import Cards (JSON)</button>
+    <button class="btn danger" id="clearAllBtn">Clear All Cards</button>
+   </div>
+  </div>
+ </div>
+</div>
+<div id="toast"></div>
+<script src="script.js"></script>
 </body>
 </html>

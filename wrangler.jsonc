@@ -9,7 +9,9 @@
     "binding": "ASSETS",
     "run_worker_first": [
       "/chat",
-      "/chat/*"
+      "/chat/*",
+      "/openrouter-preset",
+      "/api/*"
     ]
   },
   "kv_namespaces": [
