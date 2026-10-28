@@ -12,12 +12,16 @@
       "binding": "KV",
       "id": "4a9bfbffb4d440cba86badc508e2045a"
     }
+  ],
+  // Cards are written back to AI Search as notes.
+  //   namespace: AI-nspired   instance: NSM   on env.mainspace
+  // The worker falls back to the REST API (CF_ACCOUNT_ID + AI_SEARCH_TOKEN)
+  // if this binding is missing.
+  "ai_search_namespaces": [
+    {
+      "binding": "mainspace",
+      "namespace": "AI-nspired",
+      "remote": true
+    }
   ]
-  // Cards are written back to AI Search as notes. Uncomment and set the real
-  // instance name to upload through the binding; without it the worker falls
-  // back to the REST API (CF_ACCOUNT_ID + AI_SEARCH_TOKEN) and otherwise reports
-  // "not indexed: ..." on the card.
-  // "ai_search_namespaces": [
-  //   { "binding": "AI_SEARCH", "namespace": "default", "remote": true }
-  // ],
 }

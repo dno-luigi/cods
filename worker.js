@@ -28,7 +28,7 @@ const CF_TEXT_MODELS = ["@cf/ibm-granite/granite-4.0-h-micro"];
 //   POST /search            -> the notes: what the cards already know (human side)
 //   POST /chat/completions  -> the model's end: ask the notes, and write new ones
 const AI_SEARCH_URL = "https://ebfc217f-98c4-40f7-9ca8-324549e4571c.search.ai.cloudflare.com";
-const AI_SEARCH_INSTANCE = "cards";
+const AI_SEARCH_INSTANCE = "NSM";
 
 // Domain packs kept in code, so the router carries its own context for the
 // domains it sees most. `web` is the prior that live sources help; `noWeb`
@@ -697,7 +697,7 @@ function cardDoc({ q, a, decision, sources }) {
 }
 
 function indexHandle(env) {
-  const binding = env.AI_SEARCH;
+  const binding = env.mainspace || env.AI_SEARCH;
   if (!binding) return null;
   if (binding.items && typeof binding.items.upload === "function") return binding;
   if (typeof binding.get === "function") {

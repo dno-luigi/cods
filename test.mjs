@@ -90,7 +90,7 @@ function check(name, cond, extra) {
 
   const h = await (await worker.fetch(new Request("https://x/health"), makeEnv())).json();
   check("health names the search host", String(h.ai_search).includes("ebfc217f"));
-  check("health names the instance", h.ai_search_instance === "cards");
+  check("health names the instance", h.ai_search_instance === "NSM");
   check("health reports no index writer yet", h.index_writer === "none", h.index_writer);
   check("health keeps the domains", Array.isArray(h.domains) && h.domains.includes("medical"), h.domains);
 }
@@ -140,7 +140,7 @@ function check(name, cond, extra) {
 {
   uploaded = [];
   const env = makeEnv({
-    AI_SEARCH: {
+    mainspace: {
       get: (name) => ({
         items: {
           upload: async (key, content) => { uploaded.push({ name, key, content }); return { id: "item-1", key }; },
@@ -150,7 +150,7 @@ function check(name, cond, extra) {
   });
   const d = await (await post("/cards", { q: "what is kv", a: "a key value store" }, env)).json();
   check("/cards uploads through the binding", uploaded.length === 1, d);
-  check("binding asks for the cards instance", uploaded[0] && uploaded[0].name === "cards");
+  check("binding asks for the cards instance", uploaded[0] && uploaded[0].name === "NSM");
   check("note keeps the question", uploaded[0] && uploaded[0].content.includes("# what is kv"));
   check("note keeps the answer", uploaded[0] && uploaded[0].content.includes("a key value store"));
   check("note is under cards/", uploaded[0] && uploaded[0].key.startsWith("cards/"), uploaded[0] && uploaded[0].key);
