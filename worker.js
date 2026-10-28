@@ -24,6 +24,12 @@ const TTL_VOLATILE = 3600; // 1 hour
 // Text layer: Workers AI models in this order, then OpenRouter.
 const CF_TEXT_MODELS = ["@cf/ibm-granite/granite-4.0-h-micro"];
 
+// Cloudflare AI Search, public endpoint of the cards instance.
+//   POST /search            -> the notes: what the cards already know (human side)
+//   POST /chat/completions  -> the model's end: ask the notes, and write new ones
+const AI_SEARCH_URL = "https://ebfc217f-98c4-40f7-9ca8-324549e4571c.search.ai.cloudflare.com";
+const AI_SEARCH_INSTANCE = "cards";
+
 // Domain packs kept in code, so the router carries its own context for the
 // domains it sees most. `web` is the prior that live sources help; `noWeb`
 // pins a domain to reasoning only.
@@ -198,6 +204,13 @@ body{background:#121212;color:#f5f5f5;font-family:system-ui,sans-serif;display:f
 .sources{display:flex;flex-direction:column;gap:3px;margin-top:8px;white-space:normal}
 .source{font-size:11px;color:#8aa0c0;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .source:hover{text-decoration:underline}
+.notes{margin-top:10px;border-top:1px solid #2a2a2a;padding-top:8px;white-space:normal}
+.notes-h{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#7a7a7a;margin-bottom:6px}
+.note{border:1px solid #2c2c2c;border-radius:8px;padding:8px;margin-bottom:6px}
+.note-t{font-size:11px;color:#b9b9b9;margin-bottom:3px;word-break:break-word}
+.note-b{font-size:11px;color:#8a8a8a;line-height:1.4;margin-bottom:6px}
+.relbtn{font-size:10px;padding:3px 9px;margin-right:6px;background:#242424;color:#d0d0d0;border:1px solid #3a3a3a;border-radius:999px;cursor:pointer}
+.relbtn:hover{border-color:#c41e3a}
 .provider{font-size:10px;color:#666;margin-top:8px}
 .input{padding:12px 16px;background:#1e1e1e;border-top:1px solid #333;display:flex;gap:8px;flex:0 0 auto}
 .input input{flex:1;padding:12px;background:#121212;border:1px solid #333;border-radius:8px;color:#f5f5f5;font-size:15px;outline:none}
@@ -254,15 +267,24 @@ function meta(dec, sources) {
   }
   return html;
 }
+function notes(list, idx) {
+  if (!list || !list.length) return '';
+  return '<div class="notes"><div class="notes-h">Already in the notes</div>' + list.map(function (n, i) {
+    return '<div class="note"><div class="note-t">' + esc(n.title) + '</div>' +
+      '<div class="note-b">' + esc(String(n.text || '').slice(0, 240)) + '</div>' +
+      '<button class="relbtn" data-act="combine" data-card="' + idx + '" data-note="' + i + '">Combine</button>' +
+      '<button class="relbtn" data-act="extract" data-card="' + idx + '" data-note="' + i + '">Extract</button></div>';
+  }).join('') + '</div>';
+}
 function render() {
   el.count.textContent = cards.length;
   if (!cards.length) {
     el.cards.innerHTML = '<div class="empty"><h3>No cards yet</h3><p>Type below to start</p></div>';
     return;
   }
-  el.cards.innerHTML = cards.map(function (c) {
+  el.cards.innerHTML = cards.map(function (c, i) {
     return '<div class="card"><div class="card-q">' + esc(c.q) + '</div>' +
-      '<div class="card-a">' + esc(c.a) + meta(c.decision, c.sources) + '</div>' +
+      '<div class="card-a">' + esc(c.a) + meta(c.decision, c.sources) + notes(c.related, i) + '</div>' +
       '<div class="provider">via ' + esc(c.provider) + '</div></div>';
   }).join('');
 }
@@ -300,6 +322,7 @@ function send() {
         card.provider = (d.provider || 'openrouter') + (d.route ? ' · ' + d.route : '');
         card.decision = d.decision || null;
         card.sources = d.sources || null;
+        card.related = d.related || null;
       }
     });
   }).catch(function (e) {
@@ -314,8 +337,23 @@ function send() {
 el.send.onclick = send;
 el.prompt.onkeydown = function (e) { if (e.key === 'Enter') send(); };
 el.cards.onclick = function (e) {
-  var c = e.target.closest ? e.target.closest('.card') : null;
-  if (c) c.classList.toggle('flipped');
+  var btn = e.target.closest ? e.target.closest('.relbtn') : null;
+  if (btn) {
+    e.stopPropagation();
+    var idx = Number(btn.getAttribute('data-card'));
+    var c = cards[idx];
+    var n = c && c.related && c.related[Number(btn.getAttribute('data-note'))];
+    if (!c || !n) return;
+    var head = btn.getAttribute('data-act') === 'combine'
+      ? 'Combine this saved note with my card and answer with the merged version.'
+      : 'Extract from this saved note only what answers my card, as separate cards.';
+    el.prompt.value = head + '\n\nMy card:\n' + c.q + '\n' + (c.a || '') +
+      '\n\nSaved note:\n' + n.title + '\n' + n.text;
+    send();
+    return;
+  }
+  var card = e.target.closest ? e.target.closest('.card') : null;
+  if (card) card.classList.toggle('flipped');
 };
 render();
 </script>
@@ -323,7 +361,7 @@ render();
 </html>`;
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     if (request.method === "OPTIONS") {
@@ -337,6 +375,9 @@ export default {
         websearch: !!(env.AI && typeof env.AI.websearch === "function"),
         search_provider: env.SEARCH_PROVIDER || "ceramic",
         gateway: env.AI_GATEWAY_ID || "default",
+        ai_search: aiSearchBase(env),
+        ai_search_instance: env.AI_SEARCH_INSTANCE || AI_SEARCH_INSTANCE,
+        index_writer: indexHandle(env) ? "binding" : env.CF_ACCOUNT_ID && env.AI_SEARCH_TOKEN ? "rest" : "none",
         text_models: CF_TEXT_MODELS,
         openrouter: !!env.OPENROUTER_API_KEY,
         chat_model: env.CF_CHAT_MODEL || null,
@@ -350,9 +391,24 @@ export default {
       return handleRoute(request, env);
     }
 
+    if (url.pathname === "/search") {
+      if (request.method !== "POST") return json({ error: "Use POST" }, 405);
+      return handleSearch(request, env);
+    }
+
+    if (url.pathname === "/cards") {
+      if (request.method !== "POST") return json({ error: "Use POST" }, 405);
+      return handleCards(request, env);
+    }
+
+    if (url.pathname === "/notes") {
+      if (request.method !== "POST") return json({ error: "Use POST" }, 405);
+      return handleNotes(request, env);
+    }
+
     if (url.pathname === "/chat") {
       if (request.method !== "POST") return json({ error: "Use POST" }, 405);
-      return handleChat(request, env);
+      return handleChat(request, env, ctx);
     }
 
     if ((url.pathname === "/" || url.pathname === "/index.html") && request.method === "GET") {
@@ -529,6 +585,75 @@ function styleHint(d) {
 
 // ─── web search (Cloudflare Web Search API via the AI binding) ────────────────
 
+// --- notes (Cloudflare AI Search) -------------------------------------------
+//
+// A card is a note. /search is how the human sees what the system already
+// knows, /chat/completions is how the model asks the same notes, and every
+// answered card is written back so both sides keep learning from each other.
+
+function aiSearchBase(env) {
+  return String(env.AI_SEARCH_URL || AI_SEARCH_URL).replace(/\/+$/, "");
+}
+
+async function aiSearchPost(env, path, payload) {
+  const res = await fetch(aiSearchBase(env) + path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const text = await res.text();
+  let data = null;
+  try {
+    data = JSON.parse(text);
+  } catch (err) {}
+  if (!res.ok) {
+    const detail =
+      (data && data.error && (data.error.message || data.error)) ||
+      (data && data.errors && JSON.stringify(data.errors)) ||
+      text.slice(0, 300) ||
+      "no body";
+    const err = new Error(path + " HTTP " + res.status + ": " + detail);
+    err.status = res.status;
+    throw err;
+  }
+  if (!data) throw new Error(path + " returned non-JSON");
+  return data;
+}
+
+function chunkNotes(data) {
+  const root = (data && data.result) || data || {};
+  const chunks = Array.isArray(root.chunks) ? root.chunks : [];
+  return chunks
+    .filter((c) => c && (c.text || c.item))
+    .map((c) => {
+      const item = (c && c.item) || {};
+      const meta = item.metadata || {};
+      return {
+        title: String(meta.title || item.key || "card"),
+        text: String((c && c.text) || "").slice(0, 1200),
+        score: typeof c.score === "number" ? c.score : null,
+      };
+    });
+}
+
+// The human side of the loop: what do the notes already know about this?
+async function relatedNotes(env, query, limit) {
+  const data = await aiSearchPost(env, "/search", {
+    messages: [{ role: "user", content: String(query).slice(0, 4000) }],
+  });
+  const notes = chunkNotes(data);
+  return Number.isFinite(limit) && limit > 0 ? notes.slice(0, limit) : notes;
+}
+
+// The model side of the loop: ask the notes, in OpenAI shape.
+async function notesChat(env, messages, body) {
+  return aiSearchPost(env, "/chat/completions", {
+    messages,
+    max_tokens: body.max_tokens || 1200,
+    temperature: body.temperature ?? 0.7,
+  });
+}
+
 async function webSearch(env, query) {
   if (!env.AI || typeof env.AI.websearch !== "function") {
     throw new Error("websearch() is not available on this AI binding");
@@ -555,6 +680,130 @@ async function webSearch(env, query) {
 
 // ─── routing endpoints ────────────────────────────────────────────────────────
 
+// --- writing cards back as notes --------------------------------------------
+
+function cardDoc({ q, a, decision, sources }) {
+  const lines = ["# " + String(q || "").trim(), "", String(a || "").trim()];
+  const tags = [];
+  if (decision && decision.domain) tags.push("domain: " + decision.domain);
+  if (decision && decision.intent) tags.push("intent: " + decision.intent);
+  if (decision && decision.tone) tags.push("tone: " + decision.tone);
+  if (tags.length) lines.push("", tags.join(" / "));
+  if (Array.isArray(sources) && sources.length) {
+    lines.push("", "Sources:", ...sources.map((s, i) => "[" + (i + 1) + "] " + s.title + " - " + s.url));
+  }
+  lines.push("", "Saved: " + new Date().toISOString());
+  return lines.join("\n");
+}
+
+function indexHandle(env) {
+  const binding = env.AI_SEARCH;
+  if (!binding) return null;
+  if (binding.items && typeof binding.items.upload === "function") return binding;
+  if (typeof binding.get === "function") {
+    return binding.get(env.AI_SEARCH_INSTANCE || AI_SEARCH_INSTANCE);
+  }
+  return null;
+}
+
+async function indexCard(env, card) {
+  const name =
+    "cards/" + (await hashKey(String(card.q || "") + "|" + String(card.a || ""))).slice(0, 32) + ".md";
+  const doc = cardDoc(card);
+
+  const handle = indexHandle(env);
+  if (handle) {
+    const item = await handle.items.upload(name, doc);
+    return "indexed " + (item && item.key ? item.key : name);
+  }
+
+  if (env.CF_ACCOUNT_ID && env.AI_SEARCH_TOKEN) {
+    const form = new FormData();
+    form.append("file", new Blob([doc], { type: "text/markdown" }), name.split("/").pop());
+    const res = await fetch(
+      "https://api.cloudflare.com/client/v4/accounts/" +
+        env.CF_ACCOUNT_ID +
+        "/ai-search/namespaces/" +
+        (env.AI_SEARCH_NAMESPACE || "default") +
+        "/instances/" +
+        (env.AI_SEARCH_INSTANCE || AI_SEARCH_INSTANCE) +
+        "/items",
+      { method: "POST", headers: { Authorization: "Bearer " + env.AI_SEARCH_TOKEN }, body: form }
+    );
+    const text = await res.text();
+    if (!res.ok) throw new Error("upload HTTP " + res.status + ": " + text.slice(0, 200));
+    return "indexed " + name;
+  }
+
+  throw new Error("no index writer: add the AI Search binding, or CF_ACCOUNT_ID + AI_SEARCH_TOKEN");
+}
+
+// The human's side: ask the notes directly, nothing generated.
+async function handleSearch(request, env) {
+  const { body, error } = await readBody(request);
+  if (error) return error;
+
+  const query = String(body.query || body.prompt || body.q || "").trim();
+  if (!query) return json({ error: "No query" }, 400);
+
+  try {
+    const data = await aiSearchPost(env, "/search", {
+      messages: [{ role: "user", content: query.slice(0, 4000) }],
+    });
+    const root = (data && data.result) || data || {};
+    const chunks = Array.isArray(root.chunks) ? root.chunks : [];
+    return json({
+      query,
+      search_query: root.search_query || query,
+      count: chunks.length,
+      notes: chunkNotes(data),
+    });
+  } catch (err) {
+    return json({ error: err.message, query }, 502);
+  }
+}
+
+// Save cards as notes. Merge / extract in the card menu posts here.
+async function handleCards(request, env) {
+  const { body, error } = await readBody(request);
+  if (error) return error;
+
+  const cards = Array.isArray(body.cards) ? body.cards : [body];
+  const results = [];
+  for (const card of cards) {
+    const q = String((card && (card.q || card.prompt)) || "").trim();
+    const a = String((card && (card.a || card.r || card.answer)) || "").trim();
+    if (!q && !a) {
+      results.push({ error: "card has no prompt or answer" });
+      continue;
+    }
+    try {
+      results.push({
+        q,
+        indexed: await indexCard(env, { q, a, decision: card.decision || null, sources: card.sources || null }),
+      });
+    } catch (err) {
+      results.push({ q, error: err.message });
+    }
+  }
+  return json({ count: results.length, results });
+}
+
+// The model's side of the notes, OpenAI-compatible.
+async function handleNotes(request, env) {
+  const { body, error } = await readBody(request);
+  if (error) return error;
+
+  if (!Array.isArray(body.messages) || !body.messages.length) {
+    return json({ error: "messages[] is required" }, 400);
+  }
+  try {
+    return json(await notesChat(env, body.messages, body));
+  } catch (err) {
+    return json({ error: err.message }, 502);
+  }
+}
+
 async function handleRoute(request, env) {
   const { body, error } = await readBody(request);
   if (error) return error;
@@ -579,7 +828,6 @@ async function handleRoute(request, env) {
       sources = await webSearch(env, prompt);
       if (!sources.length) {
         searchError = "web search returned no results";
-        failures.push("web search: " + searchError);
       }
     } catch (err) {
       searchError = "web search failed: " + err.message;
@@ -637,6 +885,18 @@ async function handleChat(request, env) {
     } catch (err) {}
   }
 
+  // 2b. The notes. Cards already saved go to the human on the flipped card,
+  //     and to the model as background. The model still writes the answer.
+  let related = [];
+  let relatedError = null;
+  if (body.use_notes !== false) {
+    try {
+      related = await relatedNotes(env, prompt, Number(body.related_limit || 4));
+    } catch (err) {
+      relatedError = err.message;
+    }
+  }
+
   const plan = planRoute(decision);
 
   if (body.decision_only) {
@@ -691,6 +951,14 @@ async function handleChat(request, env) {
         contextCards.map((c) => "User: " + c.q + "\nAssistant: " + (c.r || "")).join("\n\n"),
     });
   }
+  if (related.length) {
+    messages.push({
+      role: "system",
+      content:
+        "Notes this system saved from earlier cards. Background only: write your own answer, and say when a note is what you are relying on.\n" +
+        related.map((n, i) => "[" + (i + 1) + "] " + n.title + "\n" + n.text).join("\n\n"),
+    });
+  }
   messages.push({ role: "user", content: prompt });
 
   const route = sources.length ? "web → llm" : "llm";
@@ -718,6 +986,9 @@ async function handleChat(request, env) {
         const text = typeof raw === "string" ? raw : JSON.stringify(raw);
         if (text && text !== "null") {
           return finish(env, key, plan, {
+          prompt,
+          related,
+          relatedError,
             answer: text,
             provider: "clef-flash \u2192 " + cfModel,
             route,
@@ -741,6 +1012,9 @@ async function handleChat(request, env) {
       try {
         const answer = await callOpenRouter(env, model, messages, body);
         return finish(env, key, plan, {
+          prompt,
+          related,
+          relatedError,
           answer,
           provider: "clef-flash → openrouter",
           route,
@@ -770,6 +1044,9 @@ async function handleChat(request, env) {
       const answer = typeof raw === "string" ? raw : JSON.stringify(raw);
       if (answer && answer !== "null") {
         return finish(env, key, plan, {
+          prompt,
+          related,
+          relatedError,
           answer,
           provider: "clef-flash → workers-ai",
           route,
@@ -804,7 +1081,12 @@ function unique(list) {
   return Array.from(new Set(list));
 }
 
-async function finish(env, key, plan, { answer, provider, route, decision, sources, trace, searchError }) {
+async function finish(
+  env,
+  key,
+  plan,
+  { prompt, answer, provider, route, decision, sources, trace, searchError, related, relatedError }
+) {
   const payload = {
     answer,
     response: answer,
@@ -822,9 +1104,18 @@ async function finish(env, key, plan, { answer, provider, route, decision, sourc
       : null,
     sources: sources && sources.length ? sources.map((s) => ({ title: s.title, url: s.url })) : null,
     search_error: searchError || null,
+    related: related && related.length ? related : null,
+    related_error: relatedError || null,
     trace,
     cached: false,
   };
+
+  // Write the card back, so the next question finds it as a note.
+  try {
+    payload.indexed = await indexCard(env, { q: prompt, a: answer, decision, sources });
+  } catch (err) {
+    payload.indexed = "not indexed: " + err.message;
+  }
 
   if (env.KV && answer) {
     try {
