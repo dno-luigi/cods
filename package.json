@@ -1,0 +1,19 @@
+{
+  "name": "cods",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "cards worker: clef-flash decides, web search grounds, granite answers, cards become notes",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "check": "node --check worker.js",
+    "test": "node test.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.154.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
