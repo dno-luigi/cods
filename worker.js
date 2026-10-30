@@ -952,15 +952,23 @@ function queryTerms(query) {
 // be caught here rather than turned into a card.
 function relevanceOf(item, terms) {
   if (!terms.length) return 1;
-  const hay = (
+  const words = (
     String(item.title || "") +
     " " +
     String(item.description || "") +
     " " +
     String(item.url || "")
-  ).toLowerCase();
+  )
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
   let hits = 0;
-  for (const term of terms) if (hay.indexOf(term) >= 0) hits++;
+  for (const term of terms) {
+    // Four letters of the term is enough to see its family, so "trading"
+    // notices a page about "trade" instead of calling it off-topic.
+    const stem = term.slice(0, 4);
+    if (words.some((word) => word.length >= 3 && (word.indexOf(stem) === 0 || term.indexOf(word) === 0))) hits++;
+  }
   return hits;
 }
 

@@ -495,5 +495,31 @@ function check(name, cond, extra) {
   delete globalThis.__codsPuppeteer;
 }
 
+
+// 12l. a word family counts as a match, not as a different word
+{
+  calls = []; aiInputs = [];
+  globalThis.__codsPuppeteer = {
+    launch: async () => ({
+      newPage: async () => ({
+        setUserAgent: async () => {},
+        goto: async () => {},
+        waitForSelector: async () => null,
+        evaluate: async () => [
+          { url: "https://example.org/trade", title: "How to Build a Trade Journal", description: "a guide" },
+          { url: "https://example.org/traders", title: "Trading Journals for Traders", description: "why they work" },
+        ],
+        close: async () => {},
+      }),
+      close: async () => {},
+    }),
+  };
+  const env = makeEnv({ BROWSER: {} });
+  const d = await (await post("/chat", { prompt: "what makes a good trading journal", cards: [] }, env)).json();
+  check("trade counts for trading", d.search_via === "browser", d.search_via);
+  check("both family matches become cards", d.cards.length === 2, d.cards.length);
+  delete globalThis.__codsPuppeteer;
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
