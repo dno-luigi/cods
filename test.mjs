@@ -333,13 +333,13 @@ function check(name, cond, extra) {
 {
   calls = []; aiInputs = [];
   bingBody = '<rss><channel>' +
-    '<item><title>Bing one</title><link>https://bing.example/a</link><description>alpha</description></item>' +
-    '<item><title>Bing two</title><link>https://bing.example/b</link><description>beta</description></item>' +
+    '<item><title>Cloudflare news one</title><link>https://bing.example/a</link><description>alpha</description></item>' +
+    '<item><title>Cloudflare news two</title><link>https://bing.example/b</link><description>beta</description></item>' +
     '</channel></rss>';
-  const env = makeEnv();
+  const env = makeEnv({ SEARCH_BING: "1" });
   env.AI.websearch = async () => ({ ok: false, status: 402 });
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
-  check("402 falls to bing rss", d.search_via === "bing", d.search_via);
+  check("402 falls to bing rss when it is switched on", d.search_via === "bing", d.search_via);
   check("bing rss items become cards", d.cards && d.cards.length === 2 && d.cards[0].source.url === "https://bing.example/a", d.cards && d.cards.length);
   bingBody = null;
 }
@@ -372,6 +372,17 @@ function check(name, cond, extra) {
   check("search runs even when clef says no web", d.search_via === "cloudflare", d.search_via);
   check("those sources become cards", d.cards && d.cards.length === 2, d.cards && d.cards.length);
   check("no card echoes the instruction", d.cards.every((c) => !/never open with/i.test(String(c.a))), d.cards.map((c) => c.a));
+}
+
+
+// 12f. bing stays out of the chain unless asked for
+{
+  const h = await (await worker.fetch(new Request("https://x/health"), makeEnv())).json();
+  check("bing is opt-in", h.search_chain.indexOf("bing") === -1 && h.search_chain.indexOf("duckduckgo") >= 0, h.search_chain);
+  const h2 = await (await worker.fetch(new Request("https://x/health"), makeEnv({ SEARCH_BING: "1" }))).json();
+  check("bing comes back when asked", h2.search_chain.indexOf("bing") >= 0, h2.search_chain);
+  const h3 = await (await worker.fetch(new Request("https://x/health"), makeEnv({ SEARCH_URL: "https://s.example/q" }))).json();
+  check("a self hosted search leads the chain", h3.search_chain[0] === "search-url", h3.search_chain);
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");

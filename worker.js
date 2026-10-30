@@ -426,9 +426,10 @@ export default {
         websearch: !!(env.AI && typeof env.AI.websearch === "function"),
         search_provider: env.SEARCH_PROVIDER || "ceramic",
         search_url: env.SEARCH_URL ? "configured" : null,
-        search_chain: env.SEARCH_URL
-          ? ["search-url", "cloudflare", "bing", "duckduckgo", "github", "wikipedia"]
-          : ["cloudflare", "bing", "duckduckgo", "github", "wikipedia"],
+        search_chain: (env.SEARCH_URL ? ["search-url"] : [])
+          .concat(["cloudflare"])
+          .concat(String(env.SEARCH_BING || "") === "1" ? ["bing"] : [])
+          .concat(["duckduckgo", "github", "wikipedia"]),
         github_token: !!env.GITHUB_TOKEN,
         gateway: env.AI_GATEWAY_ID || "default",
         ai_search: aiSearchBase(env),
@@ -838,8 +839,9 @@ function xmlText(s) {
   return stripTags(String(s || "").replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1"));
 }
 
-// Bing publishes results as RSS, which needs no key and survives egress
-// filtering better than its HTML page does.
+// Bing publishes results as RSS, which needs no key. It is opt-in via
+// SEARCH_BING=1 because its RSS feed answers most queries with a did-you-mean
+// result ("make vs. makes") instead of the query, which poisons the cards.
 async function bingSearch(query, limit) {
   const res = await fetch(
     "https://www.bing.com/search?format=rss&count=" + limit + "&q=" + encodeURIComponent(String(query).slice(0, 300)),
@@ -926,7 +928,7 @@ async function webSearch(env, query) {
   const providers = [];
   if (env.SEARCH_URL) providers.push(["search-url", () => externalSearch(env, query, limit)]);
   providers.push(["cloudflare", () => cloudflareWebSearch(env, query, limit)]);
-  providers.push(["bing", () => bingSearch(query, limit)]);
+  if (String(env.SEARCH_BING || "") === "1") providers.push(["bing", () => bingSearch(query, limit)]);
   providers.push(["duckduckgo", () => ddgSearch(query, limit)]);
   providers.push(["github", () => githubSearch(env, query, limit)]);
   providers.push(["wikipedia", () => wikipediaSearch(query, limit)]);
