@@ -1,0 +1,49 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-cods
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Fails with a readable message until the token is added in
+      # Settings -> Secrets and variables -> Actions.
+      - name: check the token
+        run: |
+          if [ -z "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then
+            echo "::error::No CLOUDFLARE_API_TOKEN yet. Repo Settings -> Secrets and variables -> Actions -> New repository secret, name it CLOUDFLARE_API_TOKEN, paste a Cloudflare API token made from the 'Edit Cloudflare Workers' template."
+            exit 1
+          fi
+
+      - run: npm ci
+
+      - name: syntax + behavior
+        run: |
+          node --check worker.js
+          node --check public/script.js
+          npm test
+
+      - name: deploy
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      - name: what is live
+        run: |
+          sleep 5
+          curl -sS https://cods.ai-n.workers.dev/health || true
