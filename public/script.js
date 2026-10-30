@@ -260,6 +260,7 @@
       try {
         data = JSON.parse(body);
       } catch (e) {}
+      this.lastCards = (data && data.cards) || null;
       const answer = data && (data.response || data.answer);
       if (!answer) {
         const detail =
@@ -281,6 +282,7 @@
       try {
         const answer = await this.ask(q, id);
         this.updCard(id, null, answer);
+        this.addResultCards(q, id);
         this.checkActions(answer);
       } catch (e) {
         const msg = e && e.message ? e.message : 'unknown error';
@@ -289,6 +291,16 @@
       } finally {
         if (button) button.disabled = false;
       }
+    },
+    addResultCards(q, primaryId) {
+      const list = this.lastCards;
+      this.lastCards = null;
+      if (!Array.isArray(list) || list.length < 2) return;
+      list.slice(1).forEach((c, i) => {
+        const title = c.source && c.source.title ? ' — ' + c.source.title : '';
+        this.addCard(q + ' · ' + (i + 2) + title, c.a);
+      });
+      this.render();
     },
     async editCard(id, prompt) {
       const card = this.cards.find((c) => c.id === id);

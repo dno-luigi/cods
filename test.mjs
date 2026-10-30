@@ -182,7 +182,7 @@ function check(name, cond, extra) {
 // 9. method guards
 {
   const env = makeEnv();
-  for (const path of ["/search", "/cards", "/notes", "/chat"]) {
+  for (const path of ["/search", "/cards", "/notes", "/chat", "/feedback"]) {
     const res = await worker.fetch(new Request("https://x" + path), env);
     check("GET " + path + " -> 405", res.status === 405, res.status);
   }
@@ -218,6 +218,63 @@ function check(name, cond, extra) {
   };
   const parts = await (await post("/chat", { prompt: "what is 2+2", cards: [] }, env2)).json();
   check("content parts joined", parts.answer === "part one part two", parts.answer);
+}
+
+// 11. a search with several results fills the grid with one card each
+{
+  calls = []; aiInputs = []; searchChunks = [];
+  const env = makeEnv();
+  env.AI.websearch = async () => ({
+    ok: true,
+    json: async () => ({
+      items: [
+        { url: "https://one.example/a", title: "Source one", description: "first description" },
+        { url: "https://two.example/b", title: "Source two", description: "second description" },
+        { url: "https://one.example/a", title: "Source one again", description: "duplicate" },
+      ],
+    }),
+  });
+  const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
+  check("two results become two cards", d.cards && d.cards.length === 2, d.cards && d.cards.length);
+  check("duplicate url dropped", new Set(d.cards.map((c) => c.source.url)).size === d.cards.length, d.cards.map((c) => c.source.url));
+  check("each card carries its source", d.cards.every((c) => c.source && c.source.url), d.cards);
+  check("each card carries the decision", d.cards.every((c) => c.decision && c.decision.domain === "news"), d.cards[0].decision);
+  check("answer is the first card", d.answer === d.cards[0].a, d.answer);
+  check("each card was written from its own source",
+    aiInputs.some((x) => JSON.stringify(x.input).includes("Source one")) &&
+    aiInputs.some((x) => JSON.stringify(x.input).includes("Source two")),
+    aiInputs.length);
+  check("three model calls: one per card, no extra", aiInputs.filter((x) => String(x.model).startsWith("@cf/ibm-granite")).length === 2, aiInputs.map((x) => x.model));
+}
+
+// 12. one result stays one card
+{
+  const env = makeEnv();
+  env.AI.websearch = async () => ({ ok: true, json: async () => ({ items: [{ url: "https://only.example", title: "Only", description: "single" }] }) });
+  const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
+  check("one result -> no cards array", d.cards === null, d.cards);
+  check("one result -> the plain answer", d.answer === "granite answer", d.answer);
+}
+
+// 13. feedback is kept as a note
+{
+  uploaded = [];
+  const env = makeEnv({
+    mainspace: {
+      get: (name) => ({
+        items: {
+          upload: async (key, content) => { uploaded.push({ name, key, content }); return { key }; },
+        },
+      }),
+    },
+  });
+  const d = await (await post("/feedback", { action: "deeper", q: "what is kv", a: "a store", decision: { domain: "code", intent: "answer" } }, env)).json();
+  check("feedback reports ok", d.ok === true && d.action === "deeper", d);
+  check("feedback lands in the index", uploaded.length === 1, d);
+  check("feedback note names the action", uploaded[0].content.includes("Feedback: deeper"), uploaded[0].content);
+  check("feedback note names the domain", uploaded[0].content.includes("Domain: code"), uploaded[0].content);
+  const bad = await post("/feedback", {}, env);
+  check("feedback needs an action", bad.status === 400);
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");

@@ -24,6 +24,9 @@ const TTL_VOLATILE = 3600; // 1 hour
 // Text layer: Workers AI models in this order, then OpenRouter.
 const CF_TEXT_MODELS = ["@cf/ibm-granite/granite-4.0-h-micro"];
 
+// One card per web result, so a search fills the grid.
+const CARD_LIMIT = 3;
+
 // Cloudflare AI Search, public endpoint of the cards instance.
 //   POST /search            -> the notes: what the cards already know (human side)
 //   POST /chat/completions  -> the model's end: ask the notes, and write new ones
@@ -211,6 +214,7 @@ body{background:#121212;color:#f5f5f5;font-family:system-ui,sans-serif;display:f
 .note-b{font-size:11px;color:#8a8a8a;line-height:1.4;margin-bottom:6px}
 .relbtn{font-size:10px;padding:3px 9px;margin-right:6px;background:#242424;color:#d0d0d0;border:1px solid #3a3a3a;border-radius:999px;cursor:pointer}
 .relbtn:hover{border-color:#c41e3a}
+.fb{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
 .provider{font-size:10px;color:#666;margin-top:8px}
 .input{padding:12px 16px;background:#1e1e1e;border-top:1px solid #333;display:flex;gap:8px;flex:0 0 auto}
 .input input{flex:1;padding:12px;background:#121212;border:1px solid #333;border-radius:8px;color:#f5f5f5;font-size:15px;outline:none}
@@ -229,6 +233,7 @@ body{background:#121212;color:#f5f5f5;font-family:system-ui,sans-serif;display:f
 </div>
 <script>
 var CHAT_URL = 'https://cods.ai-n.workers.dev/chat';
+var FEEDBACK_URL = 'https://cods.ai-n.workers.dev/feedback';
 var cards = [];
 var el = {
   cards: document.getElementById('cards'),
@@ -276,6 +281,27 @@ function notes(list, idx) {
       '<button class="relbtn" data-act="extract" data-card="' + idx + '" data-note="' + i + '">Extract</button></div>';
   }).join('') + '</div>';
 }
+function fb(idx) {
+  return '<div class="fb">' +
+    '<button class="relbtn" data-act="fb" data-fb="more" data-card="' + idx + '">More like this</button>' +
+    '<button class="relbtn" data-act="fb" data-fb="deeper" data-card="' + idx + '">Go deeper</button>' +
+    '<button class="relbtn" data-act="fb" data-fb="again" data-card="' + idx + '">Search again</button>' +
+    '<button class="relbtn" data-act="fb" data-fb="wrong" data-card="' + idx + '">Wrong</button>' +
+    '</div>';
+}
+function feedback(c, act) {
+  if (!c) return;
+  var q = c.prompt || c.q;
+  fetch(FEEDBACK_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: act, q: q, a: c.a, decision: c.decision || null })
+  }).catch(function () {});
+  if (act === 'more') sendPrompt('Give me three other angles on this, as separate cards: ' + q);
+  else if (act === 'deeper') sendPrompt('Go deeper on this and show the reasoning: ' + q);
+  else if (act === 'again') sendPrompt(q + ' — search the web again and give me the freshest sources');
+  else sendPrompt('That card was wrong or off target:\n' + String(c.a || '').slice(0, 400) + '\n\nAnswer it properly instead: ' + q);
+}
 function render() {
   el.count.textContent = cards.length;
   if (!cards.length) {
@@ -284,7 +310,7 @@ function render() {
   }
   el.cards.innerHTML = cards.map(function (c, i) {
     return '<div class="card"><div class="card-q">' + esc(c.q) + '</div>' +
-      '<div class="card-a">' + esc(c.a) + meta(c.decision, c.sources) + notes(c.related, i) + '</div>' +
+      '<div class="card-a">' + esc(c.a) + meta(c.decision, c.sources) + notes(c.related, i) + fb(i) + '</div>' +
       '<div class="provider">via ' + esc(c.provider) + '</div></div>';
   }).join('');
 }
@@ -292,10 +318,14 @@ function send() {
   var p = el.prompt.value.trim();
   if (!p) return;
   el.prompt.value = '';
+  sendPrompt(p);
+}
+function sendPrompt(p) {
   el.send.disabled = true;
   el.send.textContent = '...';
 
-  var card = { q: p, a: 'Thinking...', provider: 'pending', decision: null, sources: null };
+  var context = cards.map(function (c) { return { q: c.q, r: c.a }; });
+  var card = { q: p, prompt: p, a: 'Thinking...', provider: 'pending', decision: null, sources: null };
   cards.push(card);
   render();
 
@@ -304,7 +334,7 @@ function send() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       prompt: p,
-      cards: cards.slice(0, -1).map(function (c) { return { q: c.q, r: c.a }; })
+      cards: context
     })
   }).then(function (r) {
     return r.text().then(function (text) {
@@ -318,11 +348,28 @@ function send() {
         card.provider = 'error ' + r.status;
         card.decision = d.decision || null;
       } else {
-        card.a = d.answer || d.response || '(no response)';
-        card.provider = (d.provider || 'openrouter') + (d.route ? ' · ' + d.route : '');
-        card.decision = d.decision || null;
-        card.sources = d.sources || null;
-        card.related = d.related || null;
+        var got = d.cards && d.cards.length ? d.cards : null;
+        if (got && got.length > 1) {
+          var at = cards.indexOf(card);
+          if (at >= 0) cards.splice(at, 1);
+          got.forEach(function (c, i) {
+            cards.push({
+              q: p + ' · ' + (i + 1) + (c.source && c.source.title ? ' — ' + c.source.title : ''),
+              prompt: p,
+              a: c.a,
+              provider: (c.provider || d.provider || '') + (d.route ? ' · ' + d.route : ''),
+              decision: d.decision || null,
+              sources: c.source ? [c.source] : (d.sources || null),
+              related: d.related || null
+            });
+          });
+        } else {
+          card.a = d.answer || d.response || '(no response)';
+          card.provider = (d.provider || 'openrouter') + (d.route ? ' · ' + d.route : '');
+          card.decision = d.decision || null;
+          card.sources = d.sources || null;
+          card.related = d.related || null;
+        }
       }
     });
   }).catch(function (e) {
@@ -342,6 +389,10 @@ el.cards.onclick = function (e) {
     e.stopPropagation();
     var idx = Number(btn.getAttribute('data-card'));
     var c = cards[idx];
+    if (btn.getAttribute('data-act') === 'fb') {
+      feedback(c, btn.getAttribute('data-fb'));
+      return;
+    }
     var n = c && c.related && c.related[Number(btn.getAttribute('data-note'))];
     if (!c || !n) return;
     var head = btn.getAttribute('data-act') === 'combine'
@@ -379,6 +430,7 @@ export default {
         ai_search_instance: env.AI_SEARCH_INSTANCE || AI_SEARCH_INSTANCE,
         index_writer: indexHandle(env) ? "binding" : env.CF_ACCOUNT_ID && env.AI_SEARCH_TOKEN ? "rest" : "none",
         text_models: CF_TEXT_MODELS,
+        card_limit: CARD_LIMIT,
         openrouter: !!env.OPENROUTER_API_KEY,
         chat_model: env.CF_CHAT_MODEL || null,
         kv: !!env.KV,
@@ -404,6 +456,11 @@ export default {
     if (url.pathname === "/notes") {
       if (request.method !== "POST") return json({ error: "Use POST" }, 405);
       return handleNotes(request, env);
+    }
+
+    if (url.pathname === "/feedback") {
+      if (request.method !== "POST") return json({ error: "Use POST" }, 405);
+      return handleFeedback(request, env);
     }
 
     if (url.pathname === "/chat") {
@@ -789,6 +846,39 @@ async function handleCards(request, env) {
   return json({ count: results.length, results });
 }
 
+// What the human thought of a card. Saved as a note so the decision layer
+// accumulates which answers held up and which did not.
+async function handleFeedback(request, env) {
+  const { body, error } = await readBody(request);
+  if (error) return error;
+
+  const action = String(body.action || "").trim();
+  if (!action) return json({ error: "action is required" }, 400);
+
+  const q = String(body.q || body.prompt || "").trim();
+  const a = String(body.a || body.answer || "").trim();
+  const decision = body.decision || null;
+  const note = [
+    "Feedback: " + action,
+    "Domain: " + ((decision && decision.domain) || "unknown"),
+    "Intent: " + ((decision && decision.intent) || "unknown"),
+    "Question: " + q,
+    "Card: " + String(a).slice(0, 2000),
+  ].join("\n");
+
+  try {
+    const indexed = await indexCard(env, {
+      q: "feedback/" + action + ": " + q.slice(0, 120),
+      a: note,
+      decision,
+      sources: null,
+    });
+    return json({ action, ok: true, indexed });
+  } catch (err) {
+    return json({ action, ok: true, indexed: "not indexed: " + err.message });
+  }
+}
+
 // The model's side of the notes, OpenAI-compatible.
 async function handleNotes(request, env) {
   const { body, error } = await readBody(request);
@@ -963,6 +1053,50 @@ async function handleChat(request, env) {
 
   const route = sources.length ? "web → llm" : "llm";
 
+  // 4b. Cards — a search with several results becomes several cards.
+  const wanted = Number(body.cards_per_result || CARD_LIMIT);
+  const picked = uniqueSources(sources).slice(0, wanted > 0 ? wanted : CARD_LIMIT);
+  if (picked.length >= 2) {
+    const built = await Promise.all(
+      picked.map(async (s, i) => {
+        const one = messages.concat([
+          {
+            role: "system",
+            content:
+              "Write the card for source [" + (i + 1) + "] only: " + s.title + " — " + s.url + "\n" + s.description +
+              "\nSay what this source contributes about the question, in two to four sentences. " +
+              "No preamble, and do not restate the question.",
+          },
+        ]);
+        try {
+          const r = await askText(env, one, Object.assign({}, body, { max_tokens: body.max_tokens || 700 }));
+          return { text: r.text, provider: r.provider, trace: r.trace, source: { title: s.title, url: s.url } };
+        } catch (err) {
+          failures.push("source " + (i + 1) + ": " + err.message);
+          return null;
+        }
+      })
+    );
+    const cards = built
+      .filter(Boolean)
+      .map((c) => ({ q: prompt, a: c.text, provider: c.provider, source: c.source, decision: slimDecision(decision) }));
+    if (cards.length >= 2) {
+      return finish(env, key, plan, {
+        prompt,
+        related,
+        relatedError,
+        answer: cards[0].a,
+        cards,
+        provider: cards[0].provider,
+        route,
+        decision,
+        sources,
+        trace: cards[0].trace,
+        searchError,
+      });
+    }
+  }
+
   // 5. Text: Workers AI models in order, then OpenRouter.
   const cfModels = unique(
     []
@@ -1103,6 +1237,89 @@ function textFrom(aiResponse) {
   return "";
 }
 
+function uniqueSources(sources) {
+  const seen = new Set();
+  return (sources || []).filter((s) => {
+    const url = String((s && s.url) || "");
+    if (!url || seen.has(url)) return false;
+    seen.add(url);
+    return true;
+  });
+}
+
+function slimDecision(decision) {
+  if (!decision) return null;
+  return {
+    intent: decision.intent,
+    domain: decision.domain,
+    depth: decision.depth,
+    tone: decision.tone,
+    needs_web: decision.needs_web,
+    sensitive: decision.sensitive,
+  };
+}
+
+// One place that knows the text order: Workers AI models, OpenRouter, then
+// CF_CHAT_MODEL. Throws with every failure when nothing answered.
+async function askText(env, messages, body) {
+  const failures = [];
+  const settings = { max_tokens: body.max_tokens || 2000, temperature: body.temperature ?? 0.7 };
+
+  const cfModels = unique(
+    []
+      .concat(
+        Array.isArray(body.cf_models) ? body.cf_models : [],
+        env.CF_TEXT_MODELS ? String(env.CF_TEXT_MODELS).split(",") : [],
+        CF_TEXT_MODELS
+      )
+      .map((m) => String(m || "").trim())
+      .filter(Boolean)
+  );
+
+  if (env.AI) {
+    for (const cfModel of cfModels) {
+      try {
+        const text = textFrom(await env.AI.run(cfModel, Object.assign({ messages }, settings)));
+        if (text) return { text, provider: "clef-flash → " + cfModel, trace: [{ source: "workers-ai", model: cfModel }] };
+        failures.push(cfModel + ": empty response");
+      } catch (err) {
+        failures.push(cfModel + ": " + err.message);
+      }
+    }
+  }
+
+  if (env.OPENROUTER_API_KEY) {
+    const models = unique([body.model, env.OPENROUTER_MODEL, ...OR_MODELS].filter(Boolean));
+    const orErrors = [];
+    for (const model of models) {
+      try {
+        const text = await callOpenRouter(env, model, messages, body);
+        return { text, provider: "clef-flash → openrouter", trace: [{ source: "openrouter", model }] };
+      } catch (err) {
+        orErrors.push(model + ": " + err.message);
+        if (err.status && err.status !== 400 && err.status !== 404) break;
+      }
+    }
+    failures.push("openrouter: " + orErrors.join(" | "));
+  } else {
+    failures.push("openrouter: OPENROUTER_API_KEY is not set on this Worker");
+  }
+
+  if (env.CF_CHAT_MODEL && env.AI) {
+    try {
+      const text = textFrom(await env.AI.run(env.CF_CHAT_MODEL, Object.assign({ messages }, settings)));
+      if (text) return { text, provider: "clef-flash → workers-ai", trace: [{ source: "workers-ai", model: env.CF_CHAT_MODEL }] };
+      failures.push("workers-ai: empty response");
+    } catch (err) {
+      failures.push("workers-ai: " + err.message);
+    }
+  }
+
+  const err = new Error(failures.join(" | "));
+  err.failures = failures;
+  throw err;
+}
+
 function unique(list) {
   return Array.from(new Set(list));
 }
@@ -1111,11 +1328,12 @@ async function finish(
   env,
   key,
   plan,
-  { prompt, answer, provider, route, decision, sources, trace, searchError, related, relatedError }
+  { prompt, answer, provider, route, decision, sources, trace, searchError, related, relatedError, cards }
 ) {
   const payload = {
     answer,
     response: answer,
+    cards: cards && cards.length ? cards : null,
     provider,
     route,
     decision: decision
@@ -1136,11 +1354,23 @@ async function finish(
     cached: false,
   };
 
-  // Write the card back, so the next question finds it as a note.
-  try {
-    payload.indexed = await indexCard(env, { q: prompt, a: answer, decision, sources });
-  } catch (err) {
-    payload.indexed = "not indexed: " + err.message;
+  // Write every card back, so the next question finds it as a note.
+  if (cards && cards.length) {
+    const listed = [];
+    for (const c of cards) {
+      try {
+        listed.push(await indexCard(env, { q: c.q || prompt, a: c.a, decision, sources: c.source ? [c.source] : sources }));
+      } catch (err) {
+        listed.push("not indexed: " + err.message);
+      }
+    }
+    payload.indexed = listed;
+  } else {
+    try {
+      payload.indexed = await indexCard(env, { q: prompt, a: answer, decision, sources });
+    } catch (err) {
+      payload.indexed = "not indexed: " + err.message;
+    }
   }
 
   if (env.KV && answer) {
