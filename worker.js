@@ -425,6 +425,11 @@ export default {
         clef: !!env.AI,
         websearch: !!(env.AI && typeof env.AI.websearch === "function"),
         search_provider: env.SEARCH_PROVIDER || "ceramic",
+        search_url: env.SEARCH_URL ? "configured" : null,
+        search_chain: env.SEARCH_URL
+          ? ["search-url", "cloudflare", "bing", "duckduckgo", "github", "wikipedia"]
+          : ["cloudflare", "bing", "duckduckgo", "github", "wikipedia"],
+        github_token: !!env.GITHUB_TOKEN,
         gateway: env.AI_GATEWAY_ID || "default",
         ai_search: aiSearchBase(env),
         ai_search_instance: env.AI_SEARCH_INSTANCE || AI_SEARCH_INSTANCE,
@@ -829,17 +834,102 @@ async function wikipediaSearch(query, limit) {
   );
 }
 
+function xmlText(s) {
+  return stripTags(String(s || "").replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1"));
+}
+
+// Bing publishes results as RSS, which needs no key and survives egress
+// filtering better than its HTML page does.
+async function bingSearch(query, limit) {
+  const res = await fetch(
+    "https://www.bing.com/search?format=rss&count=" + limit + "&q=" + encodeURIComponent(String(query).slice(0, 300)),
+    {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; cards/1.0)",
+        Accept: "application/rss+xml, application/xml, text/xml",
+      },
+    }
+  );
+  if (!res.ok) throw new Error("bing HTTP " + res.status);
+  const xml = await res.text();
+  const out = [];
+  const re = /<item>([\s\S]*?)<\/item>/gi;
+  let m;
+  while ((m = re.exec(xml)) && out.length < limit) {
+    const block = m[1];
+    const url = xmlText((/<link>([\s\S]*?)<\/link>/i.exec(block) || [])[1]);
+    if (!/^https?:\/\//.test(url)) continue;
+    const title = xmlText((/<title>([\s\S]*?)<\/title>/i.exec(block) || [])[1]);
+    const description = xmlText((/<description>([\s\S]*?)<\/description>/i.exec(block) || [])[1]);
+    out.push({ url, title: title || url, description: description.slice(0, 800) });
+  }
+  return out;
+}
+
+// Repositories as sources: a question about building something gets real
+// projects back, which the card builder turns into principles.
+async function githubSearch(env, query, limit) {
+  const headers = { Accept: "application/vnd.github+json", "User-Agent": "cards/1.0" };
+  if (env.GITHUB_TOKEN) headers.Authorization = "Bearer " + env.GITHUB_TOKEN;
+  const res = await fetch(
+    "https://api.github.com/search/repositories?sort=stars&per_page=" +
+      limit +
+      "&q=" +
+      encodeURIComponent(String(query).slice(0, 256)),
+    { headers }
+  );
+  if (!res.ok) throw new Error("github HTTP " + res.status);
+  const data = await res.json();
+  return ((data && data.items) || []).slice(0, limit).map((repo) => ({
+    url: repo.html_url,
+    title: String(repo.full_name || "") + (repo.stargazers_count != null ? " (" + repo.stargazers_count + " stars)" : ""),
+    description: String(repo.description || "").slice(0, 800),
+  }));
+}
+
+// His own search Worker, deployed from any repository, is pointed at with
+// SEARCH_URL. {q} is swapped when present, otherwise the query is appended.
+// Any reply shaped as an array or {results|items|sources|data|hits} works.
+async function externalSearch(env, query, limit) {
+  const base = String(env.SEARCH_URL || "");
+  if (!base) throw new Error("SEARCH_URL is not set");
+  const method = String(env.SEARCH_METHOD || "GET").toUpperCase() === "POST" ? "POST" : "GET";
+  const q = encodeURIComponent(String(query).slice(0, 300));
+  const target = base.indexOf("{q}") >= 0 ? base.split("{q}").join(q) : base + (base.indexOf("?") >= 0 ? "&" : "?") + "q=" + q;
+  const init = {
+    method: method,
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+  };
+  if (method === "POST") init.body = JSON.stringify({ query: String(query), limit: limit });
+  const res = await fetch(target, init);
+  if (!res.ok) throw new Error("search worker HTTP " + res.status);
+  const data = await res.json();
+  const list = Array.isArray(data)
+    ? data
+    : (data && (data.results || data.items || data.sources || data.data || data.hits)) || [];
+  return list
+    .slice(0, limit)
+    .map((hit) => ({
+      url: hit.url || hit.link || hit.href || "",
+      title: hit.title || hit.name || hit.url || hit.link || "",
+      description: String(hit.description || hit.snippet || hit.text || hit.summary || "").slice(0, 800),
+    }))
+    .filter((hit) => /^https?:\/\//.test(String(hit.url)));
+}
+
 // Providers in order of quality. The first that returns two or more pages
 // wins; a single page is kept as a fallback so one source still grounds.
 async function webSearch(env, query) {
   const limit = Number(env.SEARCH_LIMIT || 5);
   const errors = [];
   let best = null;
-  const providers = [
-    ["cloudflare", () => cloudflareWebSearch(env, query, limit)],
-    ["duckduckgo", () => ddgSearch(query, limit)],
-    ["wikipedia", () => wikipediaSearch(query, limit)],
-  ];
+  const providers = [];
+  if (env.SEARCH_URL) providers.push(["search-url", () => externalSearch(env, query, limit)]);
+  providers.push(["cloudflare", () => cloudflareWebSearch(env, query, limit)]);
+  providers.push(["bing", () => bingSearch(query, limit)]);
+  providers.push(["duckduckgo", () => ddgSearch(query, limit)]);
+  providers.push(["github", () => githubSearch(env, query, limit)]);
+  providers.push(["wikipedia", () => wikipediaSearch(query, limit)]);
   for (const [via, run] of providers) {
     try {
       const found = (await run()).filter((s) => s && s.url);

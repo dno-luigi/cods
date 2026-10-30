@@ -6,6 +6,8 @@ let searchChunks = [];
 let failSearch = null;
 let uploaded = [];
 let ddgBody = null;
+let bingBody = null;
+let extResults = [];
 
 globalThis.fetch = function (url, opts) {
   calls.push(String(url));
@@ -27,6 +29,15 @@ globalThis.fetch = function (url, opts) {
   }
   if (String(url).includes("html.duckduckgo.com")) {
     return Promise.resolve(new Response(ddgBody || "<html></html>", { status: 200 }));
+  }
+  if (String(url).includes("bing.com/search")) {
+    return Promise.resolve(new Response(bingBody || "<rss><channel></channel></rss>", { status: 200 }));
+  }
+  if (String(url).includes("api.github.com")) {
+    return Promise.resolve(new Response(JSON.stringify({ items: [] }), { status: 200 }));
+  }
+  if (String(url).includes("search.example")) {
+    return Promise.resolve(new Response(JSON.stringify({ results: extResults }), { status: 200 }));
   }
   if (String(url).includes("openrouter.ai")) {
     return Promise.resolve(new Response(JSON.stringify({ error: { message: "no credits" } }), { status: 402 }));
@@ -299,6 +310,38 @@ function check(name, cond, extra) {
   check("feedback note names the domain", uploaded[0].content.includes("Domain: code"), uploaded[0].content);
   const bad = await post("/feedback", {}, env);
   check("feedback needs an action", bad.status === 400);
+}
+
+
+// 12c. a search worker he deploys himself wins when SEARCH_URL is set
+{
+  calls = []; aiInputs = [];
+  extResults = [
+    { title: "Self hosted one", url: "https://ext.example/1", description: "first hit" },
+    { title: "Self hosted two", url: "https://ext.example/2", description: "second hit" },
+  ];
+  const env = makeEnv({ SEARCH_URL: "https://search.example/api?format=json" });
+  env.AI.websearch = async () => ({ ok: false, status: 402 });
+  const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
+  check("SEARCH_URL is asked first", d.search_via === "search-url", d.search_via);
+  check("his own search fills the grid", d.cards && d.cards.length === 2, d.cards && d.cards.length);
+  check("his own search gets the query", calls.some((u) => u.indexOf("search.example") >= 0 && u.indexOf("q=") >= 0), calls);
+  extResults = [];
+}
+
+// 12d. bing rss carries the search when cloudflare 402s
+{
+  calls = []; aiInputs = [];
+  bingBody = '<rss><channel>' +
+    '<item><title>Bing one</title><link>https://bing.example/a</link><description>alpha</description></item>' +
+    '<item><title>Bing two</title><link>https://bing.example/b</link><description>beta</description></item>' +
+    '</channel></rss>';
+  const env = makeEnv();
+  env.AI.websearch = async () => ({ ok: false, status: 402 });
+  const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
+  check("402 falls to bing rss", d.search_via === "bing", d.search_via);
+  check("bing rss items become cards", d.cards && d.cards.length === 2 && d.cards[0].source.url === "https://bing.example/a", d.cards && d.cards.length);
+  bingBody = null;
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");
