@@ -445,7 +445,28 @@ export default {
         openrouter: !!env.OPENROUTER_API_KEY,
         chat_model: env.CF_CHAT_MODEL || null,
         kv: !!env.KV,
+        prefs: !!env.KV,
         domains: Object.keys(DOMAINS),
+      });
+    }
+
+    if (url.pathname === "/prefs") {
+      // POST { reset: true } forgets everything learned, so drift can be undone.
+      if (request.method === "POST") {
+        const { body, error } = await readBody(request);
+        if (error) return error;
+        if (!body || body.reset !== true) return json({ error: "Send { reset: true }" }, 400);
+        const cleared = await savePrefs(env, { actions: {}, domains: {}, events: [], updated: null });
+        return json({ reset: true, cleared, hint: "" });
+      }
+      const prefs = await loadPrefs(env);
+      return json({
+        kv: !!env.KV,
+        actions: prefs.actions,
+        domains: prefs.domains,
+        events: (prefs.events || []).slice(-10),
+        hint: prefsHint(prefs),
+        updated: prefs.updated,
       });
     }
 
@@ -1355,6 +1376,56 @@ async function handleCards(request, env) {
 
 // What the human thought of a card. Saved as a note so the decision layer
 // accumulates which answers held up and which did not.
+// ─── what the user's feedback taught the system ─────────────────────────────
+// One record in KV. Every card press moves a counter, and every later question
+// reads those counters back as a sentence, so the decision layer and the card
+// writer both lean towards what this person has actually rewarded.
+const PREFS_KEY = "prefs:v1";
+
+async function loadPrefs(env) {
+  const empty = { actions: {}, domains: {}, events: [], updated: null };
+  if (!env.KV) return empty;
+  try {
+    const raw = await env.KV.get(PREFS_KEY);
+    if (!raw) return empty;
+    const parsed = JSON.parse(raw) || {};
+    return {
+      actions: parsed.actions && typeof parsed.actions === "object" ? parsed.actions : {},
+      domains: parsed.domains && typeof parsed.domains === "object" ? parsed.domains : {},
+      events: Array.isArray(parsed.events) ? parsed.events : [],
+      updated: parsed.updated || null,
+    };
+  } catch (err) {
+    return empty;
+  }
+}
+
+async function savePrefs(env, prefs) {
+  if (!env.KV) return false;
+  prefs.updated = new Date().toISOString();
+  prefs.events = (prefs.events || []).slice(-24);
+  await env.KV.put(PREFS_KEY, JSON.stringify(prefs));
+  return true;
+}
+
+function prefsHint(prefs) {
+  const a = (prefs && prefs.actions) || {};
+  const parts = [];
+  if (a.deeper) parts.push("wants more depth (deeper x" + a.deeper + ")");
+  if (a.more) parts.push("wants more angles (more x" + a.more + ")");
+  if (a.again) parts.push("wants fresher sources (again x" + a.again + ")");
+  if (a.wrong) parts.push("called earlier answers off target (wrong x" + a.wrong + ")");
+  const domains = Object.entries((prefs && prefs.domains) || {})
+    .filter(([, v]) => v && (v.n || 0) > 0)
+    .sort((x, y) => (y[1].n || 0) - (x[1].n || 0))
+    .slice(0, 3)
+    .map(([d, v]) => d + " (" + (v.n || 0) + ")");
+  let hint = "";
+  if (parts.length) hint = "Learned from this user's cards: " + parts.join("; ") + ".";
+  if (domains.length) hint += (hint ? " " : "") + "Most feedback is in: " + domains.join(", ") + ".";
+  return hint.trim();
+}
+
 async function handleFeedback(request, env) {
   const { body, error } = await readBody(request);
   if (error) return error;
@@ -1373,6 +1444,18 @@ async function handleFeedback(request, env) {
     "Card: " + String(a).slice(0, 2000),
   ].join("\n");
 
+  // Feedback is the learning signal: each press moves a counter that the next
+  // question reads back, so the system tightens on this person's preferences.
+  const prefs = await loadPrefs(env);
+  const domain = String((decision && decision.domain) || "unknown");
+  prefs.actions[action] = (prefs.actions[action] || 0) + 1;
+  const slot = prefs.domains[domain] || { n: 0 };
+  slot.n = (slot.n || 0) + 1;
+  slot[action] = (slot[action] || 0) + 1;
+  prefs.domains[domain] = slot;
+  prefs.events.push({ at: new Date().toISOString(), action, domain, q: q.slice(0, 120) });
+  const remembered = await savePrefs(env, prefs);
+
   try {
     const indexed = await indexCard(env, {
       q: "feedback/" + action + ": " + q.slice(0, 120),
@@ -1380,9 +1463,9 @@ async function handleFeedback(request, env) {
       decision,
       sources: null,
     });
-    return json({ action, ok: true, indexed });
+    return json({ action, ok: true, indexed, learned: prefsHint(prefs), remembered });
   } catch (err) {
-    return json({ action, ok: true, indexed: "not indexed: " + err.message });
+    return json({ action, ok: true, indexed: "not indexed: " + err.message, learned: prefsHint(prefs), remembered });
   }
 }
 
@@ -1455,7 +1538,9 @@ async function handleChat(request, env) {
   if (!prompt) return json({ error: "No prompt" }, 400);
 
   const contextCards = Array.isArray(body.cards) ? body.cards.filter((c) => c && c.q) : [];
-  const state = buildState(prompt, contextCards);
+  const prefs = await loadPrefs(env);
+  const learned = prefsHint(prefs);
+  const state = [buildState(prompt, contextCards), learned].filter(Boolean).join("\n\n");
   const failures = [];
 
   // 1. Decide — clef-flash classifies the request.
@@ -1467,6 +1552,7 @@ async function handleChat(request, env) {
     decisionError = err.message;
     failures.push("clef-flash: " + err.message);
   }
+  if (decision && learned) decision.preferences = learned;
 
   // 2. Cache — answered before?
   const key = await cacheKeyFor(prompt, contextCards, body, env);
@@ -1522,7 +1608,7 @@ async function handleChat(request, env) {
   }
 
   // 4. Answer — grounded in whatever we have.
-  const systemBits = [styleHint(decision), plan.pack.guidance, plan.care ? plan.pack.safety : ""]
+  const systemBits = [styleHint(decision), plan.pack.guidance, plan.care ? plan.pack.safety : "", learned]
     .filter(Boolean);
   if (plan.pack.principles && plan.pack.principles.length) {
     systemBits.push(plan.pack.principles.join(" "));
@@ -1834,6 +1920,7 @@ async function synthesizeCards(env, prompt, answer, decision, wanted, body, fail
           content:
             "You write cards for a knowledge app. Each card stands alone and is about the domain itself, not about any document.\n" +
             (decision && decision.domain ? "Domain: " + decision.domain + "\n" : "") +
+            (decision && decision.preferences ? decision.preferences + "\n" : "") +
             angle.ask,
         },
         {

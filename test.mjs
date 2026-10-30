@@ -594,5 +594,55 @@ function check(name, cond, extra) {
   check("no binding means no harness step", plain.ocode === false && plain.search_chain.indexOf("harness") === -1, plain.search_chain);
 }
 
+
+// 16a. feedback is remembered and summarised
+{
+  calls = [];
+  const env = makeEnv({});
+  await post("/feedback", { action: "deeper", q: "trading journal", decision: { domain: "finance" } }, env);
+  await post("/feedback", { action: "deeper", q: "trading journal", decision: { domain: "finance" } }, env);
+  const third = await (await post("/feedback", { action: "wrong", q: "crypto picks", decision: { domain: "finance" } }, env)).json();
+  check("the feedback reply echoes what was learned", /deeper x2/.test(String(third.learned)), third.learned);
+  const p = await (await worker.fetch(new Request("https://cods.example/prefs"), env)).json();
+  check("presses are counted per action", p.actions.deeper === 2 && p.actions.wrong === 1, p.actions);
+  check("presses are counted per domain", p.domains.finance.n === 3, p.domains);
+  check("a hint is derived from them", /deeper x2/.test(p.hint) && /finance \(3\)/.test(p.hint), p.hint);
+  check("the summary is timestamped", typeof p.updated === "string" && p.updated.length > 10, p.updated);
+}
+
+// 16b. what was learned reaches the decision model and the cards
+{
+  calls = []; aiInputs = [];
+  const env = makeEnv({});
+  await post("/feedback", { action: "deeper", q: "x", decision: { domain: "finance" } }, env);
+  const d = await (await post("/chat", { prompt: "what makes a good trading journal", cards: [], use_cache: false }, env)).json();
+  const clefCall = aiInputs.find((i) => i.model.indexOf("clef") >= 0);
+  check("the decision model is told the preferences", /deeper x1/.test(JSON.stringify(clefCall && clefCall.input)), "no preference in clef state");
+  check("three cards still come back", d.cards.length === 3, d.cards.length);
+  const cardCall = aiInputs.find((i) => i.model.indexOf("@cf/ibm-granite") >= 0);
+  check("the card writer is told too", /deeper x1/.test(JSON.stringify(cardCall && cardCall.input)), "no preference in card prompt");
+}
+
+// 16c. no KV means empty preferences, never a crash
+{
+  const env = makeEnv({});
+  delete env.KV;
+  const p = await (await worker.fetch(new Request("https://cods.example/prefs"), env)).json();
+  check("prefs without KV are empty", p.kv === false && Object.keys(p.actions).length === 0 && p.hint === "", p);
+}
+
+
+// 16d. what was learned can be cleared again
+{
+  const env = makeEnv({});
+  await post("/feedback", { action: "again", q: "x", decision: { domain: "general" } }, env);
+  const before = await (await worker.fetch(new Request("https://cods.example/prefs"), env)).json();
+  check("there is something to clear", before.actions.again === 1, before.actions);
+  const reset = await (await post("/prefs", { reset: true }, env)).json();
+  check("reset clears the counters", reset.reset === true && reset.hint === "", reset);
+  const after = await (await worker.fetch(new Request("https://cods.example/prefs"), env)).json();
+  check("and it stays clear", Object.keys(after.actions).length === 0 && after.hint === "", after);
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
