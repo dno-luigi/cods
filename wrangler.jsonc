@@ -7,6 +7,12 @@
   "ai": {
     "binding": "AI"
   },
+  // Headless Chromium for web search: a real page loads the results the way a
+  // visitor would. Requires the Workers Paid plan; the search chain skips it
+  // whenever this binding is absent, so removing it is always safe.
+  "browser": {
+    "binding": "BROWSER"
+  },
   "kv_namespaces": [
     {
       "binding": "KV",

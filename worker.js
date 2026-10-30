@@ -426,7 +426,9 @@ export default {
         websearch: !!(env.AI && typeof env.AI.websearch === "function"),
         search_provider: env.SEARCH_PROVIDER || "ceramic",
         search_url: env.SEARCH_URL ? "configured" : null,
+        browser: !!env.BROWSER,
         search_chain: (env.SEARCH_URL ? ["search-url"] : [])
+          .concat(env.BROWSER ? ["browser"] : [])
           .concat(["cloudflare"])
           .concat(String(env.SEARCH_BING || "") === "1" ? ["bing"] : [])
           .concat(["duckduckgo", "github", "wikipedia"]),
@@ -919,6 +921,89 @@ async function externalSearch(env, query, limit) {
     .filter((hit) => /^https?:\/\//.test(String(hit.url)));
 }
 
+// Headless Chromium from Cloudflare's own edge (Workers Browser Rendering).
+// A real page loads the results HTML the way a visitor would, which is the
+// one route that survives the blocks that hit plain fetches from a Worker.
+// Needs the `browser` binding (env.BROWSER); without it the chain skips this.
+const BROWSER_ENGINES = [
+  {
+    name: "bing",
+    url: (q) => "https://www.bing.com/search?count=20&q=" + q,
+    selector: "li.b_algo",
+  },
+  {
+    name: "duckduckgo",
+    url: (q) => "https://html.duckduckgo.com/html/?q=" + q,
+    selector: "div.result, div.web-result",
+  },
+];
+
+async function browserPuppeteer() {
+  if (globalThis.__codsPuppeteer) return globalThis.__codsPuppeteer;
+  const mod = await import("@cloudflare/puppeteer");
+  return mod.default || mod;
+}
+
+// Rows straight off the page: drop anything that is not a real link, and
+// keep the first `limit` distinct URLs.
+function browserItems(rows, limit) {
+  const out = [];
+  const seen = new Set();
+  for (const row of rows || []) {
+    const url = String((row && row.url) || "");
+    if (!/^https?:\/\//.test(url)) continue;
+    if (seen.has(url)) continue;
+    seen.add(url);
+    out.push({
+      url,
+      title: stripTags(row.title) || url,
+      description: String(row.description || "").slice(0, 800),
+    });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+async function browserSearch(env, query, limit) {
+  if (!env.BROWSER) throw new Error("no BROWSER binding");
+  const puppeteer = await browserPuppeteer();
+  const q = encodeURIComponent(String(query).slice(0, 300));
+  const browser = await puppeteer.launch(env.BROWSER);
+  try {
+    for (const engine of BROWSER_ENGINES) {
+      let page = null;
+      try {
+        page = await browser.newPage();
+        await page.goto(engine.url(q), { waitUntil: "domcontentloaded", timeout: 15000 });
+        const rows = await page.evaluate((selector) => {
+          return Array.from(document.querySelectorAll(selector)).map((row) => {
+            const a = row.querySelector("h2 a") || row.querySelector("a");
+            const p = row.querySelector("p");
+            return {
+              url: a ? a.href : "",
+              title: a ? a.textContent.trim() : "",
+              description: p ? p.textContent.trim() : "",
+            };
+          });
+        }, engine.selector);
+        const items = browserItems(rows, limit);
+        if (items.length) return items;
+      } catch (err) {
+        // that engine did not load; the next one gets a turn
+      } finally {
+        try {
+          if (page) await page.close();
+        } catch (err) {}
+      }
+    }
+    return [];
+  } finally {
+    try {
+      await browser.close();
+    } catch (err) {}
+  }
+}
+
 // Providers in order of quality. The first that returns two or more pages
 // wins; a single page is kept as a fallback so one source still grounds.
 async function webSearch(env, query) {
@@ -927,6 +1012,7 @@ async function webSearch(env, query) {
   let best = null;
   const providers = [];
   if (env.SEARCH_URL) providers.push(["search-url", () => externalSearch(env, query, limit)]);
+  if (env.BROWSER) providers.push(["browser", () => browserSearch(env, query, limit)]);
   providers.push(["cloudflare", () => cloudflareWebSearch(env, query, limit)]);
   if (String(env.SEARCH_BING || "") === "1") providers.push(["bing", () => bingSearch(query, limit)]);
   providers.push(["duckduckgo", () => ddgSearch(query, limit)]);

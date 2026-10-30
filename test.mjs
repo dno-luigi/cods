@@ -385,5 +385,65 @@ function check(name, cond, extra) {
   check("a self hosted search leads the chain", h3.search_chain[0] === "search-url", h3.search_chain);
 }
 
+
+// 12g. the browser binding drives a real page and its rows become sources
+{
+  calls = []; aiInputs = []; extResults = [];
+  const closed = { pages: 0, browsers: 0 };
+  globalThis.__codsPuppeteer = {
+    launch: async () => ({
+      newPage: async () => ({
+        goto: async (url) => {
+          calls.push(url);
+        },
+        evaluate: async () => [
+          { url: "https://example.org/browser-one", title: "Cloudflare browser one", description: "from a real page" },
+          { url: "", title: "junk" },
+          { url: "https://example.org/browser-two", title: "Cloudflare browser two", description: "also real" },
+        ],
+        close: async () => {
+          closed.pages++;
+        },
+      }),
+      close: async () => {
+        closed.browsers++;
+      },
+    }),
+  };
+  const env = makeEnv({ BROWSER: {} });
+  const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
+  check("browser rows win the chain", d.search_via === "browser", d.search_via);
+  check(
+    "browser rows become cards",
+    d.cards.length === 2 && d.cards[0].source.url === "https://example.org/browser-one",
+    d.cards.map((c) => c.source && c.source.url)
+  );
+  check("the page and browser are closed", closed.browsers === 1 && closed.pages === 1, closed);
+  delete globalThis.__codsPuppeteer;
+}
+
+// 12h. a broken browser falls through instead of failing the request
+{
+  calls = []; aiInputs = [];
+  globalThis.__codsPuppeteer = {
+    launch: async () => {
+      throw new Error("browser offline");
+    },
+  };
+  const env = makeEnv({ BROWSER: {} });
+  const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
+  check("a browser failure is not fatal", !!d.cards && d.cards.length === 3, d.cards && d.cards.length);
+  check("the chain kept going after the browser", /browser offline/.test(String(d.search_error)), d.search_error);
+  delete globalThis.__codsPuppeteer;
+}
+
+// 12i. health reports the binding honestly
+{
+  const h = await (await worker.fetch(new Request("https://x/health"), makeEnv())).json();
+  check("no browser binding means no browser step", h.browser === false && h.search_chain.indexOf("browser") === -1, h.search_chain);
+  const h2 = await (await worker.fetch(new Request("https://x/health"), makeEnv({ BROWSER: {} }))).json();
+  check("health lists browser when bound", h2.browser === true && h2.search_chain.indexOf("browser") === 0, h2.search_chain);
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
