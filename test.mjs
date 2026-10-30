@@ -397,9 +397,10 @@ function check(name, cond, extra) {
           calls.push(url);
         },
         evaluate: async () => [
-          { url: "https://example.org/browser-one", title: "Cloudflare browser one", description: "from a real page" },
+          { url: "https://example.org/browser-one", title: "Cloudflare news browser one", description: "from a real page" },
           { url: "", title: "junk" },
-          { url: "https://example.org/browser-two", title: "Cloudflare browser two", description: "also real" },
+          { url: "https://example.org/junk", title: "Make vs. Makes", description: "grammar rules" },
+          { url: "https://example.org/browser-two", title: "Cloudflare news browser two", description: "also real" },
         ],
         close: async () => {
           closed.pages++;

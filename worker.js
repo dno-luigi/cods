@@ -925,16 +925,60 @@ async function externalSearch(env, query, limit) {
 // A real page loads the results HTML the way a visitor would, which is the
 // one route that survives the blocks that hit plain fetches from a Worker.
 // Needs the `browser` binding (env.BROWSER); without it the chain skips this.
+const STOPWORDS = new Set([
+  "what", "when", "where", "which", "while", "this", "that", "these", "those",
+  "with", "from", "into", "about", "your", "their", "there", "they", "them",
+  "then", "than", "have", "has", "had", "does", "did", "doing", "just", "only",
+  "also", "more", "most", "very", "much", "some", "such", "other", "been",
+  "being", "will", "would", "should", "could", "after", "before", "between",
+  "under", "over",
+]);
+
+function queryTerms(query) {
+  const seen = new Set();
+  const out = [];
+  for (const raw of String(query || "").toLowerCase().split(/[^a-z0-9]+/)) {
+    if (raw.length < 4) continue;
+    if (STOPWORDS.has(raw)) continue;
+    if (seen.has(raw)) continue;
+    seen.add(raw);
+    out.push(raw);
+  }
+  return out;
+}
+
+// How many distinct query words a page actually mentions. Search pages hand
+// back a did-you-mean result for anything they do not like, and that has to
+// be caught here rather than turned into a card.
+function relevanceOf(item, terms) {
+  if (!terms.length) return 1;
+  const hay = (
+    String(item.title || "") +
+    " " +
+    String(item.description || "") +
+    " " +
+    String(item.url || "")
+  ).toLowerCase();
+  let hits = 0;
+  for (const term of terms) if (hay.indexOf(term) >= 0) hits++;
+  return hits;
+}
+
 const BROWSER_ENGINES = [
+  {
+    name: "duckduckgo",
+    url: (q) => "https://html.duckduckgo.com/html/?q=" + q,
+    selector: "article.result, div.result",
+  },
+  {
+    name: "duckduckgo-lite",
+    url: (q) => "https://lite.duckduckgo.com/lite/?q=" + q,
+    selector: "a.result-link",
+  },
   {
     name: "bing",
     url: (q) => "https://www.bing.com/search?count=20&q=" + q,
     selector: "li.b_algo",
-  },
-  {
-    name: "duckduckgo",
-    url: (q) => "https://html.duckduckgo.com/html/?q=" + q,
-    selector: "div.result, div.web-result",
   },
 ];
 
@@ -977,7 +1021,7 @@ async function browserSearch(env, query, limit) {
         await page.goto(engine.url(q), { waitUntil: "domcontentloaded", timeout: 15000 });
         const rows = await page.evaluate((selector) => {
           return Array.from(document.querySelectorAll(selector)).map((row) => {
-            const a = row.querySelector("h2 a") || row.querySelector("a");
+            const a = row.matches && row.matches("a") ? row : row.querySelector("h2 a") || row.querySelector("a");
             const p = row.querySelector("p");
             return {
               url: a ? a.href : "",
@@ -1008,6 +1052,11 @@ async function browserSearch(env, query, limit) {
 // wins; a single page is kept as a fallback so one source still grounds.
 async function webSearch(env, query) {
   const limit = Number(env.SEARCH_LIMIT || 5);
+  const terms = queryTerms(query);
+  const need = Math.min(2, Math.max(1, terms.length));
+  // Engines that answer with did-you-mean pages, and the encyclopedia that
+  // happily returns an unrelated article, have to prove they are on topic.
+  const noisy = new Set(["browser", "bing", "wikipedia"]);
   const errors = [];
   let best = null;
   const providers = [];
@@ -1020,7 +1069,9 @@ async function webSearch(env, query) {
   providers.push(["wikipedia", () => wikipediaSearch(query, limit)]);
   for (const [via, run] of providers) {
     try {
-      const found = (await run()).filter((s) => s && s.url);
+      const fresh = (await run()).filter((s) => s && s.url);
+      const found = noisy.has(via) ? fresh.filter((s) => relevanceOf(s, terms) >= need) : fresh;
+      if (found.length < fresh.length) errors.push(via + ": dropped " + (fresh.length - found.length) + " off-topic");
       if (found.length >= 2) return { sources: found, via, errors };
       if (found.length) {
         if (!best || found.length > best.sources.length) best = { sources: found, via };
