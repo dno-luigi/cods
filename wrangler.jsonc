@@ -14,13 +14,14 @@
     }
   ],
   // Cards are written back to AI Search as notes.
-  //   namespace: AI-nspired   instance: NSM   on env.mainspace
+  //   namespace: ai-inspired   instance: NSM   on env.mainspace
+  // Namespaces must be lowercase (API code 7001), so no capitals here.
   // The worker falls back to the REST API (CF_ACCOUNT_ID + AI_SEARCH_TOKEN)
   // if this binding is missing.
   "ai_search_namespaces": [
     {
       "binding": "mainspace",
-      "namespace": "AI-nspired",
+      "namespace": "ai-inspired",
       "remote": true
     }
   ]
