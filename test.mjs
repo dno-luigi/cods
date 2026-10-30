@@ -259,6 +259,7 @@ function check(name, cond, extra) {
   check("one result still fills the grid", Array.isArray(d.cards) && d.cards.length === 3, d.cards && d.cards.length);
   check("each synthesized card is its own angle", new Set(d.cards.map((c) => c.kind)).size === 3, d.cards.map((c) => c.kind));
   check("synthesized cards claim no source", d.cards.every((c) => !c.source), d.cards);
+  check("synthesized cards carry their text", d.cards.every((c) => c.q === "latest cloudflare news" && c.a === "granite answer"), d.cards.map((c) => c.a));
   check("one result -> the plain answer", d.answer === "granite answer", d.answer);
 }
 

@@ -1235,12 +1235,23 @@ async function handleChat(request, env) {
     } catch (err) {
       failures.push("cards: " + err.message);
     }
+    // A synthesized card has to look like every other card: q for the header,
+    // a for the body, or the page renders three blanks.
+    const shaped = cards
+      .filter((c) => c && c.text)
+      .map((c) => ({
+        q: prompt,
+        a: c.text,
+        provider: c.provider,
+        kind: c.kind,
+        decision: slimDecision(decision),
+      }));
     return finish(env, key, plan, {
       prompt,
       related,
       relatedError,
       answer,
-      cards,
+      cards: shaped,
       provider,
       route,
       decision,
