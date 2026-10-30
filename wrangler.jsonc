@@ -4,6 +4,9 @@
   "workers_dev": true,
   "preview_urls": false,
   "compatibility_date": "2025-07-01",
+  // @cloudflare/puppeteer reaches for node:buffer, which the Worker runtime
+  // only provides with the nodejs_compat flag.
+  "compatibility_flags": ["nodejs_compat"],
   "ai": {
     "binding": "AI"
   },
