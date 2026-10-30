@@ -5,6 +5,7 @@ let aiInputs = [];
 let searchChunks = [];
 let failSearch = null;
 let uploaded = [];
+let ddgBody = null;
 
 globalThis.fetch = function (url, opts) {
   calls.push(String(url));
@@ -23,6 +24,9 @@ globalThis.fetch = function (url, opts) {
         { status: 200 }
       )
     );
+  }
+  if (String(url).includes("html.duckduckgo.com")) {
+    return Promise.resolve(new Response(ddgBody || "<html></html>", { status: 200 }));
   }
   if (String(url).includes("openrouter.ai")) {
     return Promise.resolve(new Response(JSON.stringify({ error: { message: "no credits" } }), { status: 402 }));
@@ -252,8 +256,27 @@ function check(name, cond, extra) {
   const env = makeEnv();
   env.AI.websearch = async () => ({ ok: true, json: async () => ({ items: [{ url: "https://only.example", title: "Only", description: "single" }] }) });
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
-  check("one result -> no cards array", d.cards === null, d.cards);
+  check("one result still fills the grid", Array.isArray(d.cards) && d.cards.length === 3, d.cards && d.cards.length);
+  check("each synthesized card is its own angle", new Set(d.cards.map((c) => c.kind)).size === 3, d.cards.map((c) => c.kind));
+  check("synthesized cards claim no source", d.cards.every((c) => !c.source), d.cards);
   check("one result -> the plain answer", d.answer === "granite answer", d.answer);
+}
+
+// 12b. a 402 from Cloudflare's web search no longer starves the cards
+{
+  calls = []; aiInputs = [];
+  ddgBody = [
+    '<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgeo.example%2Fa">Geothermal basics</a><a class="result__snippet">heat from the ground</a></div>',
+    '<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgeo.example%2Fb">Geothermal limits</a><a class="result__snippet">depth decides the cost</a></div>',
+  ].join("");
+  const env = makeEnv();
+  env.AI.websearch = async () => ({ ok: false, status: 402 });
+  const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
+  check("402 falls through to a keyless provider", d.search_via === "duckduckgo", d.search_via);
+  check("keyless sources become cards", d.cards && d.cards.length === 2, d.cards && d.cards.length);
+  check("a keyless card keeps its url", d.cards && d.cards[0].source.url === "https://geo.example/a", d.cards && d.cards[0].source);
+  check("the 402 is still reported", String(d.search_error || "").includes("402"), d.search_error);
+  ddgBody = null;
 }
 
 // 13. feedback is kept as a note

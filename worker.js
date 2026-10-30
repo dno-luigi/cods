@@ -354,7 +354,7 @@ function sendPrompt(p) {
           if (at >= 0) cards.splice(at, 1);
           got.forEach(function (c, i) {
             cards.push({
-              q: p + ' · ' + (i + 1) + (c.source && c.source.title ? ' — ' + c.source.title : ''),
+              q: p + ' · ' + (c.kind ? c.kind : i + 1) + (c.source && c.source.title ? ' — ' + c.source.title : ''),
               prompt: p,
               a: c.a,
               provider: (c.provider || d.provider || '') + (d.route ? ' · ' + d.route : ''),
@@ -711,7 +711,7 @@ async function notesChat(env, messages, body) {
   });
 }
 
-async function webSearch(env, query) {
+async function cloudflareWebSearch(env, query, limit) {
   if (!env.AI || typeof env.AI.websearch !== "function") {
     throw new Error("websearch() is not available on this AI binding");
   }
@@ -719,7 +719,7 @@ async function webSearch(env, query) {
     gatewayId: env.AI_GATEWAY_ID || "default",
     query: String(query).slice(0, 1024),
     provider: env.SEARCH_PROVIDER || "ceramic",
-    limit: Number(env.SEARCH_LIMIT || 5),
+    limit,
   });
   if (!res || !res.ok) {
     throw new Error("web search HTTP " + (res ? res.status : "no response"));
@@ -733,6 +733,131 @@ async function webSearch(env, query) {
       title: i.title || i.url,
       description: String(i.description || "").slice(0, 800),
     }));
+}
+
+// Cloudflare's websearch() bills every query to AI Gateway credits and answers
+// 402 on an account without them, which used to leave the card builder with no
+// sources and the page with no cards. These two need no key and no billing, so
+// a question still gets real pages to stand on.
+
+function stripTags(s) {
+  return String(s || "")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;|&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function ddgUrl(href) {
+  const raw = String(href || "");
+  const m = /[?&]uddg=([^&]+)/.exec(raw);
+  if (m) {
+    try {
+      return decodeURIComponent(m[1]);
+    } catch (err) {
+      return "";
+    }
+  }
+  return /^https?:\/\//.test(raw) ? raw : "";
+}
+
+async function ddgSearch(query, limit) {
+  const res = await fetch("https://html.duckduckgo.com/html/", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "User-Agent": "Mozilla/5.0 (compatible; cards/1.0)",
+    },
+    body: "q=" + encodeURIComponent(String(query).slice(0, 400)),
+  });
+  if (!res.ok) throw new Error("duckduckgo HTTP " + res.status);
+  const html = await res.text();
+  const urls = [];
+  const titles = [];
+  const linkRe = /<a\b[^>]*class="[^"]*result__a[^"]*"[^>]*>[\s\S]*?<\/a>/gi;
+  let m;
+  while ((m = linkRe.exec(html)) && urls.length < limit) {
+    const url = ddgUrl((/href="([^"]+)"/i.exec(m[0]) || [])[1]);
+    if (!url) continue;
+    if (urls.indexOf(url) >= 0) continue;
+    urls.push(url);
+    titles.push(stripTags(m[0].slice(m[0].indexOf(">") + 1)) || url);
+  }
+  const snips = [];
+  const snipRe = /class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/(?:a|div|span)>/gi;
+  while ((m = snipRe.exec(html)) && snips.length < limit) snips.push(stripTags(m[1]));
+  return urls.map((url, i) => ({ url, title: titles[i], description: snips[i] || "" }));
+}
+
+async function wikipediaSearch(query, limit) {
+  const res = await fetch(
+    "https://en.wikipedia.org/w/api.php?action=query&format=json&list=search&srlimit=" +
+      limit +
+      "&srsearch=" +
+      encodeURIComponent(String(query).slice(0, 300)),
+    { headers: { "User-Agent": "cards/1.0 (cloudflare worker)" } }
+  );
+  if (!res.ok) throw new Error("wikipedia HTTP " + res.status);
+  const data = await res.json();
+  const hits = (data && data.query && data.query.search) || [];
+  const pages = hits.slice(0, limit).map((hit) => ({
+    title: String((hit && hit.title) || ""),
+    url: "https://en.wikipedia.org/wiki/" + encodeURIComponent(String((hit && hit.title) || "").replace(/ /g, "_")),
+    fallback: stripTags(hit && hit.snippet),
+  }));
+  return Promise.all(
+    pages.map(async (page) => {
+      let description = page.fallback;
+      try {
+        const sum = await fetch(
+          "https://en.wikipedia.org/api/rest_v1/page/summary/" +
+            encodeURIComponent(page.title.replace(/ /g, "_")),
+          { headers: { "User-Agent": "cards/1.0 (cloudflare worker)" } }
+        );
+        if (sum.ok) {
+          const j = await sum.json();
+          if (j && j.extract) description = String(j.extract).slice(0, 800);
+        }
+      } catch (err) {}
+      return { url: page.url, title: page.title || page.url, description };
+    })
+  );
+}
+
+// Providers in order of quality. The first that returns two or more pages
+// wins; a single page is kept as a fallback so one source still grounds.
+async function webSearch(env, query) {
+  const limit = Number(env.SEARCH_LIMIT || 5);
+  const errors = [];
+  let best = null;
+  const providers = [
+    ["cloudflare", () => cloudflareWebSearch(env, query, limit)],
+    ["duckduckgo", () => ddgSearch(query, limit)],
+    ["wikipedia", () => wikipediaSearch(query, limit)],
+  ];
+  for (const [via, run] of providers) {
+    try {
+      const found = (await run()).filter((s) => s && s.url);
+      if (found.length >= 2) return { sources: found, via, errors };
+      if (found.length) {
+        if (!best || found.length > best.sources.length) best = { sources: found, via };
+        errors.push(via + ": only " + found.length + " result");
+      } else {
+        errors.push(via + ": no results");
+      }
+    } catch (err) {
+      errors.push(via + ": " + err.message);
+    }
+  }
+  if (best) return { sources: best.sources, via: best.via, errors };
+  const err = new Error(errors.join(" | ") || "no search provider");
+  err.errors = errors;
+  throw err;
 }
 
 // ─── routing endpoints ────────────────────────────────────────────────────────
@@ -996,12 +1121,14 @@ async function handleChat(request, env) {
   // 3. Search — only when the decision asks for live sources.
   let sources = [];
   let searchError = null;
+  let searchVia = null;
   if (plan.search && body.use_web !== false) {
     try {
-      sources = await webSearch(env, prompt);
-      if (!sources.length) {
-        searchError = "web search returned no results";
-        failures.push("web search: " + searchError);
+      const found = await webSearch(env, prompt);
+      sources = found.sources || [];
+      searchVia = found.via || null;
+      if (found.errors && found.errors.length) {
+        searchError = found.errors.join(" | ");
       }
     } catch (err) {
       searchError = "web search failed: " + err.message;
@@ -1062,9 +1189,10 @@ async function handleChat(request, env) {
         const one = messages.concat([
           {
             role: "system",
-            content:
-              "Write the card for source [" + (i + 1) + "] only: " + s.title + " — " + s.url + "\n" + s.description +
-              "\nSay what this source contributes about the question, in two to four sentences. " +
+            content:              "Write the card for source [" + (i + 1) + "] only: " + s.title + " — " + s.url +
+              "\n" + s.description +
+              "\nGive the principle or fact this source contributes about the question — the rule it supports, " +
+              "stated so it carries to other cases. Not a summary of the document. Two to four sentences. " +
               "No preamble, and do not restate the question.",
           },
         ]);
@@ -1093,11 +1221,36 @@ async function handleChat(request, env) {
         sources,
         trace: cards[0].trace,
         searchError,
+        searchVia,
       });
     }
   }
 
-  // 5. Text: Workers AI models in order, then OpenRouter.
+  // 5. Text: Workers AI models in order, then OpenRouter. Every answer walks
+  //    out with cards, so the send never lands as one flat blob.
+  const respond = async ({ answer, provider, trace }) => {
+    let cards = [];
+    try {
+      cards = await synthesizeCards(env, prompt, answer, decision, wanted, body, failures);
+    } catch (err) {
+      failures.push("cards: " + err.message);
+    }
+    return finish(env, key, plan, {
+      prompt,
+      related,
+      relatedError,
+      answer,
+      cards,
+      provider,
+      route,
+      decision,
+      sources,
+      trace,
+      searchError,
+      searchVia,
+    });
+  };
+
   const cfModels = unique(
     []
       .concat(
@@ -1118,17 +1271,10 @@ async function handleChat(request, env) {
         });
         const text = textFrom(aiResponse);
         if (text) {
-          return finish(env, key, plan, {
-            prompt,
-            related,
-            relatedError,
+          return respond({
             answer: text,
             provider: "clef-flash → " + cfModel,
-            route,
-            decision,
-            sources,
             trace: [{ source: "workers-ai", model: cfModel }],
-            searchError,
           });
         }
         failures.push(cfModel + ": empty response");
@@ -1144,17 +1290,10 @@ async function handleChat(request, env) {
     for (const model of models) {
       try {
         const answer = await callOpenRouter(env, model, messages, body);
-        return finish(env, key, plan, {
-          prompt,
-          related,
-          relatedError,
+        return respond({
           answer,
           provider: "clef-flash → openrouter",
-          route,
-          decision,
-          sources,
           trace: [{ source: "openrouter", model }],
-          searchError,
         });
       } catch (err) {
         orErrors.push(model + ": " + err.message);
@@ -1175,17 +1314,10 @@ async function handleChat(request, env) {
       });
       const answer = textFrom(aiResponse);
       if (answer) {
-        return finish(env, key, plan, {
-          prompt,
-          related,
-          relatedError,
+        return respond({
           answer,
           provider: "clef-flash → workers-ai",
-          route,
-          decision,
-          sources,
           trace: [{ source: "workers-ai", model: env.CF_CHAT_MODEL }],
-          searchError,
         });
       }
       failures.push("workers-ai: empty response");
@@ -1259,6 +1391,54 @@ function slimDecision(decision) {
   };
 }
 
+// Cards never wait on search. Search hands over pages when it can; when it
+// cannot, the model writes the cards from its own answer, in angles, so a send
+// always lands two or three cards instead of one blob.
+const CARD_ANGLES = [
+  {
+    kind: "principle",
+    ask:
+      "Write the governing principle: the rule that decides this case, stated so it carries to other cases. Two to four sentences. No preamble.",
+  },
+  {
+    kind: "practice",
+    ask:
+      "Write the application card: the concrete move in order, with the terms, numbers or steps that belong to this domain. Two to four sentences. No preamble.",
+  },
+  {
+    kind: "edge",
+    ask:
+      "Write the edge card: where this breaks, the mistake people actually make, or the trade-off that decides it. Two to four sentences. No preamble.",
+  },
+];
+
+async function synthesizeCards(env, prompt, answer, decision, wanted, body, failures) {
+  const count = wanted > 0 ? Math.min(wanted, CARD_ANGLES.length) : CARD_LIMIT;
+  const built = await Promise.all(
+    CARD_ANGLES.slice(0, count).map(async (angle) => {
+      const messages = [
+        {
+          role: "system",
+          content:
+            "You write cards for a knowledge app. Each card stands alone and is about the domain itself, not about any document.\n" +
+            (decision && decision.domain ? "Domain: " + decision.domain + "\n" : "") +
+            angle.ask,
+        },
+        { role: "system", content: "The answer already written for this question:\n" + String(answer || "").slice(0, 4000) },
+        { role: "user", content: prompt },
+      ];
+      try {
+        const r = await askText(env, messages, Object.assign({}, body, { max_tokens: 400 }));
+        return { text: r.text, provider: r.provider, trace: r.trace, kind: angle.kind };
+      } catch (err) {
+        failures.push("card " + angle.kind + ": " + err.message);
+        return null;
+      }
+    })
+  );
+  return built.filter(Boolean);
+}
+
 // One place that knows the text order: Workers AI models, OpenRouter, then
 // CF_CHAT_MODEL. Throws with every failure when nothing answered.
 async function askText(env, messages, body) {
@@ -1328,7 +1508,7 @@ async function finish(
   env,
   key,
   plan,
-  { prompt, answer, provider, route, decision, sources, trace, searchError, related, relatedError, cards }
+  { prompt, answer, provider, route, decision, sources, trace, searchError, searchVia, related, relatedError, cards }
 ) {
   const payload = {
     answer,
@@ -1348,6 +1528,7 @@ async function finish(
       : null,
     sources: sources && sources.length ? sources.map((s) => ({ title: s.title, url: s.url })) : null,
     search_error: searchError || null,
+    search_via: searchVia || null,
     related: related && related.length ? related : null,
     related_error: relatedError || null,
     trace,
