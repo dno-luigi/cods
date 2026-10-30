@@ -1423,19 +1423,39 @@ const CARD_ANGLES = [
   },
 ];
 
+// A small model ignores "write a different angle" and repeats the answer's
+// opening, which is how three cards become one card three times. Each card
+// therefore gets only its own slice of the answer to work from.
+function sentenceSplit(text) {
+  const parts = String(text || "").replace(/\s+/g, " ").match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [];
+  return parts.map((s) => s.trim()).filter(Boolean);
+}
+
+function slicesFor(answer, count) {
+  const sentences = sentenceSplit(answer);
+  if (sentences.length < count * 2) return Array.from({ length: count }, () => String(answer || ""));
+  const per = Math.ceil(sentences.length / count);
+  return Array.from({ length: count }, (_, i) => sentences.slice(i * per, (i + 1) * per).join(" "));
+}
+
 async function synthesizeCards(env, prompt, answer, decision, wanted, body, failures) {
   const count = wanted > 0 ? Math.min(wanted, CARD_ANGLES.length) : CARD_LIMIT;
+  const slices = slicesFor(answer, count);
   const built = await Promise.all(
-    CARD_ANGLES.slice(0, count).map(async (angle) => {
+    CARD_ANGLES.slice(0, count).map(async (angle, index) => {
       const messages = [
         {
           role: "system",
           content:
             "You write cards for a knowledge app. Each card stands alone and is about the domain itself, not about any document.\n" +
             (decision && decision.domain ? "Domain: " + decision.domain + "\n" : "") +
-            angle.ask,
+            angle.ask +
+            "\nBegin with this card's own claim: never open with the answer's first sentence, and never repeat another card.",
         },
-        { role: "system", content: "The answer already written for this question:\n" + String(answer || "").slice(0, 4000) },
+        {
+          role: "system",
+          content: "Your material for this card, and nothing else:\n" + String(slices[index] || answer || "").slice(0, 1600),
+        },
         { role: "user", content: prompt },
       ];
       try {
