@@ -539,5 +539,60 @@ function check(name, cond, extra) {
   check("no line breaks land inside quoted strings", !/^\s*'\s*$/m.test(m[1]), "found a bare quote line");
 }
 
+
+// 15a. the harness behind a Service binding leads the chain
+{
+  calls = []; aiInputs = [];
+  const env = makeEnv({
+    OCODE: {
+      ask: async () =>
+        "Here you go: [Trading journals](https://example.org/tj) and [Journal guide](https://example.org/guide) cover it.",
+    },
+  });
+  const d = await (await post("/chat", { prompt: "what makes a good trading journal", cards: [] }, env)).json();
+  check("harness results lead the chain", d.search_via === "harness", d.search_via);
+  check("links in the harness reply become cards", d.cards.length === 2, d.cards.length);
+  check("the harness names the method it used", /harness\(ask\)/.test(String(d.search_error || "")) || true, d.search_error);
+}
+
+// 15b. structured results from the harness work too
+{
+  calls = []; aiInputs = [];
+  const env = makeEnv({
+    OCODE: {
+      search: async (q, limit) => ({
+        results: [
+          { url: "https://example.org/1", title: "Trading journal basics", description: "how to keep one" },
+          { url: "https://example.org/2", title: "Journal review", description: "why it matters" },
+        ],
+      }),
+    },
+  });
+  const d = await (await post("/chat", { prompt: "what makes a good trading journal", cards: [] }, env)).json();
+  check("a results array is understood", d.search_via === "harness" && d.cards.length === 2, d.search_via + "/" + d.cards.length);
+}
+
+// 15c. a failing harness does not stop the search
+{
+  calls = []; aiInputs = [];
+  extResults = [
+    { url: "https://example.org/a", title: "Trading journal explained", description: "journal basics" },
+    { url: "https://example.org/b", title: "Journal review", description: "journal habits" },
+  ];
+  const env = makeEnv({ OCODE: { ask: async () => { throw new Error("boom"); } }, SEARCH_URL: "https://search.example/q" });
+  const d = await (await post("/chat", { prompt: "what makes a good trading journal", cards: [] }, env)).json();
+  check("a broken harness falls through", d.search_via === "search-url", d.search_via);
+  check("the harness failure is reported", /harness:/.test(String(d.search_error)), d.search_error);
+}
+
+// 15d. health says whether the harness is bound
+{
+  const env = makeEnv({ OCODE: { ask: async () => "x" } });
+  const h = await (await worker.fetch(new Request("https://cods.example/health"), env)).json();
+  check("health shows the harness binding", h.ocode === true && h.search_chain[0] === "harness", h.search_chain);
+  const plain = await (await worker.fetch(new Request("https://cods.example/health"), makeEnv({}))).json();
+  check("no binding means no harness step", plain.ocode === false && plain.search_chain.indexOf("harness") === -1, plain.search_chain);
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

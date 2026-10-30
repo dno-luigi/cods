@@ -428,7 +428,9 @@ export default {
         search_provider: env.SEARCH_PROVIDER || "ceramic",
         search_url: env.SEARCH_URL ? "configured" : null,
         browser: !!env.BROWSER,
-        search_chain: (env.SEARCH_URL ? ["search-url"] : [])
+        ocode: !!env.OCODE,
+        search_chain: (env.OCODE ? ["harness"] : [])
+          .concat(env.SEARCH_URL ? ["search-url"] : [])
           .concat(env.BROWSER ? ["browser"] : [])
           .concat(["cloudflare"])
           .concat(String(env.SEARCH_BING || "") === "1" ? ["bing"] : [])
@@ -895,6 +897,109 @@ async function githubSearch(env, query, limit) {
 // His own search Worker, deployed from any repository, is pointed at with
 // SEARCH_URL. {q} is swapped when present, otherwise the query is appended.
 // Any reply shaped as an array or {results|items|sources|data|hits} works.
+// ─── the OpenCode agent harness, over a Service binding ─────────────────────
+// The harness exposes its agent as a Worker entrypoint (binding OCODE), so it
+// can be driven as RPC instead of over HTTP. Whichever callable method exists
+// answers the query; the reply may be a list of results, a JSON string, or
+// prose that mentions links, and all three become sources.
+const HARNESS_METHODS = ["search", "webSearch", "web_search", "ask", "prompt", "run", "answer"];
+
+function harnessList(list, limit) {
+  return list
+    .slice(0, limit)
+    .map((hit) => ({
+      url: hit.url || hit.link || hit.href || "",
+      title: hit.title || hit.name || hit.url || hit.link || "",
+      description: String(hit.description || hit.snippet || hit.text || hit.summary || "").slice(0, 800),
+    }))
+    .filter((hit) => /^https?:\/\//i.test(String(hit.url)));
+}
+
+function harnessLinks(text, limit) {
+  const out = [];
+  const seen = new Set();
+  const md = /\[([^\]\n]{3,160})\]\((https?:\/\/[^\s)]+)\)/g;
+  let m;
+  while ((m = md.exec(text)) && out.length < limit) {
+    if (seen.has(m[2])) continue;
+    seen.add(m[2]);
+    out.push({
+      url: m[2],
+      title: m[1],
+      description: text.slice(Math.max(0, m.index - 140), m.index).replace(/\s+/g, " ").trim(),
+    });
+  }
+  if (out.length) return out;
+  const bare = /https?:\/\/[^\s"'<>)\]]+/g;
+  let b;
+  while ((b = bare.exec(text)) && out.length < limit) {
+    const url = b[0].replace(/[.,;:]+$/, "");
+    if (seen.has(url)) continue;
+    seen.add(url);
+    out.push({
+      url,
+      title: url.replace(/^https?:\/\//, "").slice(0, 80),
+      description: text.slice(Math.max(0, b.index - 140), b.index).replace(/\s+/g, " ").trim(),
+    });
+  }
+  return out;
+}
+
+function harnessItems(reply, limit) {
+  if (reply == null) return [];
+  if (Array.isArray(reply)) return harnessList(reply, limit);
+  if (typeof reply === "string") {
+    const text = reply.trim();
+    if (!text) return [];
+    try {
+      return harnessItems(JSON.parse(text), limit);
+    } catch (err) {}
+    return harnessLinks(text, limit);
+  }
+  if (typeof reply === "object") {
+    for (const key of ["results", "items", "sources", "hits", "data", "pages"]) {
+      if (Array.isArray(reply[key])) {
+        const list = harnessList(reply[key], limit);
+        if (list.length) return list;
+      }
+    }
+    for (const key of ["text", "answer", "response", "message"]) {
+      if (typeof reply[key] === "string" && reply[key].trim()) {
+        const links = harnessLinks(reply[key], limit);
+        if (links.length) return links;
+      }
+    }
+  }
+  return [];
+}
+
+async function harnessSearch(env, query, limit) {
+  const binder = env.OCODE;
+  if (!binder) throw new Error("OCODE is not bound");
+  const notes = [];
+  for (const name of HARNESS_METHODS) {
+    const fn = binder[name];
+    if (typeof fn !== "function") continue;
+    try {
+      const call = Promise.resolve(fn.length >= 2 ? fn.call(binder, String(query), limit) : fn.call(binder, String(query)));
+      const reply = await Promise.race([
+        call,
+        new Promise((_, reject) => setTimeout(() => reject(new Error("timed out")), 25000)),
+      ]);
+      const items = harnessItems(reply, limit);
+      notes.push(name + ": " + items.length);
+      if (items.length) {
+        items.engine = name;
+        items.sample = String((items[0] && items[0].title) || "").slice(0, 60);
+        return items;
+      }
+    } catch (err) {
+      notes.push(name + ": " + (err && err.message ? err.message : String(err)));
+    }
+  }
+  throw new Error(notes.length ? "no usable reply (" + notes.join(", ") + ")" : "no callable method on OCODE");
+}
+
 async function externalSearch(env, query, limit) {
   const base = String(env.SEARCH_URL || "");
   if (!base) throw new Error("SEARCH_URL is not set");
@@ -1100,6 +1205,7 @@ async function webSearch(env, query) {
   const errors = [];
   let best = null;
   const providers = [];
+  if (env.OCODE) providers.push(["harness", () => harnessSearch(env, query, limit)]);
   if (env.SEARCH_URL) providers.push(["search-url", () => externalSearch(env, query, limit)]);
   if (env.BROWSER) providers.push(["browser", () => browserSearch(env, query, limit)]);
   providers.push(["cloudflare", () => cloudflareWebSearch(env, query, limit)]);

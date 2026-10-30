@@ -16,6 +16,16 @@
   "browser": {
     "binding": "BROWSER"
   },
+  // The OpenCode agent harness (its own Worker) is called over a Service
+  // binding rather than HTTP: the entrypoint exposes the agent as RPC methods.
+  // Absent or failing, the search chain simply moves on to the next provider.
+  "services": [
+    {
+      "binding": "OCODE",
+      "service": "opencode-harness-example",
+      "entrypoint": "OpenCodeAgent"
+    }
+  ],
   "kv_namespaces": [
     {
       "binding": "KV",
