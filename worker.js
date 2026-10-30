@@ -964,14 +964,25 @@ function relevanceOf(item, terms) {
   return hits;
 }
 
+// Real desktop Chrome on a real page: the JS-driven DuckDuckGo page first,
+// then its server-rendered fallbacks. Bing is last because its edge answers
+// with a did-you-mean page whatever the transport.
+const BROWSER_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36";
+
 const BROWSER_ENGINES = [
   {
-    name: "duckduckgo",
+    name: "ddg",
+    url: (q) => "https://duckduckgo.com/?q=" + q,
+    selector: 'article[data-testid="result"]',
+  },
+  {
+    name: "ddg-html",
     url: (q) => "https://html.duckduckgo.com/html/?q=" + q,
     selector: "article.result, div.result",
   },
   {
-    name: "duckduckgo-lite",
+    name: "ddg-lite",
     url: (q) => "https://lite.duckduckgo.com/lite/?q=" + q,
     selector: "a.result-link",
   },
@@ -1018,7 +1029,19 @@ async function browserSearch(env, query, limit) {
       let page = null;
       try {
         page = await browser.newPage();
-        await page.goto(engine.url(q), { waitUntil: "domcontentloaded", timeout: 15000 });
+        if (typeof page.setUserAgent === "function") {
+          try {
+            await page.setUserAgent(BROWSER_UA);
+          } catch (err) {}
+        }
+        await page.goto(engine.url(q), { waitUntil: "load", timeout: 20000 });
+        // A results page that paints after load needs a moment before the
+        // rows exist; giving up early is what makes a real browser look empty.
+        if (typeof page.waitForSelector === "function") {
+          try {
+            await page.waitForSelector(engine.selector, { timeout: 8000 });
+          } catch (err) {}
+        }
         const rows = await page.evaluate((selector) => {
           return Array.from(document.querySelectorAll(selector)).map((row) => {
             const a = row.matches && row.matches("a") ? row : row.querySelector("h2 a") || row.querySelector("a");
@@ -1031,6 +1054,11 @@ async function browserSearch(env, query, limit) {
           });
         }, engine.selector);
         const items = browserItems(rows, limit);
+        // Carry the provenance out with the rows, so a failure downstream can
+        // say which engine answered and what it actually said.
+        items.engine = engine.name;
+        items.seen = (rows || []).length;
+        items.sample = String(((rows || [])[0] || {}).title || "").slice(0, 60);
         if (items.length) return items;
       } catch (err) {
         // that engine did not load; the next one gets a turn
@@ -1072,9 +1100,16 @@ async function webSearch(env, query) {
   providers.push(["wikipedia", () => wikipediaSearch(query, limit)]);
   for (const [via, run] of providers) {
     try {
-      const fresh = (await run()).filter((s) => s && s.url);
+      const raw = await run();
+      const fresh = raw.filter((s) => s && s.url);
+      const label = raw.engine ? via + "(" + raw.engine + ")" : via;
       const found = noisy.has(via) ? fresh.filter((s) => relevanceOf(s, terms) >= need) : fresh;
-      if (found.length < fresh.length) errors.push(via + ": dropped " + (fresh.length - found.length) + " off-topic");
+      if (found.length < fresh.length) {
+        errors.push(
+          label + ": dropped " + (fresh.length - found.length) + " of " + fresh.length + " off-topic" +
+            (raw.sample ? ' (first was "' + raw.sample + '")' : "")
+        );
+      }
       if (found.length >= 2) return { sources: found, via, errors };
       if (found.length) {
         if (!best || found.length > best.sources.length) best = { sources: found, via };

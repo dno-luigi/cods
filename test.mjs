@@ -464,8 +464,34 @@ function check(name, cond, extra) {
   };
   const env = makeEnv({ BROWSER: {} });
   const d = await (await post("/chat", { prompt: "open source cloudflare worker web search proxy", cards: [] }, env)).json();
-  check("two of six words is not enough", /browser: dropped 1 off-topic/.test(String(d.search_error)), d.search_error);
+  check("two of six words is not enough", /dropped 1 of 1 off-topic/.test(String(d.search_error)), d.search_error);
   check("and the cards still arrive", !!d.cards && d.cards.length === 3, d.cards && d.cards.length);
+  delete globalThis.__codsPuppeteer;
+}
+
+
+// 12k. the browser reports which engine answered, and what it said
+{
+  calls = []; aiInputs = [];
+  globalThis.__codsPuppeteer = {
+    launch: async () => ({
+      newPage: async () => ({
+        setUserAgent: async () => {},
+        goto: async () => {},
+        waitForSelector: async () => null,
+        evaluate: async () => [
+          { url: "https://example.org/off", title: "Make vs. Makes", description: "grammar" },
+          { url: "https://example.org/off2", title: "Dictionary entry", description: "words" },
+        ],
+        close: async () => {},
+      }),
+      close: async () => {},
+    }),
+  };
+  const env = makeEnv({ BROWSER: {} });
+  const d = await (await post("/chat", { prompt: "what makes a good trading journal", cards: [] }, env)).json();
+  check("the engine that answered is named", /browser\(ddg\): dropped 2 of 2 off-topic/.test(String(d.search_error)), d.search_error);
+  check("the offending title is quoted back", /first was "Make vs\. Makes"/.test(String(d.search_error)), d.search_error);
   delete globalThis.__codsPuppeteer;
 }
 
