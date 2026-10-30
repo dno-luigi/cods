@@ -344,5 +344,35 @@ function check(name, cond, extra) {
   bingBody = null;
 }
 
+
+// 12e. searchno longer waits for clef's permission, and cards never echo the prompt
+{
+  calls = []; aiInputs = [];
+  const env = makeEnv();
+  env.AI.run = async (model, input) => {
+    aiInputs.push({ model: String(model), input });
+    if (String(model).startsWith("@cf/cloudflare/clef")) {
+      const c = clef();
+      c.answers.needs_web = { probability: 0.05 };
+      return c;
+    }
+    if (String(model).startsWith("@cf/ibm-granite")) return { response: "granite answer" };
+    throw new Error("no such model: " + model);
+  };
+  env.AI.websearch = async () => ({
+    ok: true,
+    json: async () => ({
+      items: [
+        { url: "https://a.example/1", title: "One", description: "first" },
+        { url: "https://a.example/2", title: "Two", description: "second" },
+      ],
+    }),
+  });
+  const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
+  check("search runs even when clef says no web", d.search_via === "cloudflare", d.search_via);
+  check("those sources become cards", d.cards && d.cards.length === 2, d.cards && d.cards.length);
+  check("no card echoes the instruction", d.cards.every((c) => !/never open with/i.test(String(c.a))), d.cards.map((c) => c.a));
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

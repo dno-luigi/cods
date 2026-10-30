@@ -1212,7 +1212,10 @@ async function handleChat(request, env) {
   let sources = [];
   let searchError = null;
   let searchVia = null;
-  if (plan.search && body.use_web !== false) {
+  // The decision layer no longer gates search: a hit from the cache was
+  // already served above, so everything else looks for sources before the
+  // model speaks. use_web:false still turns it off for one request.
+  if (body.use_web !== false) {
     try {
       const found = await webSearch(env, prompt);
       sources = found.sources || [];
@@ -1539,8 +1542,7 @@ async function synthesizeCards(env, prompt, answer, decision, wanted, body, fail
           content:
             "You write cards for a knowledge app. Each card stands alone and is about the domain itself, not about any document.\n" +
             (decision && decision.domain ? "Domain: " + decision.domain + "\n" : "") +
-            angle.ask +
-            "\nBegin with this card's own claim: never open with the answer's first sentence, and never repeat another card.",
+            angle.ask,
         },
         {
           role: "system",
