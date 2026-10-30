@@ -235,6 +235,7 @@ body{background:#121212;color:#f5f5f5;font-family:system-ui,sans-serif;display:f
 var CHAT_URL = 'https://cods.ai-n.workers.dev/chat';
 var FEEDBACK_URL = 'https://cods.ai-n.workers.dev/feedback';
 var cards = [];
+var NL = String.fromCharCode(10);
 var el = {
   cards: document.getElementById('cards'),
   prompt: document.getElementById('prompt'),
@@ -300,7 +301,7 @@ function feedback(c, act) {
   if (act === 'more') sendPrompt('Give me three other angles on this, as separate cards: ' + q);
   else if (act === 'deeper') sendPrompt('Go deeper on this and show the reasoning: ' + q);
   else if (act === 'again') sendPrompt(q + ' — search the web again and give me the freshest sources');
-  else sendPrompt('That card was wrong or off target:\n' + String(c.a || '').slice(0, 400) + '\n\nAnswer it properly instead: ' + q);
+  else sendPrompt('That card was wrong or off target:' + NL + String(c.a || '').slice(0, 400) + NL + NL + 'Answer it properly instead: ' + q);
 }
 function render() {
   el.count.textContent = cards.length;
@@ -398,8 +399,8 @@ el.cards.onclick = function (e) {
     var head = btn.getAttribute('data-act') === 'combine'
       ? 'Combine this saved note with my card and answer with the merged version.'
       : 'Extract from this saved note only what answers my card, as separate cards.';
-    el.prompt.value = head + '\n\nMy card:\n' + c.q + '\n' + (c.a || '') +
-      '\n\nSaved note:\n' + n.title + '\n' + n.text;
+    el.prompt.value = head + NL + NL + 'My card:' + NL + c.q + NL + (c.a || '') +
+      NL + NL + 'Saved note:' + NL + n.title + NL + n.text;
     send();
     return;
   }

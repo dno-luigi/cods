@@ -521,5 +521,23 @@ function check(name, cond, extra) {
   delete globalThis.__codsPuppeteer;
 }
 
+
+// 13a. the page's own script has to parse, or nothing ever renders
+{
+  const env = makeEnv({});
+  const res = await worker.fetch(new Request("https://cods.example/", { method: "GET" }), env);
+  const html = await res.text();
+  const m = html.match(/<script>([\s\S]*?)<\/script>/);
+  check("the page ships a script", !!m, html.length);
+  let parseError = null;
+  try {
+    new Function(m[1]);
+  } catch (e) {
+    parseError = e.message;
+  }
+  check("the page script parses as javascript", parseError === null, parseError);
+  check("no line breaks land inside quoted strings", !/^\s*'\s*$/m.test(m[1]), "found a bare quote line");
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
