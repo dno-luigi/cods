@@ -1053,7 +1053,10 @@ async function browserSearch(env, query, limit) {
 async function webSearch(env, query) {
   const limit = Number(env.SEARCH_LIMIT || 5);
   const terms = queryTerms(query);
-  const need = Math.min(2, Math.max(1, terms.length));
+  // Short queries are matched loosely, longer ones have to land three of
+  // their words: a long query that only trips two incidental words is the
+  // shape of an off-topic page, not an answer.
+  const need = terms.length >= 5 ? Math.min(3, terms.length) : Math.min(2, Math.max(1, terms.length));
   // Engines that answer with did-you-mean pages, and the encyclopedia that
   // happily returns an unrelated article, have to prove they are on topic.
   const noisy = new Set(["browser", "bing", "wikipedia"]);

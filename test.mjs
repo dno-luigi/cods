@@ -446,5 +446,28 @@ function check(name, cond, extra) {
   check("health lists browser when bound", h2.browser === true && h2.search_chain.indexOf("browser") === 0, h2.search_chain);
 }
 
+
+// 12j. a long query is not satisfied by two incidental word matches
+{
+  calls = []; aiInputs = [];
+  globalThis.__codsPuppeteer = {
+    launch: async () => ({
+      newPage: async () => ({
+        goto: async () => {},
+        evaluate: async () => [
+          { url: "https://example.org/partial", title: "Cloudflare worker notes", description: "generic page" },
+        ],
+        close: async () => {},
+      }),
+      close: async () => {},
+    }),
+  };
+  const env = makeEnv({ BROWSER: {} });
+  const d = await (await post("/chat", { prompt: "open source cloudflare worker web search proxy", cards: [] }, env)).json();
+  check("two of six words is not enough", /browser: dropped 1 off-topic/.test(String(d.search_error)), d.search_error);
+  check("and the cards still arrive", !!d.cards && d.cards.length === 3, d.cards && d.cards.length);
+  delete globalThis.__codsPuppeteer;
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
