@@ -73,7 +73,7 @@ function makeEnv(extra) {
         run: async (model, input) => {
           aiInputs.push({ model: String(model), input });
           if (String(model).startsWith("@cf/cloudflare/clef")) return clef();
-          if (String(model).startsWith("@cf/ibm-granite")) return { response: "granite answer" };
+          if (String(model).startsWith("@cf/deepseek-ai")) return { response: "deepseek answer" };
           throw new Error("no such model: " + model);
         },
       },
@@ -130,7 +130,7 @@ function check(name, cond, extra) {
   calls = []; aiInputs = []; failSearch = null;
   searchChunks = [{ id: "c1", score: 0.8, text: "Earlier note body", item: { key: "cards/abc.md" } }];
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, makeEnv())).json();
-  check("the LLM answers, not the notes", d.answer === "granite answer", d);
+  check("the LLM answers, not the notes", d.answer === "deepseek answer", d);
   check("provider starts at clef", String(d.provider).startsWith("clef-flash"), d.provider);
   check("the human gets the notes", Array.isArray(d.related) && d.related.length === 1, d.related);
   check("note shape is title/text/score", Object.keys(d.related[0]).sort().join(",") === "score,text,title", d.related[0]);
@@ -153,7 +153,7 @@ function check(name, cond, extra) {
   calls = []; failSearch = "connect ECONNREFUSED";
   const d = await (await post("/chat", { prompt: "anything", cards: [] }, makeEnv())).json();
   check("related failure surfaced", /ECONNREFUSED/.test(String(d.related_error)), d.related_error);
-  check("answer still produced", d.answer === "granite answer", d);
+  check("answer still produced", d.answer === "deepseek answer", d);
   failSearch = null;
 }
 
@@ -215,7 +215,7 @@ function check(name, cond, extra) {
   const env = makeEnv();
   env.AI.run = async (model) => {
     if (String(model).startsWith("@cf/cloudflare/clef")) return clef();
-    if (String(model).startsWith("@cf/ibm-granite"))
+    if (String(model).startsWith("@cf/deepseek-ai"))
       return {
         id: "chatcmpl-1",
         object: "chat.completion",
@@ -233,7 +233,7 @@ function check(name, cond, extra) {
   const env2 = makeEnv(); // fresh KV: the first answer is cached under this prompt
   env2.AI.run = async (model) => {
     if (String(model).startsWith("@cf/cloudflare/clef")) return clef();
-    if (String(model).startsWith("@cf/ibm-granite"))
+    if (String(model).startsWith("@cf/deepseek-ai"))
       return { choices: [{ message: { content: [{ type: "text", text: "part one " }, { type: "text", text: "part two" }] } }] };
     throw new Error("no such model: " + model);
   };
@@ -265,7 +265,7 @@ function check(name, cond, extra) {
     aiInputs.some((x) => JSON.stringify(x.input).includes("Source one")) &&
     aiInputs.some((x) => JSON.stringify(x.input).includes("Source two")),
     aiInputs.length);
-  check("three model calls: one per card, no extra", aiInputs.filter((x) => String(x.model).startsWith("@cf/ibm-granite")).length === 2, aiInputs.map((x) => x.model));
+  check("three model calls: one per card, no extra", aiInputs.filter((x) => String(x.model).startsWith("@cf/deepseek-ai")).length === 2, aiInputs.map((x) => x.model));
 }
 
 // 12. one result stays one card
@@ -276,8 +276,8 @@ function check(name, cond, extra) {
   check("one result still fills the grid", Array.isArray(d.cards) && d.cards.length === 3, d.cards && d.cards.length);
   check("each synthesized card is its own angle", new Set(d.cards.map((c) => c.kind)).size === 3, d.cards.map((c) => c.kind));
   check("synthesized cards claim no source", d.cards.every((c) => !c.source), d.cards);
-  check("synthesized cards carry their text", d.cards.every((c) => c.q === "latest cloudflare news" && c.a === "granite answer"), d.cards.map((c) => c.a));
-  check("one result -> the plain answer", d.answer === "granite answer", d.answer);
+  check("synthesized cards carry their text", d.cards.every((c) => c.q === "latest cloudflare news" && c.a === "deepseek answer"), d.cards.map((c) => c.a));
+  check("one result -> the plain answer", d.answer === "deepseek answer", d.answer);
 }
 
 // 12b. a 402 from Cloudflare's web search no longer starves the cards
@@ -362,7 +362,7 @@ function check(name, cond, extra) {
       c.answers.needs_web = { probability: 0.05 };
       return c;
     }
-    if (String(model).startsWith("@cf/ibm-granite")) return { response: "granite answer" };
+    if (String(model).startsWith("@cf/deepseek-ai")) return { response: "deepseek answer" };
     throw new Error("no such model: " + model);
   };
   env.AI.websearch = async () => ({
@@ -625,7 +625,7 @@ function check(name, cond, extra) {
   const clefCall = aiInputs.find((i) => i.model.indexOf("clef") >= 0);
   check("the decision model is told the preferences", /deeper x1/.test(JSON.stringify(clefCall && clefCall.input)), "no preference in clef state");
   check("three cards still come back", d.cards.length === 3, d.cards.length);
-  const cardCall = aiInputs.find((i) => i.model.indexOf("@cf/ibm-granite") >= 0);
+  const cardCall = aiInputs.find((i) => i.model.indexOf("@cf/deepseek-ai") >= 0);
   check("the card writer is told too", /deeper x1/.test(JSON.stringify(cardCall && cardCall.input)), "no preference in card prompt");
 }
 
@@ -956,7 +956,7 @@ function check(name, cond, extra) {
     },
   });
   const plain = await (await post("/chat", { prompt: "what is a limit order" }, env)).json();
-  check("Workers AI still answers by default", plain.answer === "granite answer", plain.answer);
+  check("Workers AI still answers by default", plain.answer === "deepseek answer", plain.answer);
   check("and the proxy was never called", seen.length === 0, seen.length);
 
   const asked = await (await post("/chat", { prompt: "what is a limit order", proxy: true }, env)).json();
@@ -979,11 +979,11 @@ function check(name, cond, extra) {
 {
   const env = makeEnv({ ORPROXY: { fetch: async () => new Response("upstream exploded", { status: 500 }) } });
   const d = await (await post("/chat", { prompt: "what is slippage", proxy: true }, env)).json();
-  check("Workers AI covers a failed proxy request", d.answer === "granite answer", d.answer);
+  check("Workers AI covers a failed proxy request", d.answer === "deepseek answer", d.answer);
   check("and nothing claims the proxy answered", String(d.provider).indexOf("orproxy") === -1, d.provider);
   const empty = makeEnv({ ORPROXY: { fetch: async () => new Response(JSON.stringify({ choices: [{ message: { content: "" } }] }), { status: 200 }) } });
   const e = await (await post("/chat", { prompt: "what is a stop order", proxy: true }, empty)).json();
-  check("an empty envelope is not shown as JSON", e.answer === "granite answer", e.answer);
+  check("an empty envelope is not shown as JSON", e.answer === "deepseek answer", e.answer);
 }
 
 // 23c. the proxy can be checked from a phone browser
@@ -1021,8 +1021,8 @@ function check(name, cond, extra) {
   calls = []; aiInputs = [];
   await post("/chat", { prompt: "what is a limit order", use_cache: false }, env);
   const triedPick = aiInputs.findIndex((a) => a.model === pick);
-  const triedGranite = aiInputs.findIndex((a) => a.model.indexOf("@cf/ibm-granite") === 0);
-  check("the remembered model is tried before the default", triedPick > -1 && (triedGranite === -1 || triedPick < triedGranite), aiInputs.map((a) => a.model));
+  const triedDefault = aiInputs.findIndex((a) => a.model.indexOf("@cf/deepseek-ai") === 0);
+  check("the remembered model is tried before the default", triedPick > -1 && (triedDefault === -1 || triedPick < triedDefault), aiInputs.map((a) => a.model));
   check("and the answer still arrives when it cannot run", true, "ok");
 }
 
@@ -1038,9 +1038,9 @@ function check(name, cond, extra) {
   calls = []; aiInputs = [];
   const cf = await (await post("/chat", { prompt: "explain spread", model: "@cf/mistralai/mistral-small-3.1-24b-instruct", use_cache: false }, env)).json();
   const askedPick = aiInputs.findIndex((a) => a.model === "@cf/mistralai/mistral-small-3.1-24b-instruct");
-  const askedGranite = aiInputs.findIndex((a) => a.model.indexOf("@cf/ibm-granite") === 0);
-  check("a chosen Cloudflare model is asked before the default", askedPick > -1 && (askedGranite === -1 || askedPick < askedGranite), aiInputs.map((a) => a.model));
-  check("and the chain still answers", cf.answer === "granite answer", cf.answer);
+  const askedDefault = aiInputs.findIndex((a) => a.model.indexOf("@cf/deepseek-ai") === 0);
+  check("a chosen Cloudflare model is asked before the default", askedPick > -1 && (askedDefault === -1 || askedPick < askedDefault), aiInputs.map((a) => a.model));
+  check("and the chain still answers", cf.answer === "deepseek answer", cf.answer);
 
   const viaProxy = await (await post("/chat", { prompt: "explain basis", model: "proxy:truth", use_cache: false }, env)).json();
   check("choosing the proxy sends its preset", seen.length > 0 && seen[0].model === "truth", seen[0] && seen[0].model);
@@ -1245,7 +1245,7 @@ function check(name, cond, extra) {
   check("a preset is sent to the proxy by name", proxied.length > 0 && proxied[0].model === "truth", proxied[0] && proxied[0].model);
   check("and it answers", d.answer === "proxy answer", d.answer);
   const bare = await (await post("/chat", { prompt: "explain gamma", model: "openrouter:openai/gpt-4o-mini", use_cache: false }, env)).json();
-  check("a model id without a key falls through instead of pretending", bare.answer === "granite answer", bare.answer);
+  check("a model id without a key falls through instead of pretending", bare.answer === "deepseek answer", bare.answer);
   check("and the card names the answer that was asked for", !!bare.pick && bare.pick.requested === "openai/gpt-4o-mini" && String(bare.pick.error).indexOf("OPENROUTER_API_KEY") >= 0, bare.pick);
 }
 
@@ -1373,7 +1373,10 @@ function check(name, cond, extra) {
   const scores = raw ? JSON.parse(raw) : null;
   const models = scores && scores.models ? Object.keys(scores.models) : [];
   check("the model that answered is scored", models.length > 0, models);
-  const row = models.length ? scores.models[models[0]] : null;
+  // The text layer leads with DeepSeek now, which this fake does not serve, so
+  // the answer comes from the rung behind it. Credit belongs to the model that
+  // answered, not to whichever key happens to sort first.
+  const row = models.map((m) => scores.models[m]).find((r) => r && r.ok >= 1) || null;
   check("a success is counted, not just an attempt", row && row.ok >= 1 && row.n >= 1, row);
   check("and it is scored against the domain clef chose", row && row["n:news"] >= 1, row && Object.keys(row));
   check("the score is a ratio, not a raw count", row && row.ok / row.n <= 1, row);
@@ -1390,6 +1393,10 @@ function check(name, cond, extra) {
       const msgs = (input && input.messages) || [];
       if (msgs[0] && msgs[0].role === "system" && String(msgs[0].content).indexOf("decision model") >= 0) {
         throw new Error("no summariser here");
+      }
+      const st = String((input && input.state) || "");
+      if (String(model).indexOf("clef") >= 0 && st.length > 69000) {
+        throw new Error("AiError: exceeded this model context window limit (24576). code 5021");
       }
       return baseRun(model, input);
     },
@@ -1414,17 +1421,18 @@ function check(name, cond, extra) {
         throw new Error("AiError: The estimated number of input and maximum output tokens exceeded this model context window limit (24576). code 5021");
       }
       if (String(model).indexOf("clef") >= 0) return clef();
-      return { response: "granite answer" };
+      return { response: "deepseek answer" };
     },
   };
   aiInputs = [];
   const r = await (await post("/chat", { prompt: "x".repeat(4000) + " QUESTION", cards: [] }, strict)).json();
-  check("a refused state is retried, not dropped", !!r.answer && (r.thinking || []).some((x) => x.step === "state"), (r.thinking || []).map((x) => x.step));
+  const steps = (r.thinking || []).map((x) => x.step);
+  check("a refused state is retried, not dropped", !!r.answer && (steps.includes("compress") || steps.includes("state")), steps);
   check("the retry still produces a decision", !!(r.decision && r.decision.domain), r.decision);
   const retried = aiInputs.filter((x) => x.model.indexOf("clef") >= 0);
   check(
-    "the retry carries the question alone",
-    retried.length >= 2 && String(retried[retried.length - 1].input.state).indexOf("New message:") === 0,
+    "the state that finally decides fits the window",
+    retried.length >= 1 && String(retried[retried.length - 1].input.state).length <= 4300,
     retried.map((x) => String(x.input.state).length)
   );
   check("the window is published in health", (await (await worker.fetch(new Request("https://x/health"), env)).json()).clef_context === 24576, "clef_context");
@@ -1444,6 +1452,10 @@ function check(name, cond, extra) {
         aiInputs.push({ model: String(model), input });
         return { response: compact };
       }
+      const st = String((input && input.state) || "");
+      if (String(model).indexOf("clef") >= 0 && st.length > 69000) {
+        throw new Error("AiError: exceeded this model context window limit (24576). code 5021");
+      }
       return baseRun(model, input);
     },
   };
@@ -1456,7 +1468,7 @@ function check(name, cond, extra) {
     return msgs[0] && msgs[0].role === "system" && String(msgs[0].content).indexOf("decision model") >= 0;
   });
   check("a summarising model is asked first", summarised.length === 1, summarised.length);
-  check("it is the cheapest one that fits", String(summarised[0] && summarised[0].model).indexOf("granite") >= 0, summarised[0] && summarised[0].model);
+  check("the 1M model leads the rewrite ladder", String(summarised[0] && summarised[0].model) === "@cf/deepseek-ai/deepseek-v4-flash-0731", summarised[0] && summarised[0].model);
   const handed = String(summarised[0].input.messages[1].content);
   check("it is given the whole request, not a slice", handed.length > long.length && handed.indexOf("please answer") > 0, [handed.length, long.length]);
 
@@ -1505,6 +1517,222 @@ function check(name, cond, extra) {
   aiInputs = [];
   const esc = await (await post("/chat", { prompt: "what is position sizing", cards: [] }, strict)).json();
   check("a window refusal escalates up the ladder", !!(esc.decision && String(esc.decision.model).indexOf("clef-omni") >= 0), esc.decision);
+}
+
+
+// 35. the card tools are one family, and the loop closes through scores:v1
+{
+  const bucket = new Map();
+  const ctx = new Map();
+  const env = makeEnv({
+    TRUTH_KEY: "expert-key",
+    LTM: {
+      put: async (k, v) => { bucket.set(k, v); },
+      get: async (k) => (bucket.has(k) ? { text: async () => bucket.get(k) } : null),
+      list: async ({ prefix }) => ({ objects: [...bucket.keys()].filter((k) => k.indexOf(prefix) === 0).map((k) => ({ key: k })) }),
+    },
+    CONTEXT: { get: async (k) => ctx.get(k) || null, put: async (k, v) => ctx.set(k, v) },
+  });
+
+  await post("/cards", { q: "what is position sizing", a: "risk a fixed fraction of capital", decision: { domain: "finance", model: "clef-omni" } }, env);
+  const keys = [...bucket.keys()];
+  check("a written card is mirrored into R2", keys.some((k) => k.indexOf("cards/") === 0 && /\.json$/.test(k)), keys);
+
+  const rpc = async (body, headers) =>
+    worker.fetch(
+      new Request("https://cods.example/mcp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(headers || {}) },
+        body: JSON.stringify(body),
+      }),
+      env
+    );
+
+  const shut = await rpc({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+  check("the MCP route needs the expert key", shut.status === 403, shut.status);
+
+  const H = { "x-truth-key": "expert-key" };
+  const init = await (await rpc({ jsonrpc: "2.0", id: 1, method: "initialize" }, H)).json();
+  check("initialize names the server", !!(init.result && init.result.serverInfo && init.result.serverInfo.name === "cods-cards"), init.result && init.result.serverInfo);
+  check("and answers a protocol version", init.result.protocolVersion === "2025-06-18", init.result.protocolVersion);
+
+  const list = await (await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list" }, H)).json();
+  const names = list.result.tools.map((t) => t.name);
+  check("every tool shares the cods_cards_ prefix", names.length === 4 && names.every((n) => n.indexOf("cods_cards_") === 0), names);
+  check("and each carries an object schema", list.result.tools.every((t) => t.inputSchema && t.inputSchema.type === "object"), names);
+
+  const found = await (await rpc({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "cods_cards_search", arguments: { query: "position sizing" } } }, H)).json();
+  const hits = JSON.parse(found.result.content[0].text);
+  check("search finds the card by its words", hits.count >= 1 && hits.hits[0].q === "what is position sizing", hits);
+  const id = hits.hits[0].id;
+
+  const got = JSON.parse((await (await rpc({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "cods_cards_get", arguments: { id } } }, H)).json()).result.content[0].text);
+  check("get reads the whole card back", got.a.indexOf("fixed fraction") >= 0, got);
+
+  const pick = JSON.parse((await (await rpc({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "cods_cards_pick", arguments: { id, by: "phone" } } }, H)).json()).result.content[0].text);
+  check("a pick is stamped with its id and time", pick.picked.id === id && !!pick.picked.at, pick.picked);
+
+  const learned = JSON.parse((await (await rpc({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "cods_cards_learn", arguments: { id, ok: true } } }, H)).json()).result.content[0].text);
+  check("learn credits the card's own model and domain", learned.model === "clef-omni" && learned.domain === "finance", learned);
+  const scores = JSON.parse(ctx.get("scores:v1"));
+  check("and writes where the ladder reads", !!(scores.models["clef-omni"] && scores.models["clef-omni"]["n:finance"] === 1), scores.models);
+
+  const missing = await (await rpc({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "cods_cards_get", arguments: { id: "nope" } } }, H)).json();
+  check("a missing card is an error, not an empty answer", missing.result.isError === true, missing.result);
+  const unknown = await (await rpc({ jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "nope_tool", arguments: {} } }, H)).json();
+  check("an unknown tool lists the family", unknown.result.isError === true && unknown.result.content[0].text.indexOf("cods_cards_search") >= 0, unknown.result.content[0].text);
+  const health = await (await worker.fetch(new Request("https://cods.example/health"), env)).json();
+  check("health lists the tool family", (health.mcp || []).length === 4, health.mcp);
+}
+
+
+// 36. a decisions model that reports a slice is passed over
+{
+  const real = globalThis.fetch;
+  const seen = [];
+  const env = makeEnv({ OPENROUTER_API_KEY: "k" });
+  const baseRun = env.AI.run;
+  env.AI.run = async (model, input) => {
+    aiInputs.push({ model: String(model), input });
+    const st = String((input && input.state) || "");
+    const msgs = (input && input.messages) || [];
+    const summariser = msgs[0] && msgs[0].role === "system" && String(msgs[0].content).indexOf("decision model") >= 0;
+    if (!summariser && String(model).indexOf("clef") >= 0 && st.length > 69000) {
+      throw new Error("AiError: exceeded this model context window limit (65536). code 5021");
+    }
+    return baseRun(model, input);
+  };
+  const reply = (tokens, model) =>
+    new Response(
+      JSON.stringify({
+        model,
+        usage: { input_tokens: tokens },
+        answers: {
+          intent: { type: "choice", choice: "answer", probabilities: { answer: 0.9 } },
+          domain: { type: "choice", choice: "finance", probabilities: { finance: 0.8 } },
+          needs_web: { type: "noul", noul: 0.1 },
+        },
+      }),
+      { status: 200 }
+    );
+
+  globalThis.fetch = async (url, init) => {
+    if (String(url).indexOf("openrouter.ai/api/alpha/decisions") >= 0) {
+      const body = JSON.parse(init.body);
+      seen.push(body.model);
+      if (body.model === "nace-ai/drex-max") return reply(785, "nace-ai/drex-max-20261016");
+      return reply(41000, "perplexity/pplx-decider-flash-v1.2-20261016");
+    }
+    return real(url, init);
+  };
+
+  try {
+    const big = "note about risk sizing. ".repeat(9000);
+    const d = await (await post("/chat", { prompt: big + " what now", use_cache: false }, env)).json();
+    check("the preferred decisions model is asked first", seen[0] === "nace-ai/drex-max", seen);
+    check("a model that read only a slice is passed over", seen[1] === "perplexity/pplx-decider-flash-v1.2", seen);
+    check("and the model that read it decides", String(d.decision && d.decision.model).indexOf("perplexity") === 0, d.decision);
+    check("the request is still answered", !!d.answer, d.answer);
+  } finally {
+    globalThis.fetch = real;
+  }
+}
+
+// 37. grounding: the web plugin rides the call and its citations come back
+{
+  const real = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes("openrouter.ai/api/v1/chat/completions")) {
+      seen.push(JSON.parse(init.body));
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                role: "assistant",
+                content: "grounded answer",
+                annotations: [
+                  { type: "url_citation", url_citation: { url: "https://example.com/a", title: "A", content: "excerpt" } },
+                  { type: "url_citation", url_citation: { url: "https://example.com/a", title: "A again" } },
+                ],
+              },
+            },
+          ],
+        }),
+        { status: 200 }
+      );
+    }
+    return real(url, init);
+  };
+  try {
+    const env = makeEnv({ OPENROUTER_API_KEY: "k" });
+    const d = await (await post("/chat", { prompt: "what does rule 11 require", model: "preset:truth", use_cache: false, cards: [] }, env)).json();
+    const sent = seen[seen.length - 1] || {};
+    check(
+      "a grounded answer asks for the cheap engine",
+      Array.isArray(sent.plugins) && sent.plugins[0].id === "web" && sent.plugins[0].engine === "parallel" && sent.plugins[0].mode === "turbo",
+      sent.plugins
+    );
+    check("the citations come back as sources, deduplicated", Array.isArray(d.sources) && d.sources.length === 1 && d.sources[0].url === "https://example.com/a", d.sources);
+    check("and the answer says where it was grounded", String(d.search_via).indexOf("openrouter:web") === 0, d.search_via);
+
+    seen.length = 0;
+    await post("/chat", { prompt: "what does rule 11 require", model: "preset:truth", use_cache: false, cards: [], use_web: false, web: false }, env);
+    check("use_web:false still sends no plugin", !seen.length || seen[seen.length - 1].plugins === undefined, seen[seen.length - 1] && seen[seen.length - 1].plugins);
+  } finally {
+    globalThis.fetch = real;
+  }
+}
+
+// 38. speech in: free, no key, no plan, and a shape that survives a refusal
+{
+  const seen = [];
+  const env = makeEnv();
+  env.AI.run = async (model, input) => {
+    seen.push({ model: String(model), input });
+    if (String(model).indexOf("nova-3") >= 0) {
+      // Only the byte-array form is accepted here: the point of trying both
+      // shapes is that a refusal on one still leaves a way through.
+      if (input && input.audio && !Array.isArray(input.audio)) throw new Error("AiError: expected audio bytes");
+      return { results: { channels: [{ alternatives: [{ transcript: "what is a tort" }] }] } };
+    }
+    throw new Error("no such model: " + model);
+  };
+
+  const clip = new Uint8Array([1, 2, 3, 4]);
+  const r = await worker.fetch(
+    new Request("https://cods.ai-n.workers.dev/stt", {
+      method: "POST",
+      headers: { "Content-Type": "audio/webm" },
+      body: clip,
+    }),
+    env
+  );
+  const d = await r.json();
+  check("a spoken question comes back as text", r.status === 200 && d.text === "what is a tort", d);
+  check("it is free, with no key or plan asked for", d.free === true, d);
+  check("the dictation model answers it", d.model === "@cf/deepgram/nova-3", d.model);
+  check(
+    "the clip is tried as a body, then as bytes",
+    seen.length === 2 && Array.isArray(seen[1].input.audio),
+    seen.map((x) => typeof x.input.audio)
+  );
+
+  const get = await worker.fetch(new Request("https://cods.ai-n.workers.dev/stt"), env);
+  check("GET is refused", get.status === 405, get.status);
+
+  const empty = await worker.fetch(
+    new Request("https://cods.ai-n.workers.dev/stt", { method: "POST", body: new Uint8Array(0) }),
+    env
+  );
+  check("an empty clip is refused", empty.status === 400, empty.status);
+
+  const huge = await worker.fetch(
+    new Request("https://cods.ai-n.workers.dev/stt", { method: "POST", body: new Uint8Array(8388609) }),
+    env
+  );
+  check("a clip over the size ceiling is refused", huge.status === 413, huge.status);
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");

@@ -48,17 +48,23 @@
     {
       "binding": "KV",
       "id": "4a9bfbffb4d440cba86badc508e2045a"
+    },
+    // The truth store and the audit trail: the namespaces the engine already
+    // casts into, on the same account. Unbound, truths land in ARCHIVE under a
+    // "truth:" prefix and still work; bound, they land where the master truths
+    // live. Bindings take effect on the next deploy, not before.
+    {
+      "binding": "TRUTHS",
+      "id": "904eff3af4c14f06964e4f651cce9573"
+    },
+    {
+      "binding": "AUDITS",
+      "id": "8c19918f71fd420d8115e022d3014b9f"
     }
   ],
-  // The truth store, in the shape orproxy already has it: master truths and the
-  // audit trail. Same account, so binding either id puts cods on the exact
-  // namespace the engine casts into. Left commented because a binding to a
-  // namespace that is not there fails the entire deploy, and this is the Worker
-  // the phone uses. Uncomment to move the store over; nothing else changes,
-  // because the code already prefers TRUTHS / AUDITS when they are bound.
-  //
-  //   { "binding": "TRUTHS", "id": "904eff3af4c14f06964e4f651cce9573" },
-  //   { "binding": "AUDITS", "id": "8c19918f71fd420d8115e022d3014b9f" },
+  // TRUTHS and AUDITS are bound above. If a deploy ever fails because those
+  // namespaces are not on this account, comment the two entries out and the
+  // worker falls back to ARCHIVE: the code prefers TRUTHS, never requires it.
   "r2_buckets": [
     {
       "binding": "LTM",

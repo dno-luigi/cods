@@ -38,11 +38,12 @@ const CHARS_PER_TOKEN = 3;
 
 // Long input is not sliced and hoped for: it is rewritten by a chat model that
 // can hold it, and clef decides on what comes back. Contexts are from the
-// models' own pages; smallest first, so the cheap one runs before the 1M one.
+// models' own pages. DeepSeek V4 Flash is the coverage layer: its 1M window
+// holds states no clef can, so the rewrite is one model and it is that one.
+// llama-3.2-1b is not a summariser: it is the small assistant that works beside
+// the decision model and DeepSeek, each on what it is good for.
 const COMPRESS_LADDER = [
-  { model: "@cf/ibm-granite/granite-4.0-h-micro", context: 131000 },
-  { model: "@cf/moonshotai/kimi-k2.6", context: 262144 },
-  { model: "@cf/zai-org/glm-5.3", context: 1048576 },
+  { model: "@cf/deepseek-ai/deepseek-v4-flash-0731", context: 1048576 },
 ];
 
 function compressInstructions(tokens) {
@@ -140,6 +141,13 @@ function fitState(sections) {
 
 const OR_MODELS = ["openai/gpt-4o-mini"];
 
+// Grounding rides in the request itself: OpenRouter's `web` plugin searches,
+// attaches the results to the prompt and returns the citations as
+// message.annotations, for any model that does not search natively. Parallel
+// turbo is the $1-per-1,000-requests tier, with up to 10 results included.
+// A request overrides it with body.web: {engine, mode, max_results}.
+const OR_WEB_PLUGIN = { id: "web", engine: "parallel", mode: "turbo", max_results: 5 };
+
 // OpenRouter models the picker offers. With OPENROUTER_API_KEY these go
 // straight to the API, so any model id works. A preset is just a name too:
 // OpenRouter accepts "@preset/<slug>" as the model, and the proxy rewrites a
@@ -164,7 +172,10 @@ const TTL_STABLE = 604800; // 7 days
 const TTL_VOLATILE = 3600; // 1 hour
 
 // Text layer: Workers AI models in this order, then OpenRouter.
-const CF_TEXT_MODELS = ["@cf/ibm-granite/granite-4.0-h-micro"];
+const CF_TEXT_MODELS = [
+  "@cf/deepseek-ai/deepseek-v4-flash-0731",
+  "@cf/meta/llama-3.2-1b-instruct",
+];
 
 // The shapes: what a call has to look like, not which model answers it. The
 // card stays short because it rides in clef-flash's state; the full per-model
@@ -190,7 +201,7 @@ const SHAPE_CARD = [
 // come first; a proxy preset is the OpenRouter route. A pick this account
 // cannot run falls through the chain, so the answer still arrives.
 const MODEL_CHOICES = [
-  { id: "@cf/ibm-granite/granite-4.0-h-micro", short: "granite", label: "Granite 4 micro — fastest" },
+  { id: "@cf/deepseek-ai/deepseek-v4-flash-0731", short: "deepseek", label: "DeepSeek V4 Flash — 1M window" },
   { id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", short: "llama 70B", label: "Llama 3.3 70B — strongest here" },
   { id: "@cf/qwen/qwen2.5-coder-32b-instruct", short: "qwen 32B", label: "Qwen 2.5 32B — code and maths" },
   { id: "@cf/mistralai/mistral-small-3.1-24b-instruct", short: "mistral 24B", label: "Mistral Small 3.1 24B" },
@@ -509,7 +520,7 @@ code{font-size:12.5px;background:#00000044;padding:1px 4px;border-radius:4px}
   <button class="icon" data-sel="del">Delete</button>
   <button class="icon" data-sel="clear">Close</button>
 </div>
-<div class="input"><button class="chip" id="modelBtn" title="Model">auto</button><input id="prompt" placeholder="Type a prompt..." autocomplete="off"><button id="send">Send</button></div>
+<div class="input"><button class="chip" id="modelBtn" title="Model">auto</button><input id="prompt" placeholder="Type a prompt..." autocomplete="off"><button class="chip" id="mic" title="Speak your question" aria-label="Speak your question">mic</button><button id="send">Send</button></div>
 <div class="menu" id="menu"></div>
 <div class="sheet" id="sheet"><div class="sheet-body" id="sheetBody"></div></div>
 <div class="modal" id="modal"><div class="modal-box">
@@ -1450,6 +1461,59 @@ $('fsFlip').onclick = function () {
   S.flip[c.id] = !S.flip[c.id];
   $('fsBody').innerHTML = '<div class="card-q" style="color:var(--dim);font-size:13px;margin-bottom:10px">' + esc(c.q) + '</div>' + md(c.a);
 };
+// Speak your question: recorded here, transcribed by the Worker, dropped into
+// the prompt so it can be corrected before it is sent. Free and always on.
+var MR = null, RCH = [], MBUSY = false;
+function micDone(text) {
+  var box = $('prompt');
+  if (!text) return;
+  box.value = (box.value ? box.value + ' ' : '') + text;
+  box.focus();
+  toast('Heard: ' + text.slice(0, 40) + (text.length > 40 ? '…' : ''));
+}
+function micStop() {
+  var b = $('mic');
+  if (b) { b.classList.remove('on'); b.textContent = 'mic'; }
+  if (MR && MR.state !== 'inactive') { try { MR.stop(); } catch (e) {} }
+}
+function micStart() {
+  if (MBUSY) return;
+  if (!navigator.mediaDevices || !window.MediaRecorder) return toast('No microphone in this browser');
+  var b = $('mic');
+  MBUSY = true;
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+    RCH = [];
+    var mime = '';
+    ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].forEach(function (t) {
+      if (!mime && window.MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) mime = t;
+    });
+    MR = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+    MR.ondataavailable = function (e) { if (e.data && e.data.size) RCH.push(e.data); };
+    MR.onstop = function () {
+      stream.getTracks().forEach(function (t) { t.stop(); });
+      MBUSY = false;
+      var blob = new Blob(RCH, { type: (mime || 'audio/webm').split(';')[0] });
+      if (!blob.size) { b.textContent = 'mic'; return toast('Nothing recorded'); }
+      b.textContent = '...';
+      fetch('/stt', { method: 'POST', headers: { 'Content-Type': blob.type }, body: blob })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          b.textContent = 'mic';
+          if (d && d.text) return micDone(d.text);
+          toast((d && d.error) || 'Could not hear that');
+        })
+        .catch(function () { b.textContent = 'mic'; toast('Could not hear that'); });
+    };
+    MR.start();
+    b.classList.add('on');
+    b.textContent = 'stop';
+    toast('Listening — press stop when you are done');
+  }).catch(function () { MBUSY = false; toast('The microphone is blocked'); });
+}
+$('mic').onclick = function () {
+  if (MR && MR.state === 'recording') return micStop();
+  micStart();
+};
 $('send').onclick = function () { sendPrompt(null); };
 $('prompt').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); sendPrompt(null); } });
 document.addEventListener('keydown', function (e) {
@@ -1524,6 +1588,8 @@ export default {
         clef_context: CLEF_CONTEXT_TOKENS,
         card_limit: CARD_LIMIT,
         card_ops: Object.keys(CARD_OPS),
+        mcp: MCP_TOOLS.map((t) => t.name),
+        stt: !!env.AI,
         approved: !!arcStore(env),
         admin: !!env.ADMIN,
         memory: { context: !!env.CONTEXT, archive: !!env.ARCHIVE, cache: !!env.CACHE, kv: !!env.KV, ltm: !!env.LTM, shapes: !!env.LTM, loader: !!env.LOADER },
@@ -1675,6 +1741,44 @@ export default {
     });
   }
 
+  // The card tools over MCP, for anything outside the Worker. The Worker itself
+  // calls the same handlers directly, so this hop is optional.
+  if (url.pathname === "/mcp") {
+    if (request.method !== "POST") {
+      return new Response(null, { status: 405, headers: { Allow: "POST, OPTIONS", ...cH } });
+    }
+    const bad = truthAdmin(env, request);
+    if (bad) {
+      return json(
+        { jsonrpc: "2.0", id: null, error: { code: -32000, message: bad } },
+        bad.indexOf("TRUTH_KEY is not set") >= 0 ? 503 : 403
+      );
+    }
+    return handleMcp(request, env);
+  }
+
+  // Speech in, text out — free, always, for everyone. Someone who cannot type a
+  // long question should never meet a paywall, so this route has no key and no
+  // plan check. It is bounded by clip size and by a per-address daily count, so
+  // one script cannot spend the account's whole allowance.
+  if (url.pathname === "/stt") {
+    if (request.method !== "POST") {
+      return json({ error: "Use POST with the audio as the body" }, 405);
+    }
+    if (!env.AI) return json({ error: "The AI binding is not available here" }, 503);
+    const clip = await request.arrayBuffer();
+    if (!clip || !clip.byteLength) return json({ error: "Send the audio as the request body" }, 400);
+    if (clip.byteLength > STT_MAX_BYTES) {
+      return json({ error: "That clip is too long. Keep it under " + Math.round(STT_MAX_BYTES / 1048576) + " MB." }, 413);
+    }
+    const over = await sttBudget(env, request);
+    if (over) return json({ error: over }, 429);
+    const format = String(request.headers.get("content-type") || "audio/webm").split(";")[0].trim();
+    const heard = await transcribe(env, clip, format);
+    if (!heard.text) return json({ error: heard.error || "Nothing was recognised in that clip" }, 502);
+    return json({ text: heard.text, model: heard.model, free: true });
+  }
+
   if (url.pathname === "/prefs") {
       // POST { reset: true } forgets everything learned, so drift can be undone.
       if (request.method === "POST") {
@@ -1807,6 +1911,219 @@ export default {
     return new Response("Not found", { status: 404, headers: cH });
   },
 };
+
+// ─── MCP: the card tools, one family ─────────────────────────────────────────
+// Every name starts with cods_cards_ so a client that has seen one also sees
+// the rest, and so a listing reads as one group rather than four strangers.
+// search finds, get reads, pick records what the human chose, learn turns the
+// outcome into an attempt the ladder reads back out of scores:v1.
+const MCP_PROTOCOL = "2025-06-18";
+const CARDS_PREFIX = "cards/";
+const MCP_LIMIT = 200;
+
+const MCP_TOOLS = [
+  {
+    name: "cods_cards_search",
+    title: "Search cards",
+    description:
+      "Find stored cards by words in the question or the answer. Returns ids to hand to cods_cards_get.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "words to look for" },
+        limit: { type: "integer", minimum: 1, maximum: 25, default: 5 },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "cods_cards_get",
+    title: "Read one card",
+    description: "Read a card in full by the id cods_cards_search returned.",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string", description: "the card id, without cards/ or .json" } },
+      required: ["id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "cods_cards_pick",
+    title: "Pick a card",
+    description:
+      "Record that the human chose this card. Stamps the id and the time, so the loop knows which card was acted on.",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string", description: "the card id" }, by: { type: "string", description: "who picked it" } },
+      required: ["id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "cods_cards_learn",
+    title: "Record the outcome",
+    description:
+      "Write the verdict for a card back into scores:v1, the same store the decision ladder reads. Pass ok=false when the card did not hold up.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "the card id, so its domain and model are reused" },
+        ok: { type: "boolean", description: "did the card hold up" },
+        domain: { type: "string", description: "override the card's domain" },
+        model: { type: "string", description: "override the model to credit" },
+      },
+      required: ["ok"],
+      additionalProperties: false,
+    },
+  },
+];
+
+function cardIdFromKey(key) {
+  return String(key || "").replace(/^cards\//, "").replace(/\.(json|md)$/, "");
+}
+
+async function cardsSearch(env, query, limit) {
+  const cap = Math.min(Math.max(Number(limit) || 5, 1), 25);
+  const terms = String(query || "").toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 2);
+  if (!terms.length) return { terms, hits: [] };
+  const store = env.LTM;
+  if (!store) return { terms, hits: [], note: "no LTM bucket is bound" };
+  const page = typeof store.list === "function" ? await store.list({ prefix: CARDS_PREFIX, limit: MCP_LIMIT }) : { objects: [] };
+  const hits = [];
+  for (const obj of page.objects || []) {
+    if (!/\.json$/.test(obj.key)) continue;
+    try {
+      const got = await store.get(obj.key);
+      if (!got) continue;
+      const card = JSON.parse(await got.text());
+      const text = (String(card.q || "") + " " + String(card.a || "")).toLowerCase();
+      const score = terms.reduce((n, t) => n + (text.indexOf(t) >= 0 ? 1 : 0), 0);
+      if (!score) continue;
+      hits.push({
+        id: cardIdFromKey(obj.key),
+        q: card.q || "",
+        a: String(card.a || "").slice(0, 300),
+        score,
+        domain: (card.decision && card.decision.domain) || null,
+      });
+    } catch (err) {}
+  }
+  hits.sort((a, b) => b.score - a.score);
+  return { terms, count: hits.length, hits: hits.slice(0, cap) };
+}
+
+async function cardsGet(env, id) {
+  const clean = String(id || "").trim().replace(/^cards\//, "").replace(/[^A-Za-z0-9_-]/g, "");
+  if (!clean) throw new Error("Need a card id");
+  if (!env.LTM) throw new Error("No LTM bucket is bound");
+  const got = await env.LTM.get(CARDS_PREFIX + clean + ".json");
+  if (!got) throw new Error("No card " + clean);
+  const card = JSON.parse(await got.text());
+  return { id: clean, ...card };
+}
+
+async function cardsPick(env, id, by) {
+  const card = await cardsGet(env, id);
+  const at = new Date().toISOString();
+  const store = ctxStore(env);
+  const rec = { id: card.id, at, by: String(by || "").slice(0, 80) || null, domain: (card.decision && card.decision.domain) || null };
+  if (store) await store.put("pick:" + card.id, JSON.stringify(rec));
+  return { picked: rec, saved: !!store, q: card.q || null };
+}
+
+async function cardsLearn(env, args) {
+  const card = args.id ? await cardsGet(env, args.id) : null;
+  const decision = (card && card.decision) || {};
+  const domain = String(args.domain || decision.domain || "general").slice(0, 40);
+  const model = String(args.model || decision.model || "").slice(0, 120);
+  if (!model) throw new Error("No model to credit: pass model, or learn from a card that recorded one");
+  const ok = args.ok === true || args.ok === "true";
+  await noteAttempt(env, domain, model, ok);
+  const scores = await loadScores(env);
+  return {
+    id: card ? card.id : args.id || null,
+    domain,
+    model,
+    ok,
+    score: Math.round(scoreOf(scores, domain, model) * 1000) / 1000,
+    attempts: (scores.models[model] && scores.models[model].n) || 0,
+  };
+}
+
+// One registry, so the HTTP route and the Worker's own loop cannot drift apart.
+const MCP_HANDLERS = {
+  cods_cards_search: (env, a) => cardsSearch(env, a.query, a.limit),
+  cods_cards_get: (env, a) => cardsGet(env, a.id),
+  cods_cards_pick: (env, a) => cardsPick(env, a.id, a.by),
+  cods_cards_learn: (env, a) => cardsLearn(env, a),
+};
+
+async function mcpCall(env, name, args) {
+  const run = MCP_HANDLERS[name];
+  if (!run) throw new Error("No tool " + name + "; try " + MCP_TOOLS.map((t) => t.name).join(", "));
+  return run(env, args && typeof args === "object" ? args : {});
+}
+
+async function handleMcp(request, env) {
+  let msg;
+  try {
+    msg = await request.json();
+  } catch (err) {
+    return json({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }, 400);
+  }
+  const batch = Array.isArray(msg) ? msg : [msg];
+  const out = [];
+  for (const one of batch) {
+    const id = one && one.id !== undefined ? one.id : null;
+    const method = one && one.method;
+    if (!method) {
+      out.push({ jsonrpc: "2.0", id, error: { code: -32600, message: "Invalid request" } });
+      continue;
+    }
+    if (method === "initialize") {
+      out.push({
+        jsonrpc: "2.0",
+        id,
+        result: {
+          protocolVersion: MCP_PROTOCOL,
+          capabilities: { tools: { listChanged: false } },
+          serverInfo: { name: "cods-cards", version: "1.0.0" },
+          instructions:
+            "Cards this system wrote and the human kept. Search first, read the one the human picked with cods_cards_pick, then report back with cods_cards_learn so the ladder learns from what actually held up.",
+        },
+      });
+      continue;
+    }
+    if (method === "notifications/initialized" || method === "notifications/cancelled") continue;
+    if (method === "ping") {
+      out.push({ jsonrpc: "2.0", id, result: {} });
+      continue;
+    }
+    if (method === "tools/list") {
+      out.push({ jsonrpc: "2.0", id, result: { tools: MCP_TOOLS } });
+      continue;
+    }
+    if (method === "tools/call") {
+      const name = one.params && one.params.name;
+      const args = (one.params && one.params.arguments) || {};
+      try {
+        const data = await mcpCall(env, name, args);
+        out.push({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(data) }], isError: false } });
+      } catch (err) {
+        out.push({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: String((err && err.message) || err) }], isError: true },
+        });
+      }
+      continue;
+    }
+    out.push({ jsonrpc: "2.0", id, error: { code: -32601, message: "No method " + method } });
+  }
+  if (!out.length) return new Response(null, { status: 202, headers: cH });
+  return json(Array.isArray(msg) ? out : out[0]);
+}
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -1971,9 +2288,13 @@ async function decide(env, state, questions) {
   // Nothing on Cloudflare holds it: the Decisions API is the bigger window, and
   // it answers the same typed questions.
   if (!answered && !fits && env.OPENROUTER_API_KEY) {
-    const via = await decisionsCall(env, state, asked);
-    answered = via.body;
-    usedBy = via.model;
+    try {
+      const via = await decisionsCall(env, state, asked);
+      answered = via.body;
+      usedBy = via.model;
+    } catch (err) {
+      lastError = err;
+    }
   }
   if (!answered) throw lastError || new Error("no decision model answered");
 
@@ -1995,25 +2316,58 @@ async function decide(env, state, questions) {
 
 // POST /api/alpha/decisions — the OpenRouter shape for typed decisions. It is
 // not the chat endpoint and no chat SDK will work against it.
+//
+// Not every decisions model reads the whole state: drex-max answered a
+// 215,000-character state while reporting 785 input tokens, which is a slice,
+// not the state. A confident answer about a slice is worse than no answer, so a
+// model whose own token count says it skipped most of the input is passed over.
+const OR_DECISION_LADDER = ["nace-ai/drex-max", "perplexity/pplx-decider-flash-v1.2", "liquid/d1.1"];
+
 async function decisionsCall(env, state, questions) {
-  const model = String(env.OR_DECISION_MODEL || "nace-ai/drex-max").trim();
-  const res = await fetch("https://openrouter.ai/api/alpha/decisions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: "Bearer " + env.OPENROUTER_API_KEY,
-    },
-    body: JSON.stringify({ model, state, questions }),
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error("decisions " + res.status + ": " + text.slice(0, 200));
-  let body = null;
-  try {
-    body = JSON.parse(text);
-  } catch (err) {
-    throw new Error("decisions: unreadable reply");
+  const preferred = String(env.OR_DECISION_MODEL || "").trim();
+  const order = [...new Set([preferred, ...OR_DECISION_LADDER].filter(Boolean))];
+  const estimate = estimateTokens(state);
+  const tried = [];
+  let lastError = null;
+  for (const model of order) {
+    try {
+      const res = await fetch("https://openrouter.ai/api/alpha/decisions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + env.OPENROUTER_API_KEY,
+        },
+        body: JSON.stringify({ model, state, questions }),
+      });
+      const text = await res.text();
+      if (!res.ok) {
+        tried.push(model + " HTTP " + res.status);
+        lastError = new Error("decisions " + res.status + ": " + text.slice(0, 160));
+        continue;
+      }
+      let body = null;
+      try {
+        body = JSON.parse(text);
+      } catch (err) {
+        tried.push(model + " unreadable");
+        lastError = new Error("decisions: unreadable reply");
+        continue;
+      }
+      const read = body && body.usage ? Number(body.usage.input_tokens) || 0 : 0;
+      if (read && estimate && read < estimate * 0.4) {
+        tried.push(model + " read " + read + " of ~" + estimate);
+        lastError = new Error(model + " read only " + read + " of about " + estimate + " tokens");
+        continue;
+      }
+      return { body, model: (body && body.model) || model, read, tried };
+    } catch (err) {
+      tried.push(model + " " + String((err && err.message) || err));
+      lastError = err;
+    }
   }
-  return { body, model };
+  const err = lastError || new Error("no OpenRouter decisions model answered");
+  err.tried = tried;
+  throw err;
 }
 
 function planRoute(decision) {
@@ -2771,6 +3125,25 @@ async function indexCard(env, card) {
   const name =
     "cards/" + (await hashKey(String(card.q || "") + "|" + String(card.a || ""))).slice(0, 32) + ".md";
   const doc = cardDoc(card);
+
+  // Mirror the card into LTM. The index is a search surface, not a store: it
+  // cannot be read back by id, and it can be rebuilt at any time. This copy is
+  // what cods_cards_get and cods_cards_learn read.
+  if (env.LTM) {
+    try {
+      await env.LTM.put(
+        name.replace(/\.md$/, ".json"),
+        JSON.stringify({
+          q: card.q || "",
+          a: card.a || "",
+          decision: card.decision || null,
+          sources: card.sources || null,
+          at: new Date().toISOString(),
+        }),
+        { httpMetadata: { contentType: "application/json" } }
+      );
+    } catch (err) {}
+  }
 
   const handle = indexHandle(env);
   if (handle) {
@@ -3713,25 +4086,18 @@ async function handleChat(request, env, emit) {
   // budgeted cut as the last resort.
   const rawState = [buildState(prompt, told), learned].filter(Boolean).join("\n\n");
   const widest = DECISION_LADDER[DECISION_LADDER.length - 1].context - DECISION_RESERVE;
-  let fitted;
-  if (estimateTokens(rawState) + estimateTokens(SHAPE_CARD) <= widest) {
-    fitted = {
-      state: [rawState, SHAPE_CARD].filter(Boolean).join("\n\n"),
-      tokens: estimateTokens(rawState) + estimateTokens(SHAPE_CARD),
-      dropped: 0,
-      promptCut: false,
-      trimmed: false,
-    };
-  } else {
-    const compressed = await compressState(env, rawState, widest - estimateTokens(SHAPE_CARD));
-    if (compressed) {
-      step("compress", compressed.model + " rewrote " + compressed.from + " tokens down to " + compressed.to);
-      fitted = fitState({ prompt: compressed.text, told: [], learned, card: SHAPE_CARD });
-    } else {
-      fitted = fitState({ prompt, told, learned, card: SHAPE_CARD });
-    }
-  }
-  const state = fitted.state;
+  const cardTokens = estimateTokens(SHAPE_CARD);
+  // Deciding comes first, on the state as written: the ladder picks by window and
+  // the Decisions API covers what no Cloudflare model holds. Rewriting only makes
+  // sense once both of those have refused.
+  let fitted = {
+    state: [rawState, SHAPE_CARD].filter(Boolean).join("\n\n"),
+    tokens: estimateTokens(rawState) + cardTokens,
+    dropped: 0,
+    promptCut: false,
+    trimmed: false,
+  };
+  let state = fitted.state;
   const failures = [];
 
   // 1. Decide — clef-flash classifies the request.
@@ -3758,17 +4124,35 @@ async function handleChat(request, env, emit) {
     }
   } catch (err) {
     decisionError = err.message;
-    failures.push("clef-flash: " + err.message);
-    // 413 / 5021 is the window, not a broken model. Ask again with less rather
-    // than routing blind, and say so in the trail.
-    if (/context window|5021|too large|exceeded/i.test(err.message)) {
-      step("state", "clef refused the full state, retried with the question alone");
+    failures.push("decision: " + err.message);
+    // Nothing held the state: not the ladder, not the Decisions API. Only now is
+    // a rewrite worth what it costs.
+    if (/context window|5021|too large|exceeded|no decision model/i.test(err.message)) {
+      const compressed = await compressState(env, rawState, Math.max(2000, widest - cardTokens));
+      if (compressed) {
+        step("compress", compressed.model + " rewrote " + compressed.from + " tokens down to " + compressed.to);
+        fitted = fitState({ prompt: compressed.text, told: [], learned, card: SHAPE_CARD });
+      } else {
+        step("compress", "no model could rewrite it, so the state was cut to fit");
+        fitted = fitState({ prompt, told, learned, card: SHAPE_CARD });
+      }
+      state = fitted.state;
       try {
-        decision = await decide(env, "New message:\n" + prompt, body.questions);
+        decision = await decide(env, state, body.questions);
         decisionError = null;
       } catch (again) {
-        decisionError = again.message;
-        failures.push("clef-flash retry: " + again.message);
+        // Last resort: the question alone still needs a decision. A refused
+        // rewrite is no reason to route blind.
+        step("state", "the rewritten state was refused too, retried with the question alone");
+        try {
+          fitted = fitState({ prompt, told: [], learned, card: SHAPE_CARD });
+          state = fitted.state;
+          decision = await decide(env, state, body.questions);
+          decisionError = null;
+        } catch (third) {
+          decisionError = third.message;
+          failures.push("question alone: " + third.message);
+        }
       }
     }
   }
@@ -4014,9 +4398,21 @@ async function handleChat(request, env, emit) {
     const target = pick.preset ? "@preset/" + pick.preset : pick.model;
     if (env.OPENROUTER_API_KEY) {
       try {
-        const answer = await callOpenRouter(env, target, messages, body);
+        // The answer path is grounded: the plugin searches before the model
+        // speaks, and the citation annotations come back out as sources.
+        const grounded = body.use_web !== false && body.web !== false;
+        const via = await openRouterCall(
+          env,
+          target,
+          messages,
+          grounded ? Object.assign({}, body, { web: body.web || true }) : body
+        );
+        if (via.citations.length) {
+          sources = uniqueSources(sources.concat(via.citations));
+          searchVia = searchVia || "openrouter:web/parallel";
+        }
         return respond({
-          answer,
+          answer: via.text,
           provider: "clef-flash → openrouter · " + target,
           trace: [{ source: "openrouter", model: target }],
         });
@@ -4544,7 +4940,75 @@ function sseText(raw) {
   return out.trim();
 }
 
-async function callOpenRouter(env, model, messages, body) {
+// Grounded: the `web` plugin searches before the model speaks, and OpenRouter
+// returns the citations as message.annotations. A caller that wants the
+// receipts asks for this shape; everything else goes through callOpenRouter.
+// ─── speech in ───────────────────────────────────────────────────────────────
+// Two models, and two input shapes for them: Deepgram's route takes the bytes as
+// a body with a content type, Whisper's takes a plain byte array. The shapes are
+// tried in order and the first that returns text wins, so one model changing its
+// input shape never takes dictation down. Both are on the AI binding, so this
+// needs no key of its own.
+const STT_MAX_BYTES = 8388608;
+const STT_DAILY_CLIPS = 120;
+const STT_MODELS = ["@cf/deepgram/nova-3", "@cf/openai/whisper-large-v3-turbo"];
+
+function sttText(res) {
+  if (!res) return "";
+  if (typeof res === "string") return res.trim();
+  const channel = res.results && res.results.channels && res.results.channels[0];
+  const alt = channel && channel.alternatives && channel.alternatives[0];
+  const out =
+    res.text ||
+    res.transcript ||
+    res.response ||
+    (alt && alt.transcript) ||
+    "";
+  return String(out || "").trim();
+}
+
+async function transcribe(env, clip, format) {
+  const bytes = Array.from(new Uint8Array(clip));
+  const shapes = [{ audio: { body: clip, contentType: format } }, { audio: bytes }];
+  let last = null;
+  for (const model of STT_MODELS) {
+    for (const input of shapes) {
+      try {
+        const text = sttText(await env.AI.run(model, input));
+        if (text) return { text, model };
+        last = model + ": empty response";
+      } catch (err) {
+        last = model + ": " + String((err && err.message) || err);
+      }
+    }
+  }
+  return { text: "", model: null, error: last };
+}
+
+// A ceiling, not a paywall: nobody is turned away for who they are, only for
+// asking the same address for more than a day's worth of clips.
+async function sttBudget(env, request) {
+  const store = cacheStore(env);
+  if (!store || !store.put) return null;
+  const ip = String(request.headers.get("cf-connecting-ip") || "unknown");
+  const key = "stt:" + new Date().toISOString().slice(0, 10) + ":" + ip;
+  let used = 0;
+  try {
+    used = Number(await store.get(key)) || 0;
+  } catch (err) {
+    return null;
+  }
+  if (used >= STT_DAILY_CLIPS) {
+    return "That is " + STT_DAILY_CLIPS + " clips from this connection today. Try again tomorrow.";
+  }
+  try {
+    await store.put(key, String(used + 1), { expirationTtl: 90000 });
+  } catch (err) {}
+  return null;
+}
+
+async function openRouterCall(env, model, messages, body) {
+  const plugins = webPlugins(body);
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -4564,7 +5028,8 @@ async function callOpenRouter(env, model, messages, body) {
         // (openrouter:web_search, openrouter:datetime, openrouter:web_fetch),
         // with max_tool_calls bounding the agent loop. Passed through untouched.
         Array.isArray(body.tools) && body.tools.length ? { tools: body.tools } : {},
-        body.max_tool_calls != null ? { max_tool_calls: body.max_tool_calls } : {}
+        body.max_tool_calls != null ? { max_tool_calls: body.max_tool_calls } : {},
+        plugins.length ? { plugins } : {}
       )
     ),
   });
@@ -4583,16 +5048,43 @@ async function callOpenRouter(env, model, messages, body) {
     throw err;
   }
 
-  const answer =
-    data && data.choices && data.choices[0] && data.choices[0].message
-      ? data.choices[0].message.content
-      : "";
+  const message = data && data.choices && data.choices[0] ? data.choices[0].message : null;
+  const answer = message ? message.content : "";
   if (!answer) {
     const err = new Error("empty completion from " + model);
     err.status = 502;
     throw err;
   }
-  return answer;
+  return { text: answer, citations: citationsFrom(message) };
+}
+
+async function callOpenRouter(env, model, messages, body) {
+  return (await openRouterCall(env, model, messages, body)).text;
+}
+
+// The web plugin applies only when a request asks for it: { web: true } takes
+// the cheap default, { web: {...} } takes whatever it names. Cards and other
+// sub-calls stay ungrounded, so one answer does not pay to search five times.
+function webPlugins(body) {
+  const asked = body && body.web;
+  if (!asked || (body && body.use_web === false)) return [];
+  const plan = typeof asked === "object" ? Object.assign({}, OR_WEB_PLUGIN, asked) : OR_WEB_PLUGIN;
+  return [plan];
+}
+
+// url_citation annotations are the receipts: one per page the model was given,
+// deduplicated by URL and shaped like every other source in this Worker.
+function citationsFrom(message) {
+  const list = message && Array.isArray(message.annotations) ? message.annotations : [];
+  const out = [];
+  const seen = new Set();
+  for (const a of list) {
+    const c = a && a.type === "url_citation" ? a.url_citation : null;
+    if (!c || !c.url || seen.has(c.url)) continue;
+    seen.add(c.url);
+    out.push({ title: c.title || c.url, url: c.url, description: String(c.content || "").slice(0, 400) });
+  }
+  return out;
 }
 
 async function hashKey(text) {
