@@ -2921,7 +2921,16 @@ function relevanceOf(item, terms) {
 const BROWSER_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36";
 
+// Bing first: asked from a datacenter address DuckDuckGo answers html., lite. and
+// the js page with an "anomaly" challenge that contains no results at all, so
+// leading with it spent a session and six seconds per query before reaching a
+// page that had answers on it.
 const BROWSER_ENGINES = [
+  {
+    name: "bing",
+    url: (q) => "https://www.bing.com/search?count=20&q=" + q,
+    selector: "li.b_algo",
+  },
   {
     name: "ddg",
     url: (q) => "https://duckduckgo.com/?q=" + q,
@@ -2936,11 +2945,6 @@ const BROWSER_ENGINES = [
     name: "ddg-lite",
     url: (q) => "https://lite.duckduckgo.com/lite/?q=" + q,
     selector: "a.result-link",
-  },
-  {
-    name: "bing",
-    url: (q) => "https://www.bing.com/search?count=20&q=" + q,
-    selector: "li.b_algo",
   },
 ];
 
@@ -3037,9 +3041,10 @@ async function browserPage(env, engine, q) {
       " var p = row.querySelector('p');" +
       " return { url: a ? a.href : '', title: a ? a.textContent.trim() : '', description: p ? p.textContent.trim() : '' };" +
       " });" +
-      " return { rows: rows, total: rows.length, title: String(document.title || '') };" +
+      " return { rows: rows, total: rows.length, title: String(document.title || '')," +
+      " body: document.body ? String(document.body.innerText || '').slice(0, 600) : '' };" +
       "})()";
-    let out = { rows: [], total: 0, title: "" };
+    let out = { rows: [], total: 0, title: "", body: "" };
     // A results page paints after the load event. Poll the document instead of
     // reading once and deciding the page was empty.
     for (let attempt = 0; attempt < 16; attempt++) {
@@ -3050,6 +3055,12 @@ async function browserPage(env, engine, q) {
       const value = res && res.result ? res.result.value : null;
       if (value && Array.isArray(value.rows)) out = value;
       if (out.rows.length) break;
+      // A challenge page never fills in, so say what it was instead of polling
+      // an empty document sixteen times.
+      const probe = String(out.title || "") + " " + String(out.body || "");
+      if (/anomaly|just a moment|attention required|unusual traffic|are you a robot|verify you are human|bots use duckduckgo/i.test(probe)) {
+        throw new Error(engine.name + " served a challenge page instead of results");
+      }
       await new Promise((r) => setTimeout(r, 400));
     }
     return out;
@@ -3058,14 +3069,34 @@ async function browserPage(env, engine, q) {
   }
 }
 
+// No results page links straight at its source: Bing wraps every hit in
+// /ck/a?u=a1<base64url> and DuckDuckGo in /l/?uddg=<encoded>. What comes back
+// has to be the page itself, never the engine's own redirect.
+function sourceUrl(raw) {
+  let url = String(raw || "");
+  const ddg = /[?&]uddg=([^&]+)/.exec(url);
+  if (ddg) {
+    try { url = decodeURIComponent(ddg[1]); } catch (err) {}
+  }
+  const bing = /[?&]u=a1([A-Za-z0-9_-]+)/.exec(url);
+  if (bing) {
+    try {
+      const b64 = bing[1].replace(/-/g, "+").replace(/_/g, "/");
+      const decoded = atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4));
+      if (/^https?:\/\//i.test(decoded)) url = decoded;
+    } catch (err) {}
+  }
+  return /^https?:\/\//i.test(url) ? url : "";
+}
+
 // Rows straight off the page: drop anything that is not a real link, and
 // keep the first `limit` distinct URLs.
 function browserItems(rows, limit) {
   const out = [];
   const seen = new Set();
   for (const row of rows || []) {
-    const url = String((row && row.url) || "");
-    if (!/^https?:\/\//.test(url)) continue;
+    const url = sourceUrl(row && row.url);
+    if (!url) continue;
     if (seen.has(url)) continue;
     seen.add(url);
     out.push({

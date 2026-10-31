@@ -431,8 +431,11 @@ function fakeBrowser(pages, opts) {
         }
         if (msg.method === "Runtime.evaluate") {
           const url = state.navigated[state.navigated.length - 1];
-          const rows = (pages ? pages(url) : []) || [];
-          return { id: msg.id, result: { result: { value: { rows: rows, total: rows.length } } } };
+          const spec = pages ? pages(url) : [];
+          const rows = Array.isArray(spec) ? spec : (spec && spec.rows) || [];
+          const title = Array.isArray(spec) ? "" : String((spec && spec.title) || "");
+          const body = Array.isArray(spec) ? "" : String((spec && spec.body) || "");
+          return { id: msg.id, result: { result: { value: { rows: rows, total: rows.length, title: title, body: body } } } };
         }
         return { id: msg.id, result: {} };
       });
@@ -463,8 +466,8 @@ function fakeBrowser(pages, opts) {
     d.cards.map((c) => c.source && c.source.url)
   );
   check(
-    "the page was navigated inside the session",
-    fake.state.navigated.length === 1 && /duckduckgo\.com/.test(fake.state.navigated[0]),
+    "the page was navigated inside the session, bing first",
+    fake.state.navigated.length === 1 && /bing\.com\/search/.test(fake.state.navigated[0]),
     fake.state.navigated
   );
   check("the session is opened and closed once", fake.state.sessions === 1 && fake.state.closed === 1, fake.state);
@@ -509,7 +512,7 @@ function fakeBrowser(pages, opts) {
   ]);
   const env = makeEnv({ BROWSER: fake.binding });
   const d = await (await post("/chat", { prompt: "what makes a good trading journal", cards: [] }, env)).json();
-  check("the engine that answered is named", /browser\(ddg\): dropped 2 of 2 off-topic/.test(String(d.search_error)), d.search_error);
+  check("the engine that answered is named", /browser\(bing\): dropped 2 of 2 off-topic/.test(String(d.search_error)), d.search_error);
   check("the offending title is quoted back", /first was "Make vs\. Makes"/.test(String(d.search_error)), d.search_error);
 }
 
@@ -526,6 +529,43 @@ function fakeBrowser(pages, opts) {
   check("both family matches become cards", d.cards.length === 2, d.cards.length);
 }
 
+// 12m. the engine's own redirect is not the source
+{
+  calls = []; aiInputs = [];
+  const realOne = "https://example.org/real-one";
+  const wrapped =
+    "https://www.bing.com/ck/a?!&&p=161e81d5&ptn=3&ver=2&hsh=4&u=a1" +
+    Buffer.from(realOne).toString("base64url") +
+    "&ntb=1";
+  const fake = fakeBrowser(() => [
+    { url: wrapped, title: "Cloudflare news one", description: "wrapped by bing" },
+    { url: "//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.org%2Freal-two&rut=abc", title: "Cloudflare news two", description: "wrapped by ddg" },
+  ]);
+  const env = makeEnv({ BROWSER: fake.binding });
+  const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
+  const urls = (d.cards || []).map((c) => c.source && c.source.url);
+  check("a bing ck/a wrapper resolves to the page it points at", urls.indexOf(realOne) >= 0, urls);
+  check("a duckduckgo l/ wrapper resolves too", urls.indexOf("https://example.org/real-two") >= 0, urls);
+  check("no citation is a redirect", urls.every((u) => !/bing\.com\/ck\/|duckduckgo\.com\/l\//.test(String(u))), urls);
+}
+
+// 12n. a challenge page is left alone and the next engine gets the turn
+{
+  calls = []; aiInputs = [];
+  const fake = fakeBrowser((url) => {
+    if (/bing\.com/.test(url)) {
+      return { rows: [], title: "", body: "Unfortunately, bots use DuckDuckGo too." };
+    }
+    return [
+      { url: "https://example.org/one", title: "Cloudflare news one", description: "real" },
+      { url: "https://example.org/two", title: "Cloudflare news two", description: "real" },
+    ];
+  });
+  const env = makeEnv({ BROWSER: fake.binding });
+  const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
+  check("a challenge page sends it on to the next engine", fake.state.navigated.length === 2 && /duckduckgo/.test(fake.state.navigated[1]), fake.state.navigated);
+  check("the next engine's rows are used", d.search_via === "browser" && d.cards.length === 2, d.search_via + "/" + (d.cards || []).length);
+}
 
 // 13a. the page's own script has to parse, or nothing ever renders
 {
