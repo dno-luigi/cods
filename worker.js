@@ -1192,7 +1192,7 @@ export default {
       const hit = await orProxyCall(
         env,
         [{ role: "user", content: "Reply with exactly: ready" }],
-        { max_tokens: 16, temperature: 0, proxy: true, preset: wanted || undefined }
+        { max_tokens: 120, temperature: 0, proxy: true, preset: wanted || undefined }
       );
       return json({ ok: true, via: hit.via, model: hit.model, reply: hit.text.slice(0, 200) });
     } catch (err) {
