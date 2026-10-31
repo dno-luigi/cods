@@ -744,6 +744,15 @@ function fakeBrowser(pages, opts) {
 // 17d. the page carries the card menu
 {
   const html = await (await worker.fetch(new Request("https://cods.example/"), makeEnv({}))).text();
+  // The OK button must have a single owner. It used to be reassigned by the
+  // clarify round, which left Merge/Continue boxes wired to a dead closure.
+  {
+    const page = await (await worker.fetch(new Request("https://cods.example/"), makeEnv())).text();
+    check("the modal's Go reads the current callback", page.includes("S.cb = go;"), "S.cb = go");
+    check("and is installed exactly once", (page.match(/modalGo'\)\.onclick/g) || []).length === 1, (page.match(/modalGo'\)\.onclick/g) || []).length);
+    check("the picker offers the truth engine's audit", page.includes("truth · audit this answer") && page.includes("d.proxy.presets"), "audit picker");
+  }
+
   ['id="selbar"', 'data-op="split"', 'data-op="merge"', 'id="menu"', "Continue / refine", "Fullscreen", "/deck"].forEach(function (needle) {
     check("page has " + needle, html.indexOf(needle) >= 0, needle);
   });
@@ -1427,7 +1436,11 @@ function fakeBrowser(pages, opts) {
   ['data-pick="o:', "preset · ", "type a model or preset", "'preset:' +"].forEach(function (n) {
     check("page has " + n, html.indexOf(n) >= 0, n);
   });
-  check("and no hard-coded audit button", html.indexOf("audit this") === -1, "audit this");
+  check(
+    "and the audit is a picker entry, not a button wired into every card",
+    html.indexOf('data-op="audit"') === -1 && html.indexOf('data-act="audit"') === -1 && html.indexOf("d.proxy.presets") > 0,
+    "audit wiring"
+  );
 }
 
 // 29. truths: stored as candidates, promoted only by an expert

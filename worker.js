@@ -1180,6 +1180,7 @@ function askBody(p, ctx) {
   var m = S.model;
   if (!m) return b;
   if (m.openrouter) { b.model = m.preset ? 'preset:' + m.preset : 'openrouter:' + m.model; return b; }
+  if (m.audit) { b.audit = true; b.proxy = true; b.preset = m.preset || 'truth'; return b; }
   if (m.proxy) { b.proxy = true; if (m.preset) b.preset = m.preset; }
   else if (m.cf) { b.model = m.cf; b.cf_models = [m.cf]; }
   return b;
@@ -1222,7 +1223,10 @@ function nextClarify() {
     $('modal').classList.remove('show');
     nextClarify();
   };
-  $('modalGo').onclick = go;
+  // The OK button has one owner: the handler installed at load time reads S.cb.
+  // Assigning onclick here used to leave Merge/Continue boxes wired to a dead
+  // clarify closure, so Go did nothing once a round had been answered.
+  S.cb = go;
   if (q.options && q.options.length) {
     Array.prototype.forEach.call($('modalDesc').parentNode.querySelectorAll('[data-clar]'), function (n) { n.remove(); });
     var box = document.createElement('div');
@@ -1275,6 +1279,12 @@ function openModels() {
       (d.openrouter.presets || []).forEach(function (p) { out += '<button data-pick="p:' + esc(p) + '">preset · ' + esc(p) + '</button>'; });
       out += '<button data-pick="x">type a model or preset…</button></div></div>';
     }
+    if (d.proxy && d.proxy.bound) {
+      out += '<div class="sect"><h4>Truth engine</h4><div class="row">';
+      out += '<button data-pick="a:1">truth · audit this answer</button>';
+      (d.proxy.presets || []).forEach(function (p, i) { out += '<button data-pick="y:' + i + '">proxy · ' + esc(p) + '</button>'; });
+      out += '</div></div>';
+    }
     var el = $('modelList');
     if (el) el.innerHTML = out;
   }).catch(function (e) {
@@ -1301,6 +1311,14 @@ document.addEventListener('click', function (e) {
     var om = ((MODELS && MODELS.openrouter && MODELS.openrouter.models) || [])[Number(v.slice(2))];
     if (!om) return;
     return keepModel({ label: om.short || om.id, store: 'openrouter:' + om.id, openrouter: true, model: om.id });
+  }
+  if (v.indexOf('a:') === 0) {
+    return keepModel({ label: 'truth · audit', store: 'audit:truth', proxy: true, preset: 'truth', audit: true });
+  }
+  if (v.indexOf('y:') === 0) {
+    var ppx = ((MODELS && MODELS.proxy && MODELS.proxy.presets) || [])[Number(v.slice(2))];
+    if (!ppx) return;
+    return keepModel({ label: 'proxy · ' + ppx, store: 'proxy:' + ppx, proxy: true, preset: ppx });
   }
   if (v.indexOf('p:') === 0) {
     var pslug = v.slice(2);
