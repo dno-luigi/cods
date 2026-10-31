@@ -1411,6 +1411,22 @@ function fakeBrowser(pages, opts) {
   }
 }
 
+// 28a2. an audit is asked for as an audit, not as another model answer
+{
+  const hit = [];
+  const env = makeEnv({
+    ORPROXY: {
+      fetch: async (url, init) => {
+        hit.push({ url: String(url), body: init && init.body ? String(init.body) : "" });
+        return new Response(JSON.stringify({ choices: [{ message: { content: "CONFIDENCE SCORE: 9" } }] }), { status: 200 });
+      },
+    },
+  });
+  const d = await (await post("/chat", { prompt: "is a promise without consideration enforceable", audit: true, preset: "truth", use_cache: false, cards: [] }, env)).json();
+  check("the audit goes to the proxy's audit route", hit.length > 0 && hit[0].url.indexOf("/v1/audit") >= 0, hit[0] && hit[0].url);
+  check("and says so in the provider", String(d.provider || "").indexOf("audit") >= 0, d.provider);
+}
+
 // 28b. no key: presets ride the proxy, model ids say what is missing
 {
   const proxied = [];
