@@ -1137,8 +1137,18 @@ function fakeBrowser(pages, opts) {
       { id: "goal", q: "What do you want back?", a: "Steps to act on" },
     ],
   }, env)).json();
-  check("after the answers it answers", !third.clarify && !!third.answer, third.answer);
-  check("and the answers shaped the work", (third.thinking || []).some((x) => x.step === "decide") || !!third.decision, third.thinking && third.thinking.length);
+  check("it keeps asking past the second round", third.clarify && third.clarify.questions.some((q) => q.id === "target"), third.clarify && third.clarify.questions.map((q) => q.id));
+
+  const fourth = await (await post("/chat", {
+    prompt: "help me sort this out",
+    clarify: [
+      { id: "web", q: "Should I search?", a: "Answer from knowledge" },
+      { id: "goal", q: "What do you want back?", a: "Steps to act on" },
+      { id: "target", q: "Who is this for?", a: "My own notes" },
+    ],
+  }, env)).json();
+  check("after the answers it answers", !fourth.clarify && !!fourth.answer, fourth.answer);
+  check("and the answers shaped the work", (fourth.thinking || []).some((x) => x.step === "decide") || !!fourth.decision, fourth.thinking && fourth.thinking.length);
 }
 
 // 25b. saying yes to the web question actually searches
@@ -1169,10 +1179,94 @@ function fakeBrowser(pages, opts) {
   const yes = await (await post("/chat", {
     prompt: "what changed in the rules",
     search: "yes",
-    clarify: [{ id: "web", q: "Should I search?", a: "Search the web" }, { id: "goal", q: "What?", a: "Short answer" }],
+    clarify: [{ id: "web", q: "Should I search?", a: "Search the web" }, { id: "goal", q: "What?", a: "Short answer" }, { id: "target", q: "Who for?", a: "Me" }],
   }, env)).json();
   check("saying yes reaches the web", calls.some((u) => u.indexOf("search.example") >= 0), calls);
   check("and the answer still comes back", !!yes.answer, yes.answer);
+}
+
+// 25d. when the fixed questions are used up it writes the next one, then stops
+{
+  const base = makeEnv();
+  const inner = base.AI.run;
+  let asked = 0;
+  const env = makeEnv({
+    AI: { run: async (m, i) => {
+      if (String(m).startsWith("@cf/cloudflare/clef")) {
+        return { answers: {
+          intent: { probabilities: { answer: 0.7 } },
+          domain: { probabilities: { general: 0.9 } },
+          tone: { probabilities: { plain: 0.9 } },
+          depth: { score: 2 },
+          needs_web: { probability: 0.2 },
+          cache_ok: { probability: 0.2 },
+          sensitive: { probability: 0.1 },
+          clarify: { probability: 0.1 },
+        } };
+      }
+      if (JSON.stringify(i).indexOf("You decide what to ask next") >= 0) {
+        asked += 1;
+        return { response: asked === 1 ? '{"q":"Which market are you in?","options":["EU","US"]}' : "DONE" };
+      }
+      return inner(m, i);
+    } },
+  });
+  const said = [{ id: "goal", q: "What do you want back?", a: "Short answer" }];
+  const more = await (await post("/chat", { prompt: "sort out the tax question", clarify: said }, env)).json();
+  check("it writes the next question itself", more.clarify && more.clarify.questions.some((q) => /market/i.test(q.q)), more.clarify && more.clarify.questions);
+  const q = more.clarify.questions[0];
+  const done = await (await post("/chat", { prompt: "sort out the tax question", clarify: said.concat([{ id: q.id, q: q.q, a: "EU" }]) }, env)).json();
+  check("and stops when it has nothing left", !done.clarify && !!done.answer, done.clarify && done.clarify.questions);
+}
+
+// 25e. what he answers is kept, and the next decision is told it
+{
+  const base = makeEnv();
+  const inner = base.AI.run;
+  const env = makeEnv({
+    AI: { run: async (m, i) => {
+      if (String(m).startsWith("@cf/cloudflare/clef")) {
+        aiInputs.push({ model: String(m), input: i });
+        return { answers: {
+          intent: { probabilities: { answer: 0.7 } },
+          domain: { probabilities: { general: 0.9 } },
+          depth: { score: 2 },
+          needs_web: { probability: 0.2 },
+          clarify: { probability: 0.9 },
+        } };
+      }
+      return inner(m, i);
+    } },
+  });
+  await post("/chat", { prompt: "who is this aimed at", clarify: [{ id: "target", q: "Who is this for?", a: "A blind student" }] }, env);
+  const prefs = await (await worker.fetch(new Request("https://cods.example/prefs"), env)).json();
+  check("the answer is kept", (prefs.learned || []).some((x) => /blind student/.test(String(x.a))), prefs.learned);
+  check("and it is reported as learned", /blind student/.test(String(prefs.hint)), prefs.hint);
+
+  calls = []; aiInputs = [];
+  await post("/chat", { prompt: "and here is the next thing" }, env);
+  const clefCall = aiInputs.find((i) => i.model.indexOf("clef") >= 0);
+  check("the next decision is told what he said", JSON.stringify((clefCall && clefCall.input) || {}).indexOf("blind student") >= 0, "state");
+}
+
+// 25f. the card is the size of the question; the long version sits behind it
+{
+  const env = makeEnv({ AI: { run: async (m, i) => {
+    if (String(m).startsWith("@cf/cloudflare/clef")) {
+      return { answers: {
+        intent: { probabilities: { answer: 0.7 } },
+        domain: { probabilities: { general: 0.9 } },
+        depth: { score: 1 },
+        needs_web: { probability: 0.1 },
+        clarify: { probability: 0.1 },
+      } };
+    }
+    return { response: "The short card about the rule.\n---\nThe much longer version with the detail he can open when he wants it." };
+  } } });
+  const d = await (await post("/chat", { prompt: "what is the rule", cards: [] }, env)).json();
+  check("the card is the short part", d.cards && d.cards[0].a === "The short card about the rule.", d.cards && d.cards[0].a);
+  check("the long version is kept behind it", /much longer/.test(String(d.cards[0].more)), d.cards[0].more);
+  check("still one card", d.cards.length === 1, d.cards.length);
 }
 
 // 25c. the picker offers both sides, and any OpenRouter name can be typed

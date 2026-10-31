@@ -162,8 +162,10 @@ const OR_CHOICES = [
 ];
 const WEB_THRESHOLD = 0.5;
 const CARE_THRESHOLD = 0.5;
-// How many times the decision layer may ask before it answers anyway.
-const CLARIFY_ROUNDS = 2;
+// It keeps asking until it has nothing left to ask. ASK_LIMIT is a runaway
+// guard, not a budget: he wants to go back and forth as long as it takes the
+// system to know his preferences.
+const ASK_LIMIT = 20;
 // Between these two it genuinely cannot tell whether the web would help, so
 // that is worth one question rather than a guess.
 const WEB_ASK_LOW = 0.35;
@@ -888,8 +890,10 @@ function cardHTML(c) {
       '<span class="acts"><span class="dots" data-expand="' + id + '">expand</span><span class="dots" data-dots="' + id + '">more</span></span></div>' +
       '<div class="body card-q">' + esc(c.q) + '</div></div>' +
     '<div class="face back"><div class="fh"><span class="lab">answer</span><span class="acts">' +
-      '<span class="dots" data-tts="' + id + '">' + (S.speaking === c.id ? 'stop' : 'play') + '</span><span class="dots" data-dots="' + id + '">more</span></span></div>' +
-      '<div class="body card-a">' + md(c.a) + '</div>' + meta(c) + why(c) + notes(c) + fb(c) + '</div>' +
+      '<span class="dots" data-tts="' + id + '">' + (S.speaking === c.id ? 'stop' : 'play') + '</span>' +
+      (c.more ? '<span class="dots" data-full="' + id + '">' + (c.showFull ? 'short' : 'long') + '</span>' : '') +
+      '<span class="dots" data-dots="' + id + '">more</span></span></div>' +
+      '<div class="body card-a">' + md(c.showFull && c.more ? c.more : c.a) + '</div>' + meta(c) + why(c) + notes(c) + fb(c) + '</div>' +
     '<div class="via">via ' + esc(c.provider) + '</div></div>';
 }
 function render() {
@@ -1108,6 +1112,7 @@ function sendPrompt(p, extra) {
           S.flip[cur.id] = true;
         }
         render(); scrollBottom();
+        if (d.learned) toast('Noted: ' + String(d.learned).slice(0, 90));
         showClarify(p, d.clarify);
         return;
       }
@@ -1126,6 +1131,19 @@ function sendPrompt(p, extra) {
           S.cards.splice(at + i, 0, card);
           fresh.push(card);
         });
+      } else if (got && got.length === 1 && cur) {
+        var g = got[0];
+        cur.q = p + (g.kind ? ' · ' + g.kind : '') + (g.source && g.source.title ? ' — ' + g.source.title : '');
+        cur.a = g.a;
+        cur.more = g.more || null;
+        cur.showFull = false;
+        cur.provider = (g.provider || d.provider || '') + (d.route ? ' · ' + d.route : '');
+        cur.decision = d.decision || null;
+        cur.thinking = d.thinking || null;
+        cur.sources = g.source ? [g.source] : (d.sources || null);
+        cur.related = d.related || null;
+        S.flip[cur.id] = true;
+        fresh.push(cur);
       } else if (cur) {
         cur.a = d.answer || d.response || '(no response)';
         cur.provider = d.approved
@@ -1381,6 +1399,13 @@ function importCards() {
 
 $('cards').addEventListener('click', function (e) {
   var t = e.target;
+  var full = t.closest('[data-full]');
+  if (full) {
+    e.stopPropagation();
+    var fc = byId(full.getAttribute('data-full'));
+    if (fc) { fc.showFull = !fc.showFull; render(); }
+    return;
+  }
   var dots = t.closest('[data-dots]');
   if (dots) { e.stopPropagation(); openMenu(dots.getAttribute('data-dots'), e.clientX, e.clientY); return; }
   var spk = t.closest('[data-tts]');
@@ -1812,6 +1837,7 @@ export default {
       return json({
         kv: !!env.KV,
         actions: prefs.actions,
+        learned: (prefs.learned || []).slice(-10),
         domains: prefs.domains,
         events: (prefs.events || []).slice(-10),
         hint: prefsHint(prefs),
@@ -2439,7 +2465,38 @@ function clarifyQuestions(decision, said) {
       options: [],
     });
   }
-  return out.slice(0, 2);
+  return out;
+}
+
+// The fixed questions run out. After that the decision model writes the next
+// one from what he has already said, so the conversation continues until it
+// actually knows what he wants instead of stopping at a round count.
+async function nextQuestions(env, prompt, said, decision, body) {
+  const told = (said || []).map((s, i) => i + 1 + ". " + s.q + " -> " + s.a).join("\n");
+  const messages = [
+    {
+      role: "system",
+      content:
+        "You decide what to ask next before an answer is written. Ask one question at a time, only what would change the answer.\n" +
+        "Reply with one line of JSON and nothing else: {\"q\":\"the question\",\"options\":[\"short option\",\"short option\"]}\n" +
+        "options may be [] when the answer has to be typed. If nothing important is left to ask, reply exactly: DONE",
+    },
+    { role: "user", content: "The request: " + prompt + "\nAnswers so far:\n" + (told || "(none)") },
+  ];
+  try {
+    const r = await askText(env, messages, Object.assign({}, body, { max_tokens: 180 }));
+    const text = String(r.text || "").trim();
+    if (!text || /^DONE/i.test(text)) return [];
+    const m = text.match(/\{[\s\S]*\}/);
+    if (!m) return [];
+    const parsed = JSON.parse(m[0]);
+    const q = String(parsed.q || "").trim();
+    if (!q) return [];
+    const options = Array.isArray(parsed.options) ? parsed.options.map(String).filter(Boolean).slice(0, 4) : [];
+    return [{ id: "ask" + ((said || []).length + 1), q, options }];
+  } catch (err) {
+    return [];
+  }
 }
 
 function readChoice(v) {
@@ -3307,6 +3364,7 @@ async function loadPrefs(env) {
       actions: parsed.actions && typeof parsed.actions === "object" ? parsed.actions : {},
       domains: parsed.domains && typeof parsed.domains === "object" ? parsed.domains : {},
       events: Array.isArray(parsed.events) ? parsed.events : [],
+      learned: Array.isArray(parsed.learned) ? parsed.learned : [],
       model: parsed.model || null,
       updated: parsed.updated || null,
     };
@@ -3315,11 +3373,32 @@ async function loadPrefs(env) {
   }
 }
 
+// Answers from the clarify questions land in the same record the card buttons
+// move, so the next decision reads them back instead of starting over.
+async function rememberAnswers(env, prompt, said, prefs) {
+  const p = prefs || (await loadPrefs(env));
+  p.learned = Array.isArray(p.learned) ? p.learned : [];
+  p.events = Array.isArray(p.events) ? p.events : [];
+  for (const s of said || []) {
+    const q = String((s && s.q) || "").trim();
+    const a = String((s && s.a) || "").trim();
+    if (!q || !a) continue;
+    const at = new Date().toISOString();
+    const key = q.slice(0, 80);
+    p.learned = p.learned.filter((x) => !x || x.q !== key);
+    p.learned.push({ q: key, a: a.slice(0, 200), prompt: String(prompt || "").slice(0, 120), at });
+    p.events.push({ at, action: "clarify", domain: "unknown", q: key, a: a.slice(0, 80) });
+  }
+  await savePrefs(env, p);
+  return p;
+}
+
 async function savePrefs(env, prefs) {
   const store = ctxStore(env);
   if (!store) return false;
   prefs.updated = new Date().toISOString();
   prefs.events = (prefs.events || []).slice(-24);
+  prefs.learned = (prefs.learned || []).slice(-40);
   await store.put(PREFS_KEY, JSON.stringify(prefs));
   return true;
 }
@@ -3327,6 +3406,18 @@ async function savePrefs(env, prefs) {
 function prefsHint(prefs) {
   const a = (prefs && prefs.actions) || {};
   const parts = [];
+  // What he answered when it asked. This is the part that makes it learn
+  // instead of asking the same three questions forever.
+  const learned = (prefs && prefs.learned) || [];
+  if (learned.length) {
+    parts.push(
+      "he told you: " +
+        learned
+          .slice(-4)
+          .map((x) => String((x && x.q) || "").slice(0, 70) + " -> " + String((x && x.a) || "").slice(0, 90))
+          .join("; ")
+    );
+  }
   if (a.deeper) parts.push("wants more depth (deeper x" + a.deeper + ")");
   if (a.more) parts.push("wants more angles (more x" + a.more + ")");
   if (a.again) parts.push("wants fresher sources (again x" + a.again + ")");
@@ -3338,7 +3429,7 @@ function prefsHint(prefs) {
     .slice(0, 3)
     .map(([d, v]) => d + " (" + (v.n || 0) + ")");
   let hint = "";
-  if (parts.length) hint = "Learned from this user's cards: " + parts.join("; ") + ".";
+  if (parts.length) hint = "Learned from this user: " + parts.join("; ") + ".";
   if (domains.length) hint += (hint ? " " : "") + "Most feedback is in: " + domains.join(", ") + ".";
   return hint.trim();
 }
@@ -4145,10 +4236,12 @@ async function handleChat(request, env, emit) {
   // this person's actual intent rather than another guess.
   const said = Array.isArray(body.clarify) ? body.clarify.filter((c) => c && c.q) : [];
   const told = said.length ? contextCards.concat(said.map((c) => ({ q: c.q, a: c.a }))) : contextCards;
+  // Keep what he just told it before anything reads the preferences again.
+  const learnedNow = said.length ? prefsHint(await rememberAnswers(env, prompt, said, prefs)) : learned;
   // The decision model is chosen by window, so the state is only shrunk when no
   // decision model can hold it. Order: raw state -> a model rewrites it ->
   // budgeted cut as the last resort.
-  const rawState = [buildState(prompt, told), learned].filter(Boolean).join("\n\n");
+  const rawState = [buildState(prompt, told), learnedNow].filter(Boolean).join("\n\n");
   const widest = DECISION_LADDER[DECISION_LADDER.length - 1].context - DECISION_RESERVE;
   const cardTokens = estimateTokens(SHAPE_CARD);
   // Deciding comes first, on the state as written: the ladder picks by window and
@@ -4172,14 +4265,19 @@ async function handleChat(request, env, emit) {
     if (String(body.search || "").toLowerCase() === "yes") decision.needs_web = 0.95;
     if (String(body.search || "").toLowerCase() === "no") decision.needs_web = 0.02;
 
-    // Ask while it is still unsure, and stop after CLARIFY_ROUNDS so the loop
-    // stays a conversation rather than an interrogation.
-    const asks = said.length < CLARIFY_ROUNDS ? clarifyQuestions(decision, said) : [];
+    // Ask while it is still unsure. It does not stop at a round count: once the
+    // fixed questions are used up the model writes the next one from his own
+    // answers, and the exchange ends when it has nothing left to ask.
+    let asks = said.length < ASK_LIMIT ? clarifyQuestions(decision, said) : [];
+    if (!asks.length && said.length < ASK_LIMIT && (said.length > 0 || (typeof decision.clarify === "number" && decision.clarify >= 0.5))) {
+      asks = await nextQuestions(env, prompt, said, decision, body);
+    }
     if (asks.length) {
       step("clarify", asks.length + (asks.length === 1 ? " question" : " questions"));
       return json({
         prompt,
-        clarify: { round: said.length, max: CLARIFY_ROUNDS, questions: asks, said },
+        learned: prefsHint((await loadPrefs(env))),
+        clarify: { round: said.length, max: null, questions: asks, said },
         decision: slimDecision(decision),
         answer: null,
         cards: null,
@@ -4348,13 +4446,16 @@ async function handleChat(request, env, emit) {
             content:              "Write the card for source [" + (i + 1) + "] only: " + s.title + " — " + s.url +
               "\n" + s.description +
               "\nGive the principle or fact this source contributes about the question — the rule it supports, " +
-              "stated so it carries to other cases. Not a summary of the document. Two to four sentences. " +
+              "stated so it carries to other cases. Not a summary of the document. " +
+              "Write it in two parts: the card itself, at most " + cardBudget(prompt) + " characters, the same size as the question; " +
+              "then a line containing only ---; then the longer version (up to 1400 characters) for the reader who opens it. " +
               "No preamble, and do not restate the question.",
           },
         ]);
         try {
-          const r = await askText(env, one, Object.assign({}, body, { max_tokens: body.max_tokens || 700 }));
-          return { text: r.text, provider: r.provider, trace: r.trace, source: { title: s.title, url: s.url } };
+          const r = await askText(env, one, Object.assign({}, body, { max_tokens: body.max_tokens || 900 }));
+          const parts = splitCard(r.text, cardBudget(prompt));
+          return { text: parts.a, more: parts.more, provider: r.provider, trace: r.trace, source: { title: s.title, url: s.url } };
         } catch (err) {
           failures.push("source " + (i + 1) + ": " + err.message);
           return null;
@@ -4363,7 +4464,7 @@ async function handleChat(request, env, emit) {
     );
     const cards = built
       .filter(Boolean)
-      .map((c) => ({ q: prompt, a: c.text, provider: c.provider, source: c.source, kind: decisionLabel(decision), decision: slimDecision(decision) }));
+      .map((c) => ({ q: prompt, a: c.text, more: c.more || null, provider: c.provider, source: c.source, kind: decisionLabel(decision), decision: slimDecision(decision) }));
     if (cards.length >= 1) {
       step("cards", cards.length + (cards.length === 1 ? " card" : " cards") + ", one per source");
       return finish(env, key, plan, {
@@ -4403,6 +4504,7 @@ async function handleChat(request, env, emit) {
       .map((c) => ({
         q: prompt,
         a: c.text,
+        more: c.more || null,
         provider: c.provider,
         kind: wanted === 1 ? decisionLabel(decision) : c.kind,
         decision: slimDecision(decision),
@@ -4639,6 +4741,28 @@ function decisionLabel(decision) {
   return [d.domain, d.intent].filter(Boolean).join(" \u00b7 ") || null;
 }
 
+// A card is the size of the question, not the size of an essay. He reads these
+// on a phone; the long version sits behind the toggle and is opened on purpose.
+function cardBudget(prompt) {
+  const n = String(prompt || "").trim().length;
+  return Math.max(140, Math.min(600, n));
+}
+
+function splitCard(text, budget) {
+  const raw = String(text || "").trim();
+  const at = raw.search(/\n\s*-{3,}\s*\n/);
+  if (at > 0) {
+    const short = raw.slice(0, at).trim();
+    const rest = raw.slice(at).replace(/^\s*-{3,}\s*/, "").trim();
+    return { a: short, more: rest && rest !== short ? rest : null };
+  }
+  if (raw.length <= budget) return { a: raw, more: null };
+  const cut = raw.slice(0, budget);
+  const end = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("? "), cut.lastIndexOf("! "), cut.lastIndexOf("\n"));
+  const a = (end > budget * 0.5 ? cut.slice(0, end + 1) : cut).trim();
+  return { a, more: raw };
+}
+
 function slimDecision(decision) {
   if (!decision) return null;
   return {
@@ -4701,7 +4825,9 @@ async function synthesizeCards(env, prompt, answer, decision, wanted, body, fail
             "You write cards for a knowledge app. Each card stands alone and is about the domain itself, not about any document.\n" +
             (decision && decision.domain ? "Domain: " + decision.domain + "\n" : "") +
             (decision && decision.preferences ? decision.preferences + "\n" : "") +
-            angle.ask,
+            angle.ask +
+            "\nWrite it in two parts: the card itself, at most " + cardBudget(prompt) + " characters, the same size as the question; " +
+            "then a line containing only ---; then the longer version (up to 1400 characters) for the reader who opens it.",
         },
         {
           role: "system",
@@ -4710,8 +4836,9 @@ async function synthesizeCards(env, prompt, answer, decision, wanted, body, fail
         { role: "user", content: prompt },
       ];
       try {
-        const r = await askText(env, messages, Object.assign({}, body, { max_tokens: 400 }));
-        return { text: r.text, provider: r.provider, trace: r.trace, kind: angle.kind };
+        const r = await askText(env, messages, Object.assign({}, body, { max_tokens: 700 }));
+        const parts = splitCard(r.text, cardBudget(prompt));
+        return { text: parts.a, more: parts.more, provider: r.provider, trace: r.trace, kind: angle.kind };
       } catch (err) {
         failures.push("card " + angle.kind + ": " + err.message);
         return null;
