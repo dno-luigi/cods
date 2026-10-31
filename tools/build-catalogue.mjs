@@ -5,9 +5,25 @@ import { writeFileSync } from "node:fs";
 
 const OR_MODELS = "https://openrouter.ai/api/v1/models";
 const CF_DOCS = "https://developers.cloudflare.com/workers-ai/llms-full.txt";
-const MODALITIES = ["transcription", "speech", "image", "video", "embeddings", "rerank"];
+const MODALITIES = ["decisions", "transcription", "speech", "image", "video", "embeddings", "rerank"];
 
 const SHAPES = {
+  decide: {
+    endpoint: { openrouter: "POST /api/alpha/decisions", cloudflare: "env.AI.run(id, { model, state, questions })" },
+    request: {
+      openrouter: {
+        model: "<id>",
+        state: "a string, object or array of content parts (image/audio/video allowed)",
+        questions: { "<name>": { type: "choice|noul|score", instructions: "...", criteria: "option map, true/false map, or ordered list" } },
+      },
+      cloudflare: { model: "clef | clef-omni | clef-flash (short name, not the @cf id)", state: "...", questions: "same schema" },
+    },
+    response: {
+      openrouter: "answers.<name>: { choice, probabilities } | { noul } | { score }",
+      cloudflare: "answers.<name> with the same three answer kinds",
+    },
+    why: "Decisions, not text. Calibrated probabilities for typed questions about a state; a chat SDK cannot call it.",
+  },
   chat: {
     endpoint: { openrouter: "POST /api/v1/chat/completions", cloudflare: "env.AI.run(id, input)" },
     request: { openrouter: { model: "<id>", messages: [{ role: "user", content: "..." }], tools: "optional", max_tool_calls: "optional" },
@@ -117,16 +133,26 @@ async function cfModels(text) {
   const pageRe = /^# (.+)\n\n([A-Z][A-Za-z0-9 /&'+-]{2,42}) • ([^\n]{2,70})$/gm;
   let match;
   while ((match = pageRe.exec(text)) !== null) {
-    const idMatch = text.slice(match.index, match.index + 4000).match(/@cf\/[A-Za-z0-9._/-]+/);
+    const segment = text.slice(match.index, match.index + 4000);
+    const idMatch = segment.match(/@cf\/[A-Za-z0-9._/-]+/);
     if (!idMatch) continue;
     const id = idMatch[0].replace(/[.,)]+$/, "");
     if (out.has(id)) continue;
     const task = match[2].trim();
+    const ctx = segment.match(/\| Context Window[^|]*\|\s*([0-9,]+)\s*tokens/);
+    const context = ctx ? Number(ctx[1].replace(/,/g, "")) : null;
+    // Confirmed by probe: these answer typed questions with probabilities and do
+    // not generate text, whatever the "Text Generation" task label says.
+    const decideOverride = /(^|\/)clef(-omni|-flash)?$/.test(id);
     // The docs label bge-reranker-base "Text Classification"; its id is the truth.
-    const rerankOverride = /rerank/i.test(id) && cfShape(task) !== "rerank";
-    out.set(id, { id, provider: "cloudflare", task, author: match[3].trim(),
-                  shape: rerankOverride ? "rerank" : cfShape(task),
-                  shape_source: rerankOverride ? "docs model page (id overrides task label)" : "docs model page" });
+    const rerankOverride = !decideOverride && /rerank/i.test(id) && cfShape(task) !== "rerank";
+    out.set(id, { id, provider: "cloudflare", task, author: match[3].trim(), context,
+                  shape: decideOverride ? "decide" : rerankOverride ? "rerank" : cfShape(task),
+                  shape_source: decideOverride
+                    ? "docs model page (decision model, id overrides task label)"
+                    : rerankOverride
+                      ? "docs model page (id overrides task label)"
+                      : "docs model page" });
   }
   for (const raw of text.match(/@cf\/[A-Za-z0-9._/-]+/g) || []) {
     const id = raw.replace(/[.,)]+$/, "");
@@ -158,7 +184,7 @@ async function cfModels(text) {
 
 // An OpenRouter model's shape comes from which output index lists it; strongest wins,
 // because an image-output model that also answers chat is still called through /images.
-const SHAPE_RANK = ["chat", "responses", "image", "video", "stt", "tts", "embed", "rerank"];
+const SHAPE_RANK = ["decide", "chat", "responses", "image", "video", "stt", "tts", "embed", "rerank"];
 
 function orModels(byModality) {
   const seen = new Map();
@@ -178,6 +204,7 @@ function orModels(byModality) {
       shape_source: "output_modalities index",
     });
   };
+  for (const model of byModality.decisions) add(model, "decide");
   for (const model of byModality.chat) add(model, "chat");
   for (const model of byModality.transcription) add(model, "stt");
   for (const model of byModality.speech) add(model, "tts");

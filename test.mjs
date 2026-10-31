@@ -1382,8 +1382,18 @@ function check(name, cond, extra) {
 // 32. clef has a 24,576-token window: the state is budgeted, the question is
 // first, and a refused state is retried rather than silently downgraded
 {
-  const long = "context sentence about position sizing. ".repeat(4000);
+  const long = "context sentence about position sizing. ".repeat(14000);
   const env = makeEnv({});
+  const baseRun = env.AI.run;
+  env.AI = {
+    run: async (model, input) => {
+      const msgs = (input && input.messages) || [];
+      if (msgs[0] && msgs[0].role === "system" && String(msgs[0].content).indexOf("decision model") >= 0) {
+        throw new Error("no summariser here");
+      }
+      return baseRun(model, input);
+    },
+  };
   aiInputs = [];
   const d = await (await post("/chat", { prompt: long + " SENTINEL-TAIL", cards: [] }, env)).json();
   check("an oversized prompt still gets an answer", !!d.answer, d.answer);
@@ -1400,7 +1410,7 @@ function check(name, cond, extra) {
     run: async (model, input) => {
       aiInputs.push({ model: String(model), input });
       const st = String((input && input.state) || "");
-      if (String(model).indexOf("clef") >= 0 && st.length > 4500) {
+      if (String(model).indexOf("clef") >= 0 && st.length > 4300) {
         throw new Error("AiError: The estimated number of input and maximum output tokens exceeded this model context window limit (24576). code 5021");
       }
       if (String(model).indexOf("clef") >= 0) return clef();
@@ -1412,8 +1422,89 @@ function check(name, cond, extra) {
   check("a refused state is retried, not dropped", !!r.answer && (r.thinking || []).some((x) => x.step === "state"), (r.thinking || []).map((x) => x.step));
   check("the retry still produces a decision", !!(r.decision && r.decision.domain), r.decision);
   const retried = aiInputs.filter((x) => x.model.indexOf("clef") >= 0);
-  check("the retry carries the question alone", retried.length === 2 && String(retried[1].input.state).indexOf("New message:") === 0, retried.length);
+  check(
+    "the retry carries the question alone",
+    retried.length >= 2 && String(retried[retried.length - 1].input.state).indexOf("New message:") === 0,
+    retried.map((x) => String(x.input.state).length)
+  );
   check("the window is published in health", (await (await worker.fetch(new Request("https://x/health"), env)).json()).clef_context === 24576, "clef_context");
+}
+
+// 33. input too large for clef goes to a model that can hold it, and clef
+// decides on the rewrite rather than on an arbitrary slice
+{
+  const long = "the question is about position sizing and risk. ".repeat(6000);
+  const env = makeEnv({});
+  const baseRun = env.AI.run;
+  const compact = "COMPACT REQUEST: how do I size a position so a 5% stop risks 1%?";
+  env.AI = {
+    run: async (model, input) => {
+      const msgs = (input && input.messages) || [];
+      if (msgs[0] && msgs[0].role === "system" && String(msgs[0].content).indexOf("decision model") >= 0) {
+        aiInputs.push({ model: String(model), input });
+        return { response: compact };
+      }
+      return baseRun(model, input);
+    },
+  };
+  aiInputs = [];
+  const d = await (await post("/chat", { prompt: long + " please answer", cards: [] }, env)).json();
+  check("an oversized request still answers", !!d.answer, d.answer);
+
+  const summarised = aiInputs.filter((x) => {
+    const msgs = (x.input && x.input.messages) || [];
+    return msgs[0] && msgs[0].role === "system" && String(msgs[0].content).indexOf("decision model") >= 0;
+  });
+  check("a summarising model is asked first", summarised.length === 1, summarised.length);
+  check("it is the cheapest one that fits", String(summarised[0] && summarised[0].model).indexOf("granite") >= 0, summarised[0] && summarised[0].model);
+  const handed = String(summarised[0].input.messages[1].content);
+  check("it is given the whole request, not a slice", handed.length > long.length && handed.indexOf("please answer") > 0, [handed.length, long.length]);
+
+  const clefCall = aiInputs.find((x) => x.model.indexOf("clef") >= 0);
+  const state = String(clefCall && clefCall.input ? clefCall.input.state : "");
+  check("clef decides on the rewrite", state.indexOf("COMPACT REQUEST") > 0, state.slice(0, 60));
+  check("and the state fits the window", state.length <= 23000 * 3, state.length);
+  check("the compression is reported", JSON.stringify(d.thinking || []).indexOf("rewrote") > 0, (d.thinking || []).map((x) => x.step));
+
+  // a normal request must not pay for this
+  aiInputs = [];
+  const short = await (await post("/chat", { prompt: "what is position sizing", cards: [] }, env)).json();
+  check("an ordinary request is not summarised", !aiInputs.some((x) => {
+    const msgs = (x.input && x.input.messages) || [];
+    return msgs[0] && msgs[0].role === "system" && String(msgs[0].content).indexOf("decision model") >= 0;
+  }), aiInputs.map((x) => x.model));
+  check("and still answers", !!short.answer, short.answer);
+}
+
+// 34. the decision model is chosen by its window, not fixed at clef-flash
+{
+  const env = makeEnv({});
+  aiInputs = [];
+  await post("/chat", { prompt: "what is position sizing", cards: [] }, env);
+  const small = aiInputs.find((x) => x.model.indexOf("clef") >= 0);
+  check("a small state stays on clef-flash", String(small.model).indexOf("clef-flash") >= 0, small.model);
+  check("the model field is the short name, not the id", String(small.input.model) === "clef-flash", small.input.model);
+
+  aiInputs = [];
+  const mid = "question about risk sizing. ".repeat(5500);
+  const d = await (await post("/chat", { prompt: mid + " END", cards: [] }, env)).json();
+  const midCall = aiInputs.find((x) => x.model.indexOf("clef") >= 0);
+  check("a state too big for 24,576 moves to clef-omni", String(midCall.model).indexOf("clef-omni") >= 0, midCall.model);
+  check("and is not trimmed on the way", !String(JSON.stringify(d.thinking || [])).includes("trimmed"), (d.thinking || []).map((x) => x.step));
+  check("the decision reports which model made it", !!(d.decision && d.decision.model), d.decision);
+
+  // a window refusal escalates instead of failing
+  const strict = makeEnv({});
+  const baseRun = strict.AI.run;
+  strict.AI = {
+    run: async (model, input) => {
+      if (String(model).indexOf("clef-flash") >= 0) throw new Error("AiError: exceeded this model context window limit (24576). code 5021");
+      return baseRun(model, input);
+    },
+  };
+  aiInputs = [];
+  const esc = await (await post("/chat", { prompt: "what is position sizing", cards: [] }, strict)).json();
+  check("a window refusal escalates up the ladder", !!(esc.decision && String(esc.decision.model).indexOf("clef-omni") >= 0), esc.decision);
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");

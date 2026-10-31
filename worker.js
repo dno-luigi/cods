@@ -14,6 +14,17 @@ const cH = {
 };
 
 const CLEF_MODEL = "@cf/cloudflare/clef-flash";
+
+// Decision models, smallest window first. Cloudflare's own pages: clef-flash
+// 24,576, clef-omni 64,000, clef 65,536. `model` must be the short name: the API
+// validates it against ^\s*clef(-omni|-flash)?\s*$ and rejects the @cf id.
+const DECISION_LADDER = [
+  { id: "@cf/cloudflare/clef-flash", model: "clef-flash", context: 24576 },
+  { id: "@cf/cloudflare/clef-omni", model: "clef-omni", context: 64000 },
+  { id: "@cf/cloudflare/clef", model: "clef", context: 65536 },
+];
+// Room for the questions schema plus the estimator's own error.
+const DECISION_RESERVE = 1500;
 // clef-flash reads a 24,576-token window. The platform does not trim text state
 // for you: it answers 413 with code 5021 ("exceeded this model context window
 // limit"), which used to lose the decision entirely. So the state is budgeted
@@ -24,6 +35,57 @@ const CLEF_STATE_TOKENS = 23000;
 // ~3 characters per token for mixed prose and JSON. It over-estimates English
 // and stays under the limit for code, where tokens are denser.
 const CHARS_PER_TOKEN = 3;
+
+// Long input is not sliced and hoped for: it is rewritten by a chat model that
+// can hold it, and clef decides on what comes back. Contexts are from the
+// models' own pages; smallest first, so the cheap one runs before the 1M one.
+const COMPRESS_LADDER = [
+  { model: "@cf/ibm-granite/granite-4.0-h-micro", context: 131000 },
+  { model: "@cf/moonshotai/kimi-k2.6", context: 262144 },
+  { model: "@cf/zai-org/glm-5.3", context: 1048576 },
+];
+
+function compressInstructions(tokens) {
+  return [
+    "Rewrite the request below so a decision model with a 24,000-token window can classify it.",
+    "Keep, in the user's own words: the actual question, every constraint, names, numbers, and anything they insist on.",
+    "Drop repetition and boilerplate. Do not answer the request. Reply with the rewritten request only.",
+    "Aim for about " + Math.max(200, Math.floor(tokens * 0.5)) + " tokens.",
+  ].join(" ");
+}
+
+// Returns null when nothing can be reached, so the caller can still decide on a
+// budgeted state instead of failing the request.
+async function compressState(env, raw, budget) {
+  if (!env.AI) return null;
+  const need = estimateTokens(raw);
+  const order = env.CF_SUMMARIZER
+    ? [{ model: String(env.CF_SUMMARIZER), context: 131000 }].concat(COMPRESS_LADDER)
+    : COMPRESS_LADDER;
+  const seen = {};
+  for (const entry of order) {
+    if (!entry || !entry.model || seen[entry.model]) continue;
+    seen[entry.model] = true;
+    if (need > entry.context - 2000) continue; // it cannot hold this either
+    try {
+      const out = textFrom(
+        await env.AI.run(entry.model, {
+          messages: [
+            { role: "system", content: compressInstructions(budget) },
+            { role: "user", content: raw },
+          ],
+          max_tokens: 2000,
+          temperature: 0.2,
+        })
+      );
+      const text = String(out || "").trim();
+      if (text) return { text, model: entry.model, from: need, to: estimateTokens(text) };
+    } catch (err) {
+      // try the next model up
+    }
+  }
+  return null;
+}
 
 function estimateTokens(text) {
   return Math.ceil(String(text || "").length / CHARS_PER_TOKEN);
@@ -1877,15 +1939,47 @@ async function noteAttempt(env, domain, model, ok) {
 // ─── decision layer ───────────────────────────────────────────────────────────
 
 async function decide(env, state, questions) {
-  if (!env.AI) throw new Error("AI binding not configured");
-  const res = await env.AI.run(CLEF_MODEL, {
-    model: "clef-flash",
-    state,
-    questions: questions && typeof questions === "object" ? questions : QUESTIONS,
-  });
+  const asked = questions && typeof questions === "object" ? questions : QUESTIONS;
+  const tokens = estimateTokens(state);
+  const wanted = String(env.CF_DECISION_MODEL || "").trim();
+  const start = wanted ? Math.max(0, DECISION_LADDER.findIndex((m) => m.id === wanted || m.model === wanted)) : 0;
+  const order = DECISION_LADDER.slice(start);
 
+  // The smallest model whose window holds this state. The largest one is used
+  // as a last resort so a 413 still has somewhere to go.
+  let candidates = order.filter((m) => tokens <= m.context - DECISION_RESERVE);
+  const fits = candidates.length > 0;
+  if (!fits) candidates = [order[order.length - 1]];
+
+  let lastError = null;
+  let answered = null;
+  let usedBy = null;
+  for (const entry of candidates) {
+    try {
+      const res = await env.AI.run(entry.id, { model: entry.model, state, questions: asked });
+      answered = res;
+      usedBy = entry.id;
+      break;
+    } catch (err) {
+      lastError = err;
+      // Only a window refusal is worth moving up the ladder for.
+      if (!/context window|5021|too large|exceeded/i.test(String(err && err.message))) throw err;
+    }
+  }
+
+  // Nothing on Cloudflare holds it: the Decisions API is the bigger window, and
+  // it answers the same typed questions.
+  if (!answered && !fits && env.OPENROUTER_API_KEY) {
+    const via = await decisionsCall(env, state, asked);
+    answered = via.body;
+    usedBy = via.model;
+  }
+  if (!answered) throw lastError || new Error("no decision model answered");
+
+  const res = answered;
   const answers = (res && res.answers) || res || {};
   return {
+    decision_model: usedBy,
     intent: readChoice(answers.intent),
     shape: readChoice(answers.shape),
     domain: readChoice(answers.domain),
@@ -1896,6 +1990,29 @@ async function decide(env, state, questions) {
     cache_ok: readProbability(answers.cache_ok),
     sensitive: readProbability(answers.sensitive),
   };
+}
+
+// POST /api/alpha/decisions — the OpenRouter shape for typed decisions. It is
+// not the chat endpoint and no chat SDK will work against it.
+async function decisionsCall(env, state, questions) {
+  const model = String(env.OR_DECISION_MODEL || "nace-ai/drex-max").trim();
+  const res = await fetch("https://openrouter.ai/api/alpha/decisions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer " + env.OPENROUTER_API_KEY,
+    },
+    body: JSON.stringify({ model, state, questions }),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error("decisions " + res.status + ": " + text.slice(0, 200));
+  let body = null;
+  try {
+    body = JSON.parse(text);
+  } catch (err) {
+    throw new Error("decisions: unreadable reply");
+  }
+  return { body, model };
 }
 
 function planRoute(decision) {
@@ -1988,6 +2105,9 @@ function readScore(v) {
 }
 
 function readProbability(v) {
+  // The Decisions API names a yes/no answer `noul`; Cloudflare's clef answers
+  // with `probability`. Both mean the same thing here.
+  if (v && typeof v === "object" && typeof v.noul === "number") return v.noul;
   if (v == null) return null;
   if (typeof v === "number") return clamp01(v);
   const p = v.probability ?? v.score ?? v.value ?? null;
@@ -3587,7 +3707,29 @@ async function handleChat(request, env, emit) {
   // this person's actual intent rather than another guess.
   const said = Array.isArray(body.clarify) ? body.clarify.filter((c) => c && c.q) : [];
   const told = said.length ? contextCards.concat(said.map((c) => ({ q: c.q, a: c.a }))) : contextCards;
-  const fitted = fitState({ prompt, told, learned, card: SHAPE_CARD });
+  // The decision model is chosen by window, so the state is only shrunk when no
+  // decision model can hold it. Order: raw state -> a model rewrites it ->
+  // budgeted cut as the last resort.
+  const rawState = [buildState(prompt, told), learned].filter(Boolean).join("\n\n");
+  const widest = DECISION_LADDER[DECISION_LADDER.length - 1].context - DECISION_RESERVE;
+  let fitted;
+  if (estimateTokens(rawState) + estimateTokens(SHAPE_CARD) <= widest) {
+    fitted = {
+      state: [rawState, SHAPE_CARD].filter(Boolean).join("\n\n"),
+      tokens: estimateTokens(rawState) + estimateTokens(SHAPE_CARD),
+      dropped: 0,
+      promptCut: false,
+      trimmed: false,
+    };
+  } else {
+    const compressed = await compressState(env, rawState, widest - estimateTokens(SHAPE_CARD));
+    if (compressed) {
+      step("compress", compressed.model + " rewrote " + compressed.from + " tokens down to " + compressed.to);
+      fitted = fitState({ prompt: compressed.text, told: [], learned, card: SHAPE_CARD });
+    } else {
+      fitted = fitState({ prompt, told, learned, card: SHAPE_CARD });
+    }
+  }
   const state = fitted.state;
   const failures = [];
 
@@ -4036,6 +4178,7 @@ function slimDecision(decision) {
     needs_web: decision.needs_web,
     sensitive: decision.sensitive,
     shape: decision.shape || null,
+    model: decision.decision_model || null,
   };
 }
 
@@ -4194,16 +4337,7 @@ async function finish(
     provider,
     route,
     theme: theme || null,
-    decision: decision
-      ? {
-          intent: decision.intent,
-          domain: decision.domain,
-          depth: decision.depth,
-          tone: decision.tone,
-          needs_web: decision.needs_web,
-          sensitive: decision.sensitive,
-        }
-      : null,
+    decision: slimDecision(decision),
     sources: sources && sources.length ? sources.map((s) => ({ title: s.title, url: s.url })) : null,
     search_error: searchError || null,
     search_via: searchVia || null,
