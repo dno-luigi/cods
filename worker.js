@@ -181,6 +181,7 @@ const SHAPE_CARD = [
   "stt \u2014 POST /api/v1/audio/transcriptions {model,input_audio:{data,format}}. Text out.",
   "tts \u2014 POST /api/v1/audio/speech {model,input,voice}. Raw audio bytes out, not JSON.",
   "responses \u2014 POST /api/v1/responses with input[] parts of text, image, file or audio.",
+  "decide \u2014 POST /api/alpha/decisions {model,state,questions}. Typed questions in, calibrated probabilities out: noul (yes/no), choice, score. Cloudflare clef models answer the same schema through env.AI.run with the short name (clef-omni, not the @cf id).",
   "Cloudflare fixes the endpoint only: env.AI.run wants {prompt} for text-to-text and image, {text} for embeddings, {audio} for ASR, {query,contexts} for the reranker.",
 ].join("\n");
 
