@@ -735,5 +735,50 @@ function check(name, cond, extra) {
   check("the Card 1 label is stripped", !/^card\s*\d+\s*[:.)-]/i.test(s.cards[0].a) && !/^\d+[.)]/.test(s.cards[0].a), s.cards[0].a.slice(0, 30));
 }
 
+
+// 18a. an approved answer wins before the model is asked
+{
+  const env = makeEnv({});
+  const ap = await (await post("/approve", { q: "what is a trading journal", cards: [{ q: "what is a trading journal", a: "APPROVED: a journal is about process." }], rank: 4 }, env)).json();
+  check("approve stores an answer", ap.ok === true && ap.rank === 4 && ap.count === 1, ap);
+  calls = []; aiInputs = [];
+  const c = await (await post("/chat", { prompt: "  What is a trading journal  " }, env)).json();
+  check("the same question returns the approved answer", c.approved === true && /^APPROVED/.test(c.cards[0].a), c.cards && c.cards[0].a);
+  check("and no model is woken up", aiInputs.length === 0, aiInputs.length);
+  const list = await (await worker.fetch(new Request("https://cods.example/approved"), env)).json();
+  check("the admin list shows it with its rank", list.count === 1 && list.items[0].rank === 4, list);
+  await post("/approve", { q: "what is a trading journal", rank: 0 }, env);
+  const gone = await (await worker.fetch(new Request("https://cods.example/approved"), env)).json();
+  check("rank 0 removes it", gone.count === 0, gone);
+  const bad = await post("/approve", { q: "x", rank: 9 }, env);
+  check("rank outside 0..5 is refused", bad.status === 400, bad.status);
+  const none = await post("/approve", { q: "x", cards: [], rank: 3 }, env);
+  check("nothing to approve is refused", none.status === 400, none.status);
+}
+
+// 18b. a theme request recolours the page and travels with the deck
+{
+  const env = makeEnv({});
+  const t = await (await post("/chat", { prompt: "make the theme forest green please" }, env)).json();
+  check("a theme request returns tokens", t.theme && /^#[0-9a-f]{6}$/.test(t.theme.primary), t.theme);
+  check("and it picks the forest preset", t.theme && t.theme.name === "forest", t.theme && t.theme.name);
+  const saved = await (await post("/deck?id=deck-theme-1", { cards: [], theme: t.theme }, env)).json();
+  check("the deck remembers the theme", saved.theme && saved.theme.primary === t.theme.primary, saved.theme);
+  const back = await (await worker.fetch(new Request("https://cods.example/deck?id=deck-theme-1"), env)).json();
+  check("and gives it back", back.theme && back.theme.name === "forest", back.theme);
+  const rejected = await (await post("/deck?id=deck-theme-1", { cards: [], theme: { primary: "red" } }, env)).json();
+  check("a bad theme is refused", rejected.theme === null, rejected);
+  const plain = await (await post("/chat", { prompt: "what is a stop loss" }, env)).json();
+  check("a normal question carries no theme", !plain.theme, plain.theme);
+}
+
+// 18c. the page ships the theme and approve wiring
+{
+  const html = await (await worker.fetch(new Request("https://cods.example/"), makeEnv({}))).text();
+  ['data-op="approve"', "applyTheme", "PRESETS", "/approve", "loadApprovedList"].forEach(function (needle) {
+    check("page has " + needle, html.indexOf(needle) >= 0, needle);
+  });
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

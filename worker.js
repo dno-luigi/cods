@@ -302,7 +302,7 @@ code{font-size:12.5px;background:#00000044;padding:1px 4px;border-radius:4px}
 var API = { chat: '/chat', feedback: '/feedback', card: '/card', deck: '/deck', prefs: '/prefs' };
 var NL = String.fromCharCode(10);
 var LS = 'cods:deck:v1';
-var S = { cards: [], flip: {}, sel: {}, ctx: null, fs: null, tts: false, light: false, deck: '', cb: null };
+var S = { cards: [], flip: {}, sel: {}, ctx: null, fs: null, tts: false, light: false, deck: '', cb: null, theme: null };
 var LP = null;
 
 function $(id) { return document.getElementById(id); }
@@ -342,9 +342,39 @@ function byId(id) {
 }
 function picked() { var out = []; S.cards.forEach(function (c) { if (S.sel[c.id]) out.push(c); }); return out; }
 
+var DEFAULT_THEME = { name: 'default', primary: '#c41e3a', bg: '#101014', card: '#1c1c25', text: '#f2f2f6', line: '#2c2c38' };
+var PRESETS = {
+  default: DEFAULT_THEME,
+  light: { name: 'light', primary: '#c41e3a', bg: '#f3f3f7', card: '#ffffff', text: '#15151b', line: '#dcdce6' },
+  forest: { name: 'forest', primary: '#4caf7d', bg: '#0e1512', card: '#15201b', text: '#eaf3ee', line: '#243029' },
+  ocean: { name: 'ocean', primary: '#3d8bd4', bg: '#0b1017', card: '#121a24', text: '#e8f1fa', line: '#22303d' },
+  ember: { name: 'ember', primary: '#e0653a', bg: '#130f0c', card: '#1e1813', text: '#f7efe8', line: '#332a22' },
+  mono: { name: 'mono', primary: '#d0d0d8', bg: '#0d0d0f', card: '#17171b', text: '#f4f4f6', line: '#2a2a30' }
+};
+function cleanTheme(t) {
+  if (!t) return null;
+  var hex = function (v) { return /^#[0-9a-f]{6}$/i.test(String(v || '')) ? String(v).toLowerCase() : null; };
+  var out = { name: String(t.name || 'custom').slice(0, 24), primary: hex(t.primary), bg: hex(t.bg), card: hex(t.card), text: hex(t.text), line: hex(t.line) || hex(t.card) };
+  if (!out.primary || !out.bg || !out.card || !out.text) return null;
+  return out;
+}
+function applyTheme(t) {
+  var c = cleanTheme(t);
+  if (!c) return;
+  S.theme = c;
+  var s = document.documentElement.style;
+  s.setProperty('--p', c.primary);
+  s.setProperty('--bg', c.bg);
+  s.setProperty('--card', c.card);
+  s.setProperty('--panel', c.card);
+  s.setProperty('--text', c.text);
+  s.setProperty('--line', c.line);
+  document.body.classList.remove('light');
+}
+
 function save() {
   try {
-    localStorage.setItem(LS, JSON.stringify({ cards: S.cards.slice(0, 80), tts: S.tts, light: S.light, deck: S.deck }));
+    localStorage.setItem(LS, JSON.stringify({ cards: S.cards.slice(0, 80), tts: S.tts, light: S.light, deck: S.deck, theme: S.theme }));
   } catch (e) {}
   queueDeck();
 }
@@ -356,7 +386,7 @@ function queueDeck() {
     fetch(API.deck + '?id=' + encodeURIComponent(S.deck), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cards: S.cards.slice(0, 80).map(function (c) { return { q: c.q, a: c.a }; }) })
+      body: JSON.stringify({ cards: S.cards.slice(0, 80).map(function (c) { return { q: c.q, a: c.a }; }), theme: S.theme })
     }).catch(function () {});
   }, 1200);
 }
@@ -437,6 +467,8 @@ function openMenu(id, x, y) {
     '<button data-op="style">Style</button>' +
     '<button data-op="split">Split into cards</button>' +
     '<button data-op="merge">Merge' + (n > 1 ? ' (' + n + ')' : '') + '</button>' +
+    '<button data-op="approve">Approve this answer</button>' +
+    '<button data-op="unapprove">Unapprove</button>' +
     '<hr>' +
     '<button data-op="sel">' + (S.sel[id] ? 'Deselect' : 'Select') + '</button>' +
     '<button data-op="copy">Copy</button>' +
@@ -471,6 +503,7 @@ function act(name) {
     ask('Merge cards', 'Combine the selected cards into one.', 'optional: how to combine', function (v) { run('merge', p, v); });
     return;
   }
+  if (name === 'approve' || name === 'unapprove') { approveCard(c, name === 'unapprove' ? 0 : 3); return; }
   if (name === 'sel') { if (c) { if (S.sel[c.id]) delete S.sel[c.id]; else S.sel[c.id] = true; render(); } return; }
   if (!c) return;
   if (name === 'copy') {
@@ -519,6 +552,19 @@ function run(kind, list, instruction) {
     .catch(function (e) { toast('Failed: ' + (e && e.message ? e.message : e)); });
 }
 
+function approveCard(c, rank) {
+  if (!c) return;
+  var q = c.prompt || c.q;
+  fetch('/approve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ q: q, rank: rank, cards: [{ q: q, a: c.a }] })
+  }).then(function (r) { return r.json(); }).then(function (d) {
+    if (d.error) return toast(d.error);
+    toast(rank === 0 ? 'Approval removed' : 'Approved: same question, same cards');
+  }).catch(function () { toast('Approval failed'); });
+}
+
 function del(id) {
   S.cards = S.cards.filter(function (c) { return c.id !== id; });
   delete S.sel[id];
@@ -563,6 +609,7 @@ function sendPrompt(p) {
       var cur = byId(pid);
       if (!d) { if (cur) { cur.a = 'Server returned ' + res.status + ': ' + res.text.slice(0, 300); cur.provider = 'error'; } return; }
       if (d.error) { if (cur) { cur.a = d.error; cur.provider = 'error ' + res.status; cur.decision = d.decision || null; } return; }
+      if (d.theme) { applyTheme(d.theme); save(); toast('Theme: ' + d.theme.name); }
       var got = d.cards && d.cards.length ? d.cards : null;
       if (got && got.length > 1) {
         var at = S.cards.indexOf(cur);
@@ -578,7 +625,7 @@ function sendPrompt(p) {
         });
       } else if (cur) {
         cur.a = d.answer || d.response || '(no response)';
-        cur.provider = (d.provider || 'openrouter') + (d.route ? ' · ' + d.route : '');
+        cur.provider = d.approved ? 'approved · rank ' + d.rank : (d.provider || 'openrouter') + (d.route ? ' · ' + d.route : '');
         cur.decision = d.decision || null;
         cur.sources = d.sources || null;
         cur.related = d.related || null;
@@ -620,14 +667,17 @@ function openSheet() {
       '<button data-set="newdeck">New deck</button>' +
     '</div><p style="font-size:11px;color:var(--dim);margin-top:8px;line-height:1.5">Deck ' + esc(S.deck) + ' is saved in KV, so the cards come back on another phone.</p></div>' +
     '<div class="sect"><h4>View</h4><div class="row">' +
-      '<button data-set="theme">' + (S.light ? 'Dark theme' : 'Light theme') + '</button>' +
+      Object.keys(PRESETS).map(function (k) { return '<button data-set="preset" data-name="' + k + '">' + k + '</button>'; }).join('') +
       '<button data-set="tts">Voice ' + (S.tts ? 'on' : 'off') + '</button>' +
     '</div></div>' +
     '<div class="sect"><h4>What it learned</h4><p id="prefText" style="font-size:12px;color:var(--dim);line-height:1.5">loading...</p>' +
       '<div class="row" style="margin-top:8px"><button data-set="prefs">Refresh</button><button data-set="forget">Forget it</button></div></div>' +
+    '<div class="sect"><h4>Approved answers</h4><p id="apprText" style="font-size:12px;color:var(--dim);line-height:1.5">loading...</p>' +
+      '<div class="row" style="margin-top:8px"><button data-set="approved">Refresh</button></div></div>' +
     '<div class="sect"><h4>API</h4><p style="font-size:11px;color:var(--dim);line-height:1.6">' + esc(location.origin) + '/chat · /card · /deck · /prefs</p></div>';
   $('sheet').classList.add('show');
   loadPrefs();
+  loadApprovedList();
 }
 function loadPrefs() {
   fetch(API.prefs).then(function (r) { return r.json(); }).then(function (d) {
@@ -636,6 +686,15 @@ function loadPrefs() {
     p.textContent = d && d.hint ? d.hint : 'Nothing yet. Press a card button and it starts learning.';
   }).catch(function () {});
 }
+function loadApprovedList() {
+  fetch('/approved').then(function (r) { return r.json(); }).then(function (d) {
+    var p = document.getElementById('apprText');
+    if (!p) return;
+    if (!d || !d.count) { p.textContent = 'Nothing approved yet. Approve a card and that question always returns it.'; return; }
+    p.textContent = d.count + ' approved: ' + d.items.slice(0, 3).map(function (i) { return i.q + ' (rank ' + i.rank + ')'; }).join(' · ');
+  }).catch(function () {});
+}
+
 function exportCards() {
   var blob = new Blob([JSON.stringify({ cards: S.cards }, null, 2)], { type: 'application/json' });
   var a = document.createElement('a');
@@ -760,7 +819,8 @@ $('sheet').addEventListener('click', function (e) {
   if (w === 'import') return importCards();
   if (w === 'clear') { if (!window.confirm('Clear all cards?')) return; S.cards = []; S.sel = {}; S.flip = {}; render(); save(); toast('Cleared'); return; }
   if (w === 'newdeck') { S.cards = []; S.sel = {}; S.flip = {}; S.deck = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); render(); save(); toast('New deck'); return; }
-  if (w === 'theme') { S.light = !S.light; document.body.classList.toggle('light', S.light); save(); openSheet(); return; }
+  if (w === 'preset') { applyTheme(PRESETS[b.getAttribute('data-name')] || PRESETS.default); save(); openSheet(); return; }
+  if (w === 'approved') return loadApprovedList();
   if (w === 'tts') { S.tts = !S.tts; save(); openSheet(); return; }
   if (w === 'prefs') return loadPrefs();
   if (w === 'forget') {
@@ -790,14 +850,16 @@ document.addEventListener('keydown', function (e) {
       S.tts = !!d.tts;
       S.light = !!d.light;
       S.deck = d.deck || '';
+      S.theme = d.theme || null;
       had = S.cards.length > 0;
     }
   } catch (e) {}
   if (!S.deck) S.deck = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-  document.body.classList.toggle('light', !!S.light);
+  if (S.theme) applyTheme(S.theme);
   render();
   if (!had) {
     fetch(API.deck + '?id=' + encodeURIComponent(S.deck)).then(function (r) { return r.json(); }).then(function (d) {
+      if (d && d.theme && !S.theme) applyTheme(d.theme);
       if (d && d.cards && d.cards.length && !S.cards.length) {
         S.cards = d.cards.map(function (c) { return mk(c.q, c.a, 'kv'); });
         render();
@@ -840,6 +902,8 @@ export default {
         text_models: CF_TEXT_MODELS,
         card_limit: CARD_LIMIT,
         card_ops: Object.keys(CARD_OPS),
+        approved: !!env.KV,
+        themes: Object.keys(THEMES),
         openrouter: !!env.OPENROUTER_API_KEY,
         chat_model: env.CF_CHAT_MODEL || null,
         kv: !!env.KV,
@@ -888,6 +952,20 @@ export default {
       return handleNotes(request, env);
     }
 
+    if (url.pathname === "/approve") {
+      if (request.method !== "POST") return json({ error: "Use POST" }, 405);
+      return handleApprove(request, env);
+    }
+
+    if (url.pathname === "/approved") {
+      const store = await loadApproved(env);
+      const items = Object.entries(store.items || {})
+        .sort((a, b) => (b[1].rank || 0) - (a[1].rank || 0) || Date.parse(b[1].updated || 0) - Date.parse(a[1].updated || 0))
+        .slice(0, 50)
+        .map(([k, v]) => ({ key: k, q: v.q, rank: v.rank, cards: (v.cards || []).length, at: v.at, updated: v.updated }));
+      return json({ kv: !!env.KV, count: items.length, items });
+    }
+
     if (url.pathname === "/card") {
       if (request.method !== "POST") return json({ error: "Use POST" }, 405);
       return handleCard(request, env);
@@ -906,18 +984,22 @@ export default {
           q: String((c && c.q) || "").slice(0, 600),
           a: String((c && c.a) || "").slice(0, 4000),
         }));
-        if (env.KV) await env.KV.put(key, JSON.stringify({ cards, updated: new Date().toISOString() }));
-        return json({ ok: true, saved: !!env.KV, count: cards.length });
+        const theme = cleanTheme(body.theme);
+        if (env.KV) await env.KV.put(key, JSON.stringify({ cards, theme: theme || null, updated: new Date().toISOString() }));
+        return json({ ok: true, saved: !!env.KV, count: cards.length, theme });
       }
       if (!env.KV) return json({ cards: [], saved: false });
       const raw = await env.KV.get(key);
       let cards = [];
+      let theme = null;
       try {
-        cards = raw ? JSON.parse(raw).cards || [] : [];
+        const parsed = raw ? JSON.parse(raw) : {};
+        cards = parsed.cards || [];
+        theme = cleanTheme(parsed.theme);
       } catch (err) {
         cards = [];
       }
-      return json({ cards, saved: true });
+      return json({ cards, theme, saved: true });
     }
 
     if (url.pathname === "/feedback") {
@@ -1997,6 +2079,143 @@ async function handleCard(request, env) {
   return json({ op, cards, provider, decision: slimDecision(decision), learned, failures });
 }
 
+// ─── themes and approved answers ─────────────────────────────────────────────
+// Two memories the page leans on: how it looks, and which answers this person
+// has signed off on. Approved answers are checked before the model is asked,
+// so the same question always returns the same vetted cards.
+const APPROVED_KEY = "approved:v1";
+const APPROVED_LIMIT = 200;
+
+const THEMES = {
+  default: { name: "default", primary: "#c41e3a", bg: "#101014", card: "#1c1c25", text: "#f2f2f6", line: "#2c2c38" },
+  light: { name: "light", primary: "#c41e3a", bg: "#f3f3f7", card: "#ffffff", text: "#15151b", line: "#dcdce6" },
+  forest: { name: "forest", primary: "#4caf7d", bg: "#0e1512", card: "#15201b", text: "#eaf3ee", line: "#243029" },
+  ocean: { name: "ocean", primary: "#3d8bd4", bg: "#0b1017", card: "#121a24", text: "#e8f1fa", line: "#22303d" },
+  ember: { name: "ember", primary: "#e0653a", bg: "#130f0c", card: "#1e1813", text: "#f7efe8", line: "#332a22" },
+  mono: { name: "mono", primary: "#d0d0d8", bg: "#0d0d0f", card: "#17171b", text: "#f4f4f6", line: "#2a2a30" },
+};
+
+function cleanTheme(input) {
+  if (!input || typeof input !== "object") return null;
+  const hex = (v) => (/^#[0-9a-f]{6}$/i.test(String(v || "")) ? String(v).toLowerCase() : null);
+  const out = {
+    name: String(input.name || "custom").slice(0, 24),
+    primary: hex(input.primary),
+    bg: hex(input.bg),
+    card: hex(input.card),
+    text: hex(input.text),
+    line: hex(input.line),
+  };
+  if (!out.primary || !out.bg || !out.card || !out.text) return null;
+  if (!out.line) out.line = out.card;
+  return out;
+}
+
+function themeIntent(prompt) {
+  return /\b(theme|colou?rs?|palette|dark mode|light mode)\b/i.test(String(prompt || ""));
+}
+
+function presetFor(text) {
+  const t = String(text || "").toLowerCase();
+  for (const key of Object.keys(THEMES)) {
+    if (key !== "default" && t.indexOf(key) >= 0) return THEMES[key];
+  }
+  if (/\b(white|bright|day|light)\b/.test(t)) return THEMES.light;
+  if (/\b(green|forest|nature)\b/.test(t)) return THEMES.forest;
+  if (/\b(blue|ocean|cool|teal)\b/.test(t)) return THEMES.ocean;
+  if (/\b(warm|orange|ember|sunset)\b/.test(t)) return THEMES.ember;
+  if (/\b(grey|gray|mono|monochrome|black and white)\b/.test(t)) return THEMES.mono;
+  return null;
+}
+
+// A look is not content, so the decision model is not asked here.
+async function themeFor(env, prompt) {
+  const preset = presetFor(prompt);
+  if (preset) return preset;
+  try {
+    const r = await askText(
+      env,
+      [
+        { role: "system", content: "Reply with six hex colours only, in this order: primary, background, card, text, border." },
+        { role: "user", content: String(prompt || "").slice(0, 300) },
+      ],
+      { max_tokens: 100, temperature: 0.4 }
+    );
+    const hexes = String(r.text).match(/#[0-9a-f]{6}/gi) || [];
+    if (hexes.length >= 4) {
+      return cleanTheme({ name: "custom", primary: hexes[0], bg: hexes[1], card: hexes[2], text: hexes[3], line: hexes[4] || hexes[2] });
+    }
+  } catch (err) {}
+  return null;
+}
+
+async function loadApproved(env) {
+  const empty = { items: {} };
+  if (!env.KV) return empty;
+  try {
+    const raw = await env.KV.get(APPROVED_KEY);
+    if (!raw) return empty;
+    const parsed = JSON.parse(raw) || {};
+    return { items: parsed.items && typeof parsed.items === "object" ? parsed.items : {} };
+  } catch (err) {
+    return empty;
+  }
+}
+
+async function saveApproved(env, store) {
+  if (!env.KV) return false;
+  const entries = Object.entries(store.items || {}).sort(
+    (a, b) => Date.parse(b[1].updated || 0) - Date.parse(a[1].updated || 0)
+  );
+  const kept = {};
+  entries.slice(0, APPROVED_LIMIT).forEach(([k, v]) => {
+    kept[k] = v;
+  });
+  await env.KV.put(APPROVED_KEY, JSON.stringify({ items: kept, updated: new Date().toISOString() }));
+  return true;
+}
+
+async function approvedHash(prompt) {
+  return "h" + (await hashKey("approved|" + normalized(prompt)));
+}
+
+async function approvedHit(env, prompt) {
+  if (!env.KV) return null;
+  const store = await loadApproved(env);
+  return store.items[await approvedHash(prompt)] || null;
+}
+
+async function handleApprove(request, env) {
+  const { body, error } = await readBody(request);
+  if (error) return error;
+  const q = String(body.q || "").trim();
+  if (!q) return json({ error: "Need the question" }, 400);
+  if (!env.KV) return json({ error: "No KV bound on this Worker" }, 503);
+  const rank = body.rank === undefined ? 3 : Number(body.rank);
+  if (!Number.isFinite(rank) || rank < 0 || rank > 5) return json({ error: "rank is 0 to 5" }, 400);
+
+  const store = await loadApproved(env);
+  const key = await approvedHash(q);
+  if (rank === 0) {
+    delete store.items[key];
+  } else {
+    const cards = (Array.isArray(body.cards) ? body.cards : [])
+      .filter((c) => c && c.a)
+      .slice(0, 4)
+      .map((c) => ({ q: String(c.q || q).slice(0, 600), a: String(c.a).slice(0, 4000) }));
+    if (!cards.length) return json({ error: "Nothing to approve" }, 400);
+    store.items[key] = {
+      q: q.slice(0, 400),
+      cards,
+      rank,
+      at: (store.items[key] && store.items[key].at) || new Date().toISOString(),
+      updated: new Date().toISOString(),
+    };
+  }
+  await saveApproved(env, store);
+  return json({ ok: true, approved: rank > 0, rank, count: Object.keys(store.items).length });
+}
+
 async function handleFeedback(request, env) {
   const { body, error } = await readBody(request);
   if (error) return error;
@@ -2108,9 +2327,30 @@ async function handleChat(request, env) {
   const prompt = String(body.prompt || "").trim();
   if (!prompt) return json({ error: "No prompt" }, 400);
 
+  // 0. Approved — a question this person has signed off on answers itself.
+  if (body.use_approved !== false) {
+    const approved = await approvedHit(env, prompt);
+    if (approved) {
+      const first = approved.cards[0] || { a: "" };
+      return json({
+        prompt,
+        answer: first.a,
+        response: first.a,
+        cards: approved.cards,
+        provider: "approved",
+        route: "approved",
+        approved: true,
+        rank: approved.rank,
+        approved_at: approved.at,
+        cached: true,
+      });
+    }
+  }
+
   const contextCards = Array.isArray(body.cards) ? body.cards.filter((c) => c && c.q) : [];
   const prefs = await loadPrefs(env);
   const learned = prefsHint(prefs);
+  const theme = themeIntent(prompt) ? await themeFor(env, prompt) : null;
   const state = [buildState(prompt, contextCards), learned].filter(Boolean).join("\n\n");
   const failures = [];
 
@@ -2254,6 +2494,7 @@ async function handleChat(request, env) {
       return finish(env, key, plan, {
         prompt,
         related,
+      theme,
         relatedError,
         answer: cards[0].a,
         cards,
@@ -2291,6 +2532,7 @@ async function handleChat(request, env) {
     return finish(env, key, plan, {
       prompt,
       related,
+      theme,
       relatedError,
       answer,
       cards: shaped,
@@ -2581,7 +2823,7 @@ async function finish(
   env,
   key,
   plan,
-  { prompt, answer, provider, route, decision, sources, trace, searchError, searchVia, related, relatedError, cards }
+  { prompt, answer, provider, route, decision, sources, trace, searchError, searchVia, related, relatedError, cards, theme }
 ) {
   const payload = {
     answer,
@@ -2589,6 +2831,7 @@ async function finish(
     cards: cards && cards.length ? cards : null,
     provider,
     route,
+    theme: theme || null,
     decision: decision
       ? {
           intent: decision.intent,
