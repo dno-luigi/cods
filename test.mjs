@@ -1391,6 +1391,7 @@ function check(name, cond, extra) {
   const state = String(clefCall && clefCall.input ? clefCall.input.state : "");
   check("the state handed to clef is capped", state.length > 0 && state.length <= 23000 * 3, state.length);
   check("and the question leads the state", state.indexOf("New message:") === 0, state.slice(0, 40));
+  check("a cut prompt keeps its ending", state.indexOf("SENTINEL-TAIL") > 0, state.slice(-60));
   check("trimming is reported in the trail", JSON.stringify(d.thinking || []).indexOf("trimmed") > 0, (d.thinking || []).map((x) => x.step));
 
   // a state clef refuses outright, then accepts when it is just the question

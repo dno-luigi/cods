@@ -35,8 +35,16 @@ function fitState(sections) {
   let head = "New message:\n" + prompt;
   let promptCut = false;
   if (estimateTokens(head) > budget) {
-    const room = budget * CHARS_PER_TOKEN - "New message:\n".length - 24;
-    head = "New message:\n" + prompt.slice(0, Math.max(0, room)) + " ...(cut to fit)";
+    // A long paste is usually a document with the actual ask at the end, so the
+    // cut keeps both ends and drops the middle instead of the tail.
+    const room = Math.max(0, budget * CHARS_PER_TOKEN - "New message:\n".length - 40);
+    const headRoom = Math.floor(room * 0.6);
+    const tailRoom = Math.max(0, room - headRoom);
+    head =
+      "New message:\n" +
+      prompt.slice(0, headRoom) +
+      "\n...(cut to fit)...\n" +
+      (tailRoom ? prompt.slice(-tailRoom) : "");
     promptCut = true;
   }
   const parts = [head];
