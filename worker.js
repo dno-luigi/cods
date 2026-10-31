@@ -1894,13 +1894,16 @@ function splitParts(text) {
   }
   const seen = new Set();
   const out = [];
-  parts.forEach((p) => {
-    const key = p.slice(0, 120).toLowerCase();
-    if (p.length > 40 && !seen.has(key)) {
-      seen.add(key);
-      out.push(p);
-    }
-  });
+  parts
+    // A model that answers "Card 1: ..." should not keep the label in the card.
+    .map((p) => p.replace(/^(?:#{1,3}\s*)?card\s*\d+\s*[:.)-]\s*/i, "").replace(/^\d+[.)]\s+/, "").trim())
+    .forEach((p) => {
+      const key = p.slice(0, 120).toLowerCase();
+      if (p.length > 40 && !seen.has(key)) {
+        seen.add(key);
+        out.push(p);
+      }
+    });
   return out;
 }
 

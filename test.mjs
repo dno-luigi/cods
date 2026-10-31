@@ -732,6 +732,7 @@ function check(name, cond, extra) {
   const s = await (await post("/card", { op: "split", card: { q: "rules", a: "text" } }, env)).json();
   check("numbered output splits in two", s.cards.length === 2, s.cards.length);
   check("both halves survive", /Position size/.test(s.cards[0].a) && /Reviews/.test(s.cards[1].a), s.cards.map((x) => x.a.slice(0, 16)));
+  check("the Card 1 label is stripped", !/^card\s*\d+\s*[:.)-]/i.test(s.cards[0].a) && !/^\d+[.)]/.test(s.cards[0].a), s.cards[0].a.slice(0, 30));
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");
