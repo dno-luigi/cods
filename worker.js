@@ -4541,6 +4541,19 @@ async function handleChat(request, env, emit) {
         kind: wanted === 1 ? decisionLabel(decision) : c.kind,
         decision: slimDecision(decision),
       }));
+    // Never hand back an answer with no card. The first card is the decision,
+    // so its label and the feedback controls ride with the answer itself when
+    // the synthesiser comes back empty.
+    if (!shaped.length && String(answer || "").trim()) {
+      shaped.push({
+        q: prompt,
+        a: String(answer).trim(),
+        more: null,
+        provider,
+        kind: decisionLabel(decision),
+        decision: slimDecision(decision),
+      });
+    }
     step("cards", (shaped.length || 1) + " card" + ((shaped.length || 1) === 1 ? "" : "s") + " written");
     return finish(env, key, plan, {
       prompt,
