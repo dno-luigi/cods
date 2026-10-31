@@ -1211,12 +1211,14 @@ function check(name, cond, extra) {
     check("OpenRouter models are listed", list.openrouter.models.length >= 3, list.openrouter.models.length);
 
     const d = await (await post("/chat", { prompt: "explain swap", model: "openrouter:anthropic/claude-3.5-sonnet", use_cache: false }, withKey)).json();
-    check("any model id is sent as-is", seen.length > 0 && seen[0].body.model === "anthropic/claude-3.5-sonnet", seen[0] && seen[0].body.model);
+    // A grounded request also makes a search call, so the answer is found by the
+    // id it must carry rather than by being the first request out of the door.
+    check("any model id is sent as-is", seen.some((s) => s.body.model === "anthropic/claude-3.5-sonnet"), seen.map((s) => s.body.model));
     check("with our own key", String(seen[0].auth).indexOf("Bearer k") === 0, seen[0].auth);
     check("and the answer comes back", d.answer === "openrouter answer" && String(d.provider).indexOf("openrouter") > 0, d.provider);
 
     const p = await (await post("/chat", { prompt: "explain funding", model: "preset:truth", use_cache: false }, withKey)).json();
-    check("a preset is referenced the documented way", seen.length > 1 && seen[1].body.model === "@preset/truth", seen[1] && seen[1].body.model);
+    check("a preset is referenced the documented way", seen.some((s) => s.body.model === "@preset/truth"), seen.map((s) => s.body.model));
     check("and answers through the key too", p.answer === "openrouter answer", p.answer);
 
     const tools = [{ type: "openrouter:web_search", parameters: { max_results: 3 } }];
@@ -1692,9 +1694,12 @@ function check(name, cond, extra) {
   env.AI.run = async (model, input) => {
     seen.push({ model: String(model), input });
     if (String(model).indexOf("nova-3") >= 0) {
-      // Only the byte-array form is accepted here: the point of trying both
-      // shapes is that a refusal on one still leaves a way through.
-      if (input && input.audio && !Array.isArray(input.audio)) throw new Error("AiError: expected audio bytes");
+      // Whisper's own error, word for word: only a byte array or a binary blob
+      // is accepted. A refusal on the number form must still leave a way through.
+      const audio = input && input.audio;
+      if (!(audio instanceof Uint8Array) && !(audio instanceof ArrayBuffer)) {
+        throw new Error("AiError: 5006: Type mismatch of '/audio', 'string' not in 'array','binary'");
+      }
       return { results: { channels: [{ alternatives: [{ transcript: "what is a tort" }] }] } };
     }
     throw new Error("no such model: " + model);
@@ -1714,9 +1719,11 @@ function check(name, cond, extra) {
   check("it is free, with no key or plan asked for", d.free === true, d);
   check("the dictation model answers it", d.model === "@cf/deepgram/nova-3", d.model);
   check(
-    "the clip is tried as a body, then as bytes",
-    seen.length === 2 && Array.isArray(seen[1].input.audio),
-    seen.map((x) => typeof x.input.audio)
+    "the clip is tried as numbers, then as a binary blob",
+    seen.length === 2 &&
+      Array.isArray(seen[0].input.audio) &&
+      seen[1].input.audio instanceof Uint8Array,
+    seen.map((x) => (x.input.audio instanceof Uint8Array ? "binary" : Array.isArray(x.input.audio) ? "numbers" : typeof x.input.audio))
   );
 
   const get = await worker.fetch(new Request("https://cods.ai-n.workers.dev/stt"), env);

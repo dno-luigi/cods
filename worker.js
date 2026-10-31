@@ -3041,6 +3041,27 @@ async function browserSearch(env, query, limit) {
   }
 }
 
+async function openRouterSearch(env, query, limit) {
+  if (!env.OPENROUTER_API_KEY) throw new Error("no OpenRouter key on this Worker");
+  const model = env.OPENROUTER_SEARCH_MODEL || env.OPENROUTER_MODEL || OR_MODELS[0];
+  const { citations } = await openRouterCall(
+    env,
+    model,
+    [
+      {
+        role: "system",
+        content:
+          "Search the web for the question. Answer in one sentence, then let the citations carry the sources. Never cite a page you were not given.",
+      },
+      { role: "user", content: String(query).slice(0, 1024) },
+    ],
+    { web: { max_results: Math.max(2, Math.min(10, Number(limit) || 5)) }, max_tokens: 400, temperature: 0 }
+  );
+  const sources = citations.map((c) => ({ url: c.url, title: c.title, description: c.description }));
+  if (!sources.length) throw new Error("the web plugin returned no citations");
+  return sources;
+}
+
 // Providers in order of quality. The first that returns two or more pages
 // wins; a single page is kept as a fallback so one source still grounds.
 async function webSearch(env, query) {
@@ -3056,6 +3077,10 @@ async function webSearch(env, query) {
   const errors = [];
   let best = null;
   const providers = [];
+  // Paid for, and the only one that actually returns pages: OpenRouter's web
+  // plugin searches before the model speaks and hands back url_citation
+  // annotations. $1 per 1,000 requests, on the key this Worker already holds.
+  if (env.OPENROUTER_API_KEY) providers.push(["openrouter:web", () => openRouterSearch(env, query, limit)]);
   if (env.OCODE) providers.push(["harness", () => harnessSearch(env, query, limit)]);
   if (env.SEARCH_URL) providers.push(["search-url", () => externalSearch(env, query, limit)]);
   if (env.BROWSER) providers.push(["browser", () => browserSearch(env, query, limit)]);
@@ -4967,9 +4992,21 @@ function sttText(res) {
   return String(out || "").trim();
 }
 
+// Whisper rejects anything that is not a byte array or a binary blob — "Type
+// mismatch of '/audio', 'string' not in 'array','binary'" — while Deepgram takes
+// the bytes as a body with a content type. All three are offered, cheapest first,
+// so a model changing its mind costs one validation error and never dictation.
+function sttShapes(clip, format) {
+  const view = new Uint8Array(clip);
+  return [
+    { audio: Array.from(view) },
+    { audio: view },
+    { audio: { body: clip, contentType: format } },
+  ];
+}
+
 async function transcribe(env, clip, format) {
-  const bytes = Array.from(new Uint8Array(clip));
-  const shapes = [{ audio: { body: clip, contentType: format } }, { audio: bytes }];
+  const shapes = sttShapes(clip, format);
   let last = null;
   for (const model of STT_MODELS) {
     for (const input of shapes) {
