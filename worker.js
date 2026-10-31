@@ -1369,6 +1369,8 @@ export default {
         stream: "ndjson",
         themes: Object.keys(THEMES),
         openrouter: !!env.OPENROUTER_API_KEY,
+        truth_store: env.TRUTHS ? "TRUTHS" : env.ARCHIVE ? "ARCHIVE" : env.KV ? "KV" : null,
+        truth_key: !!env.TRUTH_KEY,
         chat_model: env.CF_CHAT_MODEL || null,
         kv: !!env.KV,
         prefs: !!ctxStore(env),
@@ -1412,6 +1414,60 @@ export default {
       },
       chosen: prefs.model || null,
     });
+  }
+
+  // The truth store: public to read, because it is a public knowledge base;
+  // expert to write, because confidence only rises when someone vouches.
+  if (url.pathname === "/truths") {
+    const box = truthStore(env);
+    if (!box) return json({ store: null, count: 0, counts: {}, truths: [] });
+    const status = String(url.searchParams.get("status") || "").trim();
+    const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit")) || 25));
+    const all = await truthIndex(env, box);
+    const counts = {};
+    all.forEach((r) => {
+      counts[r.status] = (counts[r.status] || 0) + 1;
+    });
+    const truths = (status ? all.filter((r) => r.status === status) : all).slice(0, limit);
+    return json({
+      store: env.TRUTHS ? "TRUTHS" : env.ARCHIVE ? "ARCHIVE" : env.KV ? "KV" : null,
+      count: all.length,
+      counts,
+      truths,
+    });
+  }
+
+  if (url.pathname.indexOf("/truths/") === 0) {
+    const box = truthStore(env);
+    if (!box) return json({ error: "No truth store is bound" }, 503);
+    const parts = url.pathname.slice("/truths/".length).split("/");
+    const id = parts[0];
+    if (!/^t_[0-9a-f]{8,32}$/.test(id)) return json({ error: "Need a truth id" }, 400);
+    let rec = null;
+    try {
+      const raw = await box.get("truth:" + id);
+      rec = raw ? JSON.parse(raw) : null;
+    } catch (err) {}
+    if (!rec) return json({ error: "No such truth" }, 404);
+    if (parts.length === 1) {
+      if (request.method !== "GET") return json({ error: "Use GET, or POST /truths/<id>/approve" }, 405);
+      return json({ truth: rec });
+    }
+    if (parts[1] !== "approve") return json({ error: "Unknown truth action" }, 404);
+    if (request.method !== "POST") return json({ error: "Use POST" }, 405);
+    const bad = truthAdmin(env, request);
+    if (bad) return json({ error: bad }, bad.indexOf("TRUTH_KEY is not set") >= 0 ? 503 : 403);
+    const { body, error } = await readBody(request);
+    if (error) return error;
+    const saved = await promoteTruth(env, box, rec, body || {});
+    await archiveLog(env, {
+      t: new Date().toISOString(),
+      q: String(rec.question || "").slice(0, 200),
+      provider: "truth:approve",
+      route: "truth",
+      cards: 0,
+    });
+    return json({ ok: true, truth: saved });
   }
 
   if (url.pathname === "/prefs") {
@@ -2726,6 +2782,191 @@ async function readMoved(env, store, key) {
   }
 }
 
+// ---- truths -----------------------------------------------------------
+// A truth is a record, not an answer: the question, the answer, how sure we
+// are, what it rests on, who signed it off and when. A store that keeps only
+// the answer and a number is a cache with a confidence label, which is what
+// this replaces. Today it writes into cods' own ARCHIVE namespace under a
+// "truth:" prefix; TRUTHS / AUDITS are bindings, not a rewrite.
+function truthStore(env) {
+  return env.TRUTHS || env.ARCHIVE || env.KV || null;
+}
+const TRUTH_INDEX_KEY = "truths:index";
+const TRUTH_LIMIT = 500;
+const TRUTH_MASTER_FLOOR = 0.9;
+
+function cleanSources(list) {
+  const out = [];
+  const seen = new Set();
+  (Array.isArray(list) ? list : []).forEach((s) => {
+    const url = String((s && s.url) || "").slice(0, 500);
+    if (!/^https?:\/\//i.test(url) || seen.has(url)) return;
+    seen.add(url);
+    out.push({ title: String((s && s.title) || "").slice(0, 200), url });
+  });
+  return out.slice(0, 8);
+}
+
+// Confidence is earned, never asserted. Sources and a live search move it, and
+// it is capped below the master floor: only an expert crosses that line.
+function truthConfidence({ sources, searched }) {
+  let c = 0.4 + 0.08 * Math.min((sources || []).length, 4);
+  if (searched) c += 0.1;
+  return Math.round(Math.min(0.85, c) * 100) / 100;
+}
+
+async function truthIndex(env, store) {
+  const box = store || truthStore(env);
+  if (!box) return [];
+  try {
+    const raw = await box.get(TRUTH_INDEX_KEY);
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+async function indexTruth(env, store, rec) {
+  const box = store || truthStore(env);
+  if (!box) return;
+  const list = await truthIndex(env, box);
+  const rest = list.filter((r) => r && r.id !== rec.id);
+  rest.unshift({
+    id: rec.id,
+    question: rec.question,
+    status: rec.status,
+    confidence: rec.confidence,
+    sources: (rec.sources || []).length,
+    seen: rec.seen || 1,
+    updated: rec.updated,
+  });
+  await box.put(TRUTH_INDEX_KEY, JSON.stringify(rest.slice(0, TRUTH_LIMIT)));
+}
+
+async function saveTruth(env, { question, answer, sources, provider, model, preset, searched }) {
+  const box = truthStore(env);
+  const q = String(question || "").trim().slice(0, 600);
+  if (!box || !q || !answer) return null;
+
+  const id = "t_" + (await hashKey(normalized(q) + "|" + String(preset || model || ""))).slice(0, 16);
+  const now = new Date().toISOString();
+  const kept = cleanSources(sources);
+  const confidence = truthConfidence({ sources: kept, searched });
+
+  let rec = null;
+  try {
+    const raw = await box.get("truth:" + id);
+    rec = raw ? JSON.parse(raw) : null;
+  } catch (err) {
+    rec = null;
+  }
+
+  if (rec) {
+    // Asked again: updated in place, and the history keeps what it said before,
+    // so a confidence that moves has a reason on the record.
+    rec.history = (rec.history || [])
+      .concat([{ at: now, status: rec.status, confidence: rec.confidence, by: rec.approver || null, action: "seen" }])
+      .slice(-20);
+    rec.answer = String(answer).slice(0, 4000);
+    rec.sources = kept.length ? kept : rec.sources || [];
+    const floor = rec.status === "master" ? TRUTH_MASTER_FLOOR : 0;
+    rec.confidence = Math.round(Math.max(rec.confidence || 0, confidence, floor) * 100) / 100;
+    rec.seen = (rec.seen || 1) + 1;
+    rec.updated = now;
+    rec.provider = provider || rec.provider || null;
+    rec.model = model || rec.model || null;
+    rec.preset = preset || rec.preset || null;
+  } else {
+    rec = {
+      id,
+      question: q,
+      answer: String(answer).slice(0, 4000),
+      confidence,
+      sources: kept,
+      status: "candidate",
+      approver: null,
+      note: null,
+      provider: provider || null,
+      model: model || null,
+      preset: preset || null,
+      searched: !!searched,
+      seen: 1,
+      created: now,
+      updated: now,
+      history: [],
+    };
+  }
+
+  await box.put("truth:" + id, JSON.stringify(rec));
+  await indexTruth(env, box, rec);
+  if (env.AUDITS) {
+    try {
+      await env.AUDITS.put(
+        "truth:" + id + ":" + Date.now(),
+        JSON.stringify({ action: rec.seen > 1 ? "seen" : "candidate", id, confidence: rec.confidence, status: rec.status, at: now })
+      );
+    } catch (err) {}
+  }
+  return rec;
+}
+
+// Serving an answer from cache is still a sighting: the record counts it, so a
+// truth that gets asked for every day does not look untouched.
+async function touchTruth(env, id) {
+  const box = truthStore(env);
+  if (!box || !id) return null;
+  try {
+    const raw = await box.get("truth:" + id);
+    const rec = raw ? JSON.parse(raw) : null;
+    if (!rec) return null;
+    rec.seen = (rec.seen || 1) + 1;
+    rec.updated = new Date().toISOString();
+    await box.put("truth:" + id, JSON.stringify(rec));
+    await indexTruth(env, box, rec);
+    return rec;
+  } catch (err) {
+    return null;
+  }
+}
+
+// Only an expert moves the line. Without TRUTH_KEY set, nothing can be signed
+// off: the public pages never carry that key.
+function truthAdmin(env, request) {
+  const key = String(env.TRUTH_KEY || "").trim();
+  if (!key) return "TRUTH_KEY is not set, so no truth can be signed off yet";
+  const given = String(request.headers.get("x-truth-key") || "");
+  if (given.length !== key.length) return "wrong expert key";
+  let diff = 0;
+  for (let i = 0; i < key.length; i++) diff |= given.charCodeAt(i) ^ key.charCodeAt(i);
+  return diff ? "wrong expert key" : null;
+}
+
+async function promoteTruth(env, store, rec, body) {
+  const now = new Date().toISOString();
+  const by = String((body && body.by) || "expert").slice(0, 80);
+  rec.history = (rec.history || [])
+    .concat([{ at: now, status: rec.status, confidence: rec.confidence, by: rec.approver || null, action: "approve" }])
+    .slice(-20);
+  rec.status = "master";
+  rec.approver = by;
+  rec.approved_at = now;
+  rec.confidence = Math.round(Math.max(Number(body && body.confidence) || 0, TRUTH_MASTER_FLOOR) * 100) / 100;
+  if (body && body.note) rec.note = String(body.note).slice(0, 400);
+  rec.updated = now;
+  await store.put("truth:" + rec.id, JSON.stringify(rec));
+  await indexTruth(env, store, rec);
+  if (env.AUDITS) {
+    try {
+      await env.AUDITS.put(
+        "truth:" + rec.id + ":approve:" + Date.now(),
+        JSON.stringify({ action: "approve", id: rec.id, by, confidence: rec.confidence, at: now })
+      );
+    } catch (err) {}
+  }
+  return rec;
+}
+
 const THEMES = {
   default: { name: "default", primary: "#c41e3a", bg: "#101014", card: "#1c1c25", text: "#f2f2f6", line: "#2c2c38" },
   light: { name: "light", primary: "#c41e3a", bg: "#f3f3f7", card: "#ffffff", text: "#15151b", line: "#dcdce6" },
@@ -3191,6 +3432,10 @@ async function handleChat(request, env, emit) {
         step("cache", "answered before, served from KV");
         parsed.cached = true;
         parsed.route = "cache";
+        if (parsed.truth && parsed.truth.id) {
+          const bumped = await touchTruth(env, parsed.truth.id);
+          if (bumped) parsed.truth.seen = bumped.seen;
+        }
         parsed.thinking = thinking;
         return json(parsed);
       }
@@ -3358,6 +3603,7 @@ async function handleChat(request, env, emit) {
     return finish(env, key, plan, {
       prompt,
       pick: pickLabel ? { requested: pickLabel, error: pickError || null } : null,
+      truth: !!(pick && pick.preset === "truth" && !pickError),
       longTerm: !proxyWanted,
       related,
       theme,
@@ -3719,7 +3965,7 @@ async function finish(
   env,
   key,
   plan,
-  { prompt, answer, provider, route, decision, sources, trace, searchError, searchVia, related, relatedError, cards, theme, thinking, longTerm, pick }
+  { prompt, answer, provider, route, decision, sources, trace, searchError, searchVia, related, relatedError, cards, theme, thinking, longTerm, pick, truth }
 ) {
   const payload = {
     answer,
@@ -3765,6 +4011,29 @@ async function finish(
       payload.indexed = await indexCard(env, { q: prompt, a: answer, decision, sources });
     } catch (err) {
       payload.indexed = "not indexed: " + err.message;
+    }
+  }
+
+  // A truth answer is a candidate the moment it lands: it carries its sources,
+  // its confidence and where it came from, and it becomes a master truth only
+  // when an expert signs it off by id. Recorded before the payload is cached,
+  // so a repeat served from cache still knows which truth it is repeating.
+  if (truth && answer) {
+    try {
+      const rec = await saveTruth(env, {
+        question: prompt,
+        answer,
+        sources,
+        provider,
+        model: pick && pick.requested,
+        preset: "truth",
+        searched: !!(sources && sources.length),
+      });
+      payload.truth = rec
+        ? { id: rec.id, status: rec.status, confidence: rec.confidence, sources: (rec.sources || []).length, seen: rec.seen, approver: rec.approver || null }
+        : null;
+    } catch (err) {
+      payload.truth = "not stored: " + err.message;
     }
   }
 

@@ -8,6 +8,7 @@ let uploaded = [];
 let ddgBody = null;
 let bingBody = null;
 let extResults = [];
+let orOk = false;
 
 globalThis.fetch = function (url, opts) {
   calls.push(String(url));
@@ -40,6 +41,11 @@ globalThis.fetch = function (url, opts) {
     return Promise.resolve(new Response(JSON.stringify({ results: extResults }), { status: 200 }));
   }
   if (String(url).includes("openrouter.ai")) {
+    if (orOk) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "truth answer text" } }] }), { status: 200 })
+      );
+    }
     return Promise.resolve(new Response(JSON.stringify({ error: { message: "no credits" } }), { status: 402 }));
   }
   return Promise.reject(new Error("unexpected fetch " + url));
@@ -1252,5 +1258,51 @@ function check(name, cond, extra) {
   check("and no hard-coded audit button", html.indexOf("audit this") === -1, "audit this");
 }
 
+// 29. truths: stored as candidates, promoted only by an expert
+{
+  calls = []; aiInputs = []; orOk = true;
+  const env = makeEnv({ TRUTH_KEY: "expert-key", OPENROUTER_API_KEY: "k" });
+  const q = "is a verbal warning a written warning";
+  const d = await (await post("/chat", { prompt: q, model: "preset:truth", cards: [] }, env)).json();
+  check("a truth answer becomes a candidate", d.truth && d.truth.status === "candidate", d.truth);
+  check("confidence starts at the earned floor, below master", d.truth.confidence >= 0.4 && d.truth.confidence < 0.9, d.truth.confidence);
+
+  const list = await (await worker.fetch(new Request("https://x/truths"), env)).json();
+  check("the store lists it", list.count === 1 && list.truths[0].question === q, list);
+  check("the store names where it is kept", list.store === "ARCHIVE" || list.store === "KV", list.store);
+
+  const id = d.truth.id;
+  const row = await (await worker.fetch(new Request("https://x/truths/" + id), env)).json();
+  check("a record keeps its provenance", row.truth && Array.isArray(row.truth.sources) && Array.isArray(row.truth.history), row.truth);
+
+  const noKey = await worker.fetch(
+    new Request("https://x/truths/" + id + "/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }),
+    env
+  );
+  check("sign-off needs the expert key", noKey.status === 403, noKey.status);
+
+  const signed = await worker.fetch(
+    new Request("https://x/truths/" + id + "/approve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-truth-key": "expert-key" },
+      body: JSON.stringify({ by: "luigi", note: "checked against the policy" }),
+    }),
+    env
+  );
+  const signedBody = await signed.json();
+  check("an expert makes it a master truth", signedBody.truth && signedBody.truth.status === "master", signedBody.truth);
+  check("the approver is on the record", signedBody.truth.approver === "luigi", signedBody.truth.approver);
+  check("master confidence clears the floor", signedBody.truth.confidence >= 0.9, signedBody.truth.confidence);
+  check("the promotion is in the history", Array.isArray(signedBody.truth.history) && signedBody.truth.history.length === 1, signedBody.truth.history);
+
+  await post("/chat", { prompt: q, model: "preset:truth", cards: [] }, env);
+  const again = await (await worker.fetch(new Request("https://x/truths"), env)).json();
+  check("asking again updates, never duplicates", again.count === 1 && again.truths[0].seen === 2, again);
+  check("an approved truth stays approved", again.truths[0].status === "master", again.truths[0]);
+
+  const blocked = await (await post("/chat", { prompt: q, model: "preset:truth", cards: [] }, makeEnv())).json();
+  check("without a key nothing is stored as a truth", blocked.truth === null || blocked.truth === undefined, blocked.truth);
+  orOk = false;
+}
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
