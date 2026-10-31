@@ -251,16 +251,15 @@ function check(name, cond, extra) {
     '<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fone.example%2Fa">Source one again</a><a class="result__snippet">duplicate</a></div>',
   ].join("");
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
-  check("two results become two cards", d.cards && d.cards.length === 2, d.cards && d.cards.length);
-  check("duplicate url dropped", new Set(d.cards.map((c) => c.source.url)).size === d.cards.length, d.cards.map((c) => c.source.url));
+  check("the top result becomes the one card", d.cards && d.cards.length === 1 && d.cards[0].source.url === "https://one.example/a", d.cards && d.cards.length);
+  check("the duplicate did not become a second card", d.cards.length === 1 && d.cards[0].source.url === "https://one.example/a", d.cards.map((c) => c.source.url));
   check("each card carries its source", d.cards.every((c) => c.source && c.source.url), d.cards);
   check("each card carries the decision", d.cards.every((c) => c.decision && c.decision.domain === "news"), d.cards[0].decision);
   check("answer is the first card", d.answer === d.cards[0].a, d.answer);
-  check("each card was written from its own source",
-    aiInputs.some((x) => JSON.stringify(x.input).includes("Source one")) &&
-    aiInputs.some((x) => JSON.stringify(x.input).includes("Source two")),
+  check("the card was written from the top source",
+    aiInputs.some((x) => JSON.stringify(x.input).includes("Source one")),
     aiInputs.length);
-  check("three model calls: one per card, no extra", aiInputs.filter((x) => String(x.model).startsWith("@cf/deepseek-ai")).length === 2, aiInputs.map((x) => x.model));
+  check("one card means one writing call", aiInputs.filter((x) => String(x.model).startsWith("@cf/deepseek-ai")).length === 1, aiInputs.map((x) => x.model));
   ddgBody = null;
 }
 
@@ -271,10 +270,10 @@ function check(name, cond, extra) {
     '<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fonly.example">Only</a><a class="result__snippet">single</a></div>',
   ].join("");
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
-  check("one result still fills the grid", Array.isArray(d.cards) && d.cards.length === 3, d.cards && d.cards.length);
-  check("each synthesized card is its own angle", new Set(d.cards.map((c) => c.kind)).size === 3, d.cards.map((c) => c.kind));
-  check("synthesized cards claim no source", d.cards.every((c) => !c.source), d.cards);
-  check("synthesized cards carry their text", d.cards.every((c) => c.q === "latest cloudflare news" && c.a === "deepseek answer"), d.cards.map((c) => c.a));
+  check("one result becomes one card", Array.isArray(d.cards) && d.cards.length === 1 && d.cards[0].source.url === "https://only.example", d.cards && d.cards.length);
+  check("the card is titled with the decision", /news/.test(String(d.cards[0].kind)), d.cards[0].kind);
+  check("the card keeps its source", d.cards.every((c) => c.source && c.source.url), d.cards);
+  check("the card carries its text", d.cards.every((c) => c.q === "latest cloudflare news" && c.a === "deepseek answer"), d.cards.map((c) => c.a));
   check("one result -> the plain answer", d.answer === "deepseek answer", d.answer);
   ddgBody = null;
 }
@@ -289,7 +288,7 @@ function check(name, cond, extra) {
   const env = makeEnv();
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
   check("the keyless pages carry the search", d.search_via === "duckduckgo", d.search_via);
-  check("keyless sources become cards", d.cards && d.cards.length === 2, d.cards && d.cards.length);
+  check("the top keyless source becomes the card", d.cards && d.cards.length === 1, d.cards && d.cards.length);
   check("a keyless card keeps its url", d.cards && d.cards[0].source.url === "https://geo.example/a", d.cards && d.cards[0].source);
   check("the cards came from a real page", d.cards[0].source.url === "https://geo.example/a", d.cards[0].source);
   ddgBody = null;
@@ -327,7 +326,7 @@ function check(name, cond, extra) {
   const env = makeEnv({ SEARCH_URL: "https://search.example/api?format=json" });
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
   check("SEARCH_URL is asked first", d.search_via === "search-url", d.search_via);
-  check("his own search fills the grid", d.cards && d.cards.length === 2, d.cards && d.cards.length);
+  check("his own search becomes one card", d.cards && d.cards.length === 1, d.cards && d.cards.length);
   check("his own search gets the query", calls.some((u) => u.indexOf("search.example") >= 0 && u.indexOf("q=") >= 0), calls);
   extResults = [];
 }
@@ -342,7 +341,7 @@ function check(name, cond, extra) {
   const env = makeEnv({ SEARCH_BING: "1" });
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
   check("402 falls to bing rss when it is switched on", d.search_via === "bing", d.search_via);
-  check("bing rss items become cards", d.cards && d.cards.length === 2 && d.cards[0].source.url === "https://bing.example/a", d.cards && d.cards.length);
+  check("the top rss item becomes the card", d.cards && d.cards.length === 1 && d.cards[0].source.url === "https://bing.example/a", d.cards && d.cards.length);
   bingBody = null;
 }
 
@@ -433,7 +432,7 @@ function fakeBrowser(pages, opts) {
   check("browser rows win the chain", d.search_via === "browser", d.search_via);
   check(
     "browser rows become cards",
-    d.cards.length === 2 && d.cards[0].source.url === "https://example.org/browser-one",
+    d.cards.length === 1 && d.cards[0].source.url === "https://example.org/browser-one",
     d.cards.map((c) => c.source && c.source.url)
   );
   check(
@@ -450,7 +449,7 @@ function fakeBrowser(pages, opts) {
   const fake = fakeBrowser(null, { acquireError: "browser offline" });
   const env = makeEnv({ BROWSER: fake.binding });
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
-  check("a browser failure is not fatal", !!d.cards && d.cards.length === 3, d.cards && d.cards.length);
+  check("a browser failure is not fatal", !!d.cards && d.cards.length === 1, d.cards && d.cards.length);
   check("the chain kept going after the browser", /browser offline/.test(String(d.search_error)), d.search_error);
 }
 
@@ -471,7 +470,7 @@ function fakeBrowser(pages, opts) {
   const env = makeEnv({ BROWSER: fake.binding });
   const d = await (await post("/chat", { prompt: "open source cloudflare worker web search proxy", cards: [] }, env)).json();
   check("two of six words is not enough", /dropped 1 of 1 off-topic/.test(String(d.search_error)), d.search_error);
-  check("and the cards still arrive", !!d.cards && d.cards.length === 3, d.cards && d.cards.length);
+  check("and the cards still arrive", !!d.cards && d.cards.length === 1, d.cards && d.cards.length);
 }
 
 // 12k. the browser reports which engine answered, and what it said
@@ -497,7 +496,7 @@ function fakeBrowser(pages, opts) {
   const env = makeEnv({ BROWSER: fake.binding });
   const d = await (await post("/chat", { prompt: "what makes a good trading journal", cards: [] }, env)).json();
   check("trade counts for trading", d.search_via === "browser", d.search_via);
-  check("both family matches become cards", d.cards.length === 2, d.cards.length);
+  check("the first family match becomes the card", d.cards.length === 1, d.cards.length);
 }
 
 // 12h2. an http failure from the endpoint is named, not swallowed
@@ -508,7 +507,7 @@ function fakeBrowser(pages, opts) {
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
   check("an http failure is reported with its status", /browser: bing answered http 500/.test(String(d.search_error)), d.search_error);
   check("every engine was tried before giving up", fake.state.calls === 4, fake.state.calls);
-  check("and the cards still arrive", !!d.cards && d.cards.length === 3, d.cards && d.cards.length);
+  check("and the cards still arrive", !!d.cards && d.cards.length === 1, d.cards && d.cards.length);
 }
 
 // 12l2. a binding too old for quickAction says so and the chain keeps going
@@ -517,7 +516,7 @@ function fakeBrowser(pages, opts) {
   const env = makeEnv({ BROWSER: {} });
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
   check("an old binding is named in the error", /has no quickAction\(\)/.test(String(d.search_error)), d.search_error);
-  check("and the cards still arrive without it", !!d.cards && d.cards.length === 3, d.cards && d.cards.length);
+  check("and the cards still arrive without it", !!d.cards && d.cards.length === 1, d.cards && d.cards.length);
 }
 
 // 12m. the engine's own redirect is not the source
@@ -534,10 +533,22 @@ function fakeBrowser(pages, opts) {
   ]);
   const env = makeEnv({ BROWSER: fake.binding });
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
-  const urls = (d.cards || []).map((c) => c.source && c.source.url);
+  const urls = (d.sources || []).map((s) => s && s.url);
+  const cited = urls.concat((d.cards || []).map((c) => c.source && c.source.url));
   check("a bing ck/a wrapper resolves to the page it points at", urls.indexOf(realOne) >= 0, urls);
   check("a duckduckgo l/ wrapper resolves too", urls.indexOf("https://example.org/real-two") >= 0, urls);
-  check("no citation is a redirect", urls.every((u) => !/bing\.com\/ck\/|duckduckgo\.com\/l\//.test(String(u))), urls);
+  check("no citation is a redirect", cited.every((u) => !/bing\.com\/ck\/|duckduckgo\.com\/l\//.test(String(u))), cited);
+}
+
+// 12o. the decision model is actually asked whether it is guessing
+{
+  calls = []; aiInputs = [];
+  const env = makeEnv();
+  await post("/chat", { prompt: "help me sort this out", cards: [] }, env);
+  const clefCall = aiInputs.find((i) => String(i.model).indexOf("clef") >= 0);
+  const sent = JSON.stringify((clefCall && clefCall.input) || {});
+  check("the decision model is asked the clarify question", sent.indexOf('"clarify"') >= 0, sent.slice(0, 120));
+  check("and it is asked the domain too", sent.indexOf('"domain"') >= 0, sent.slice(0, 120));
 }
 
 // 12n. a challenge page is left alone and the next engine gets the turn
@@ -555,7 +566,7 @@ function fakeBrowser(pages, opts) {
   const env = makeEnv({ BROWSER: fake.binding });
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
   check("a challenge page sends it on to the next engine", fake.state.navigated.length === 2 && /^https:\/\/duckduckgo\.com\//.test(fake.state.navigated[1]), fake.state.navigated);
-  check("the next engine's rows are used", d.search_via === "browser" && d.cards.length === 2, d.search_via + "/" + (d.cards || []).length);
+  check("the next engine's rows are used", d.search_via === "browser" && d.cards.length === 1, d.search_via + "/" + (d.cards || []).length);
 }
 
 // 13a. the page's own script has to parse, or nothing ever renders
@@ -587,7 +598,7 @@ function fakeBrowser(pages, opts) {
   });
   const d = await (await post("/chat", { prompt: "what makes a good trading journal", cards: [] }, env)).json();
   check("harness results lead the chain", d.search_via === "harness", d.search_via);
-  check("links in the harness reply become cards", d.cards.length === 2, d.cards.length);
+  check("the top link becomes the card", d.cards.length === 1, d.cards.length);
   check("the harness names the method it used", /harness\(ask\)/.test(String(d.search_error || "")) || true, d.search_error);
 }
 
@@ -605,7 +616,7 @@ function fakeBrowser(pages, opts) {
     },
   });
   const d = await (await post("/chat", { prompt: "what makes a good trading journal", cards: [] }, env)).json();
-  check("a results array is understood", d.search_via === "harness" && d.cards.length === 2, d.search_via + "/" + d.cards.length);
+  check("a results array is understood", d.search_via === "harness" && d.cards.length === 1, d.search_via + "/" + d.cards.length);
 }
 
 // 15c. a failing harness does not stop the search
@@ -654,7 +665,7 @@ function fakeBrowser(pages, opts) {
   const d = await (await post("/chat", { prompt: "what makes a good trading journal", cards: [], use_cache: false }, env)).json();
   const clefCall = aiInputs.find((i) => i.model.indexOf("clef") >= 0);
   check("the decision model is told the preferences", /deeper x1/.test(JSON.stringify(clefCall && clefCall.input)), "no preference in clef state");
-  check("three cards still come back", d.cards.length === 3, d.cards.length);
+  check("one card still comes back", d.cards.length === 1, d.cards.length);
   const cardCall = aiInputs.find((i) => i.model.indexOf("@cf/deepseek-ai") >= 0);
   check("the card writer is told too", /deeper x1/.test(JSON.stringify(cardCall && cardCall.input)), "no preference in card prompt");
 }

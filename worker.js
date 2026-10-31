@@ -214,8 +214,10 @@ function proxyPresets(env) {
   return raw.split(",").map((p) => p.trim()).filter(Boolean);
 }
 
-// One card per web result, so a search fills the grid.
-const CARD_LIMIT = 3;
+// One card by default. The card is the decision presented, not one of three
+// guesses at it: asking for more angles is something the person does, not
+// something every send does to him.
+const CARD_LIMIT = 1;
 
 // Cloudflare AI Search, public endpoint of the cards instance.
 //   POST /search            -> the notes: what the cards already know (human side)
@@ -371,6 +373,13 @@ const QUESTIONS = {
     type: "noul",
     instructions:
       "Does this touch medical, legal, financial, or safety-sensitive ground where extra care is required?",
+  },
+  // Without this the decision layer could not say "I am guessing what you
+  // want", so the only question it ever asked was the web one.
+  clarify: {
+    type: "noul",
+    instructions:
+      "Is this prompt ambiguous enough that answering now would be a guess about what the person actually wants? Answer yes when one clarifying question would change the answer.",
   },
   depth: {
     type: "score",
@@ -4327,10 +4336,10 @@ async function handleChat(request, env, emit) {
 
   const route = sources.length ? "web → llm" : "llm";
 
-  // 4b. Cards — a search with several results becomes several cards.
+  // 4b. Cards — the top source becomes the card. The rest stay in sources.
   const wanted = Number(body.cards_per_result || CARD_LIMIT);
   const picked = uniqueSources(sources).slice(0, wanted > 0 ? wanted : CARD_LIMIT);
-  if (picked.length >= 2) {
+  if (picked.length >= 1) {
     const built = await Promise.all(
       picked.map(async (s, i) => {
         const one = messages.concat([
@@ -4354,9 +4363,9 @@ async function handleChat(request, env, emit) {
     );
     const cards = built
       .filter(Boolean)
-      .map((c) => ({ q: prompt, a: c.text, provider: c.provider, source: c.source, decision: slimDecision(decision) }));
-    if (cards.length >= 2) {
-      step("cards", cards.length + " cards, one per source");
+      .map((c) => ({ q: prompt, a: c.text, provider: c.provider, source: c.source, kind: decisionLabel(decision), decision: slimDecision(decision) }));
+    if (cards.length >= 1) {
+      step("cards", cards.length + (cards.length === 1 ? " card" : " cards") + ", one per source");
       return finish(env, key, plan, {
         prompt,
         related,
@@ -4395,7 +4404,7 @@ async function handleChat(request, env, emit) {
         q: prompt,
         a: c.text,
         provider: c.provider,
-        kind: c.kind,
+        kind: wanted === 1 ? decisionLabel(decision) : c.kind,
         decision: slimDecision(decision),
       }));
     step("cards", (shaped.length || 1) + " card" + ((shaped.length || 1) === 1 ? "" : "s") + " written");
@@ -4621,6 +4630,13 @@ function uniqueSources(sources) {
     seen.add(url);
     return true;
   });
+}
+
+// What a single card is titled with: the decision itself, rather than which
+// angle of a three-part spray it happened to be.
+function decisionLabel(decision) {
+  const d = decision || {};
+  return [d.domain, d.intent].filter(Boolean).join(" \u00b7 ") || null;
 }
 
 function slimDecision(decision) {
