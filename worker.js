@@ -4235,12 +4235,25 @@ async function handleChat(request, env, emit) {
   if (env.LTM && body.use_cache !== false && !proxyWanted && body.audit !== true) {
     const remembered = await ltmGet(env, prompt);
     if (remembered) {
+      // An entry remembered before cards existed has none, and returning it
+      // as-is puts an answer on screen with no decision card to press.
+      const kept = Array.isArray(remembered.cards) ? remembered.cards.filter((c) => c && c.a) : [];
+      if (!kept.length && String(remembered.answer || "").trim()) {
+        kept.push({
+          q: prompt,
+          a: String(remembered.answer).trim(),
+          more: null,
+          provider: remembered.provider,
+          kind: remembered.decision ? decisionLabel(remembered.decision) : undefined,
+          decision: remembered.decision ? slimDecision(remembered.decision) : null,
+        });
+      }
       step("memory", "answered before, kept in long-term memory");
       return json({
         prompt,
         answer: remembered.answer,
         response: remembered.answer,
-        cards: remembered.cards,
+        cards: kept,
         provider: remembered.provider,
         route: "ltm",
         decision: remembered.decision || null,
