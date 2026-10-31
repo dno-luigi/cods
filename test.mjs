@@ -1269,6 +1269,41 @@ function fakeBrowser(pages, opts) {
   check("still one card", d.cards.length === 1, d.cards.length);
 }
 
+// 25g. choosing the web ends the questions: it searches, no second round
+{
+  const base = makeEnv();
+  const inner = base.AI.run;
+  const env = makeEnv({
+    SEARCH_URL: "https://search.example/q",
+    AI: { run: async (m, i) => {
+      if (String(m).startsWith("@cf/cloudflare/clef")) {
+        return { answers: {
+          intent: { probabilities: { answer: 0.7 } },
+          domain: { probabilities: { general: 0.9 } },
+          tone: { probabilities: { plain: 0.9 } },
+          depth: { score: 2 },
+          needs_web: { probability: 0.5 },
+          cache_ok: { probability: 0.2 },
+          sensitive: { probability: 0.1 },
+          clarify: { probability: 0.9 },
+        } };
+      }
+      return inner(m, i);
+    } },
+  });
+  searchChunks = [{ title: "a source", url: "https://example.com/a", text: "something useful about the topic" }];
+  extResults = [{ title: "a source", url: "https://example.com/a", description: "something useful" }];
+  calls = [];
+  const d = await (await post("/chat", {
+    prompt: "what changed in the rules",
+    search: "yes",
+    clarify: [{ id: "web", q: "Should I search?", a: "Search the web" }],
+  }, env)).json();
+  check("choosing search ends the questions", !d.clarify && !!d.answer, d.clarify && d.clarify.questions);
+  check("and it went to the web", calls.some((u) => u.indexOf("search.example") >= 0), calls);
+  check("the card carries the source it searched", d.cards && d.cards[0].source && d.cards[0].source.url === "https://example.com/a", d.cards && d.cards[0].source);
+}
+
 // 25c. the picker offers both sides, and any OpenRouter name can be typed
 {
   const env = makeEnv({ ORPROXY: {} });

@@ -1217,6 +1217,8 @@ function nextClarify() {
     var v = $('modalInput').value.trim() || (q.options && q.options[0]) || '';
     CLARIFY.asked.push({ id: q.id, q: q.q, a: v });
     CLARIFY.queue.shift();
+    // He picked a search: the questions left in this round are moot.
+    if (q.id === 'web' && /search|web|look/i.test(String(v))) CLARIFY.queue.length = 0;
     $('modal').classList.remove('show');
     nextClarify();
   };
@@ -4265,11 +4267,18 @@ async function handleChat(request, env, emit) {
     if (String(body.search || "").toLowerCase() === "yes") decision.needs_web = 0.95;
     if (String(body.search || "").toLowerCase() === "no") decision.needs_web = 0.02;
 
-    // Ask while it is still unsure. It does not stop at a round count: once the
-    // fixed questions are used up the model writes the next one from his own
-    // answers, and the exchange ends when it has nothing left to ask.
-    let asks = said.length < ASK_LIMIT ? clarifyQuestions(decision, said) : [];
-    if (!asks.length && said.length < ASK_LIMIT && (said.length > 0 || (typeof decision.clarify === "number" && decision.clarify >= 0.5))) {
+    // Choosing the web ends the conversation: he asked for a search, so it
+    // searches. No second round, no further questions.
+    const wantsSearch =
+      String(body.search || "").toLowerCase() === "yes" ||
+      said.some((s) => String(s.id) === "web" && /search|web|look/i.test(String(s.a)));
+    if (wantsSearch) decision.needs_web = 0.95;
+
+    // Otherwise ask while it is still unsure. It does not stop at a round count:
+    // once the fixed questions are used up the model writes the next one from
+    // his own answers, and the exchange ends when it has nothing left to ask.
+    let asks = wantsSearch || said.length >= ASK_LIMIT ? [] : clarifyQuestions(decision, said);
+    if (!asks.length && !wantsSearch && said.length < ASK_LIMIT && (said.length > 0 || (typeof decision.clarify === "number" && decision.clarify >= 0.5))) {
       asks = await nextQuestions(env, prompt, said, decision, body);
     }
     if (asks.length) {
