@@ -960,6 +960,7 @@ function check(name, cond, extra) {
   check("with the conversation", seen.length && seen[0].body.messages.length >= 2, seen[0] && seen[0].body.messages.length);
   check("with the default preset", seen[0].body.model === "truth", seen[0].body.model);
   check("and asked not to stream", seen[0].body.stream === false, seen[0].body.stream);
+  check("without overriding the preset's own limits", seen[0].body.max_tokens === undefined, seen[0].body.max_tokens);
 
   const named = await (await post("/chat", { prompt: "what is a limit order", proxy: true, preset: "cheap" }, env)).json();
   check("a preset can be chosen per request", named.answer === "proxy answer" && seen.some((c) => c.body.model === "cheap"), seen.map((c) => c.body.model));

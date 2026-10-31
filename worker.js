@@ -3832,13 +3832,12 @@ async function orProxyCall(env, messages, body) {
   // name one (body.preset, or body.model), and ORPROXY_PRESET sets the default.
   const preset =
     body.preset || body.orproxy_preset || (body.proxy === true && body.model) || env.ORPROXY_PRESET || OR_PROXY_PRESET;
-  const settings = {
-    messages,
-    model: preset,
-    stream: false,
-    max_tokens: body.max_tokens || 2000,
-    temperature: body.temperature ?? 0.7,
-  };
+  // A preset carries its own model and generation settings, so these are only
+  // sent when the caller actually named one: a default max_tokens can exceed
+  // what the preset's model accepts and the whole call fails.
+  const settings = { messages, model: preset, stream: false };
+  if (body.max_tokens != null) settings.max_tokens = body.max_tokens;
+  if (body.temperature != null) settings.temperature = body.temperature;
 
   const notes = [];
   const paths = unique([orProxyMode || "", ...OR_PROXY_PATHS].filter(Boolean));
