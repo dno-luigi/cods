@@ -1304,5 +1304,52 @@ function check(name, cond, extra) {
   check("without a key nothing is stored as a truth", blocked.truth === null || blocked.truth === undefined, blocked.truth);
   orOk = false;
 }
+// 30. shapes: the card is always answerable, the full catalogue needs the expert key
+{
+  const bucket = new Map();
+  const lt = {
+    put: async (k, v) => { bucket.set(k, v); },
+    get: async (k) => (bucket.has(k) ? { text: async () => bucket.get(k) } : null),
+  };
+  const env = makeEnv({ TRUTH_KEY: "expert-key", LTM: lt });
+  const empty = await (await worker.fetch(new Request("https://x/shapes"), env)).json();
+  check("shapes answers before anything is uploaded", empty.ok === true && empty.source === "built-in", empty.source);
+  check("and carries the card the router sees", String(empty.card).indexOf("input_audio") > 0, String(empty.card).slice(0, 40));
+
+  const { readFileSync } = await import("node:fs");
+  const file = JSON.parse(readFileSync("catalogue.json", "utf8"));
+  const missing = Object.keys(file.shapes).filter((s) => String(empty.card).indexOf(s) === -1);
+  check("every shape in the catalogue appears in the card", missing.length === 0, missing);
+
+  const noKey = await worker.fetch(
+    new Request("https://x/shapes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ models: [] }) }),
+    env
+  );
+  check("uploading the catalogue needs the expert key", noKey.status === 403, noKey.status);
+
+  const sent = await worker.fetch(
+    new Request("https://x/shapes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-truth-key": "expert-key" },
+      body: JSON.stringify(file),
+    }),
+    env
+  );
+  const sentBody = await sent.json();
+  check("an expert puts the catalogue in R2", sentBody.ok === true && sentBody.models === file.models.length, sentBody);
+
+  const served = await (await worker.fetch(new Request("https://x/shapes"), env)).json();
+  check("and it is served from the file", served.source === "models/catalogue.json" && served.counts.cloudflare > 0, served.source);
+
+  const full = await (await worker.fetch(new Request("https://x/shapes?full=1"), env)).json();
+  check("?full=1 returns the whole catalogue", Array.isArray(full.models) && full.models.length === file.models.length, full.models && full.models.length);
+
+  aiInputs = [];
+  await post("/chat", { prompt: "does the router know the shapes", cards: [] }, env);
+  const clefCall = aiInputs.find((x) => x.model.indexOf("clef") >= 0);
+  const clefState = String((clefCall && clefCall.input && clefCall.input.state) || "");
+  check("clef is handed the shape card", clefState.indexOf("Call shapes") > 0, clefState.slice(0, 60));
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

@@ -42,6 +42,25 @@ const TTL_VOLATILE = 3600; // 1 hour
 // Text layer: Workers AI models in this order, then OpenRouter.
 const CF_TEXT_MODELS = ["@cf/ibm-granite/granite-4.0-h-micro"];
 
+// The shapes: what a call has to look like, not which model answers it. The
+// card stays short because it rides in clef-flash's state; the full per-model
+// catalogue is a file in R2 served by /shapes, and no prompt should ever
+// carry all 760 ids.
+const SHAPES_KEY = "models/catalogue.json";
+const SHAPE_CARD = [
+  "Call shapes, and what each one needs:",
+  "chat \u2014 text in, text out. OpenRouter POST /api/v1/chat/completions {model,messages}; Cloudflare env.AI.run(id,{messages}).",
+  "embed \u2014 POST /api/v1/embeddings {model,input}. Vectors out; dimensions differ, so store the id with the vector.",
+  "rerank \u2014 POST /api/v1/rerank {model,query,documents,top_n}. Scores and order out, the records stay yours.",
+  "image \u2014 POST /api/v1/images {model,prompt}. Image bytes out, so it can never be a chat turn.",
+  "video \u2014 POST /api/v1/videos then GET /api/v1/videos/{id}. Asynchronous: never block a request on it.",
+  "stt \u2014 POST /api/v1/audio/transcriptions {model,input_audio:{data,format}}. Text out.",
+  "tts \u2014 POST /api/v1/audio/speech {model,input,voice}. Raw audio bytes out, not JSON.",
+  "responses \u2014 POST /api/v1/responses with input[] parts of text, image, file or audio.",
+  "Cloudflare fixes the endpoint only: env.AI.run wants {prompt} for text-to-text and image, {text} for embeddings, {audio} for ASR, {query,contexts} for the reranker.",
+].join("\n");
+
+
 // What the picker on the phone offers. Cloudflare models need no key, so they
 // come first; a proxy preset is the OpenRouter route. A pick this account
 // cannot run falls through the chain, so the answer still arrives.
@@ -1365,7 +1384,7 @@ export default {
         card_ops: Object.keys(CARD_OPS),
         approved: !!arcStore(env),
         admin: !!env.ADMIN,
-        memory: { context: !!env.CONTEXT, archive: !!env.ARCHIVE, cache: !!env.CACHE, kv: !!env.KV, ltm: !!env.LTM, loader: !!env.LOADER },
+        memory: { context: !!env.CONTEXT, archive: !!env.ARCHIVE, cache: !!env.CACHE, kv: !!env.KV, ltm: !!env.LTM, shapes: !!env.LTM, loader: !!env.LOADER },
         stream: "ndjson",
         themes: Object.keys(THEMES),
         openrouter: !!env.OPENROUTER_API_KEY,
@@ -1468,6 +1487,50 @@ export default {
       cards: 0,
     });
     return json({ ok: true, truth: saved });
+  }
+
+  // Shapes: what a call has to look like. Reading is public; uploading the full
+  // catalogue is an expert action, the same key that signs off a truth.
+  if (url.pathname === "/shapes") {
+    if (request.method === "POST") {
+      if (!env.LTM) return json({ error: "No LTM bucket is bound" }, 503);
+      const bad = truthAdmin(env, request);
+      if (bad) return json({ error: bad }, bad.indexOf("TRUTH_KEY is not set") >= 0 ? 503 : 403);
+      const { body, error } = await readBody(request);
+      if (error) return error;
+      const cat = body && Array.isArray(body.models) ? body : body && body.catalogue;
+      if (!cat || !Array.isArray(cat.models)) return json({ error: "Send the catalogue.json contents" }, 400);
+      await env.LTM.put(SHAPES_KEY, JSON.stringify(cat), { httpMetadata: { contentType: "application/json" } });
+      return json({ ok: true, key: SHAPES_KEY, models: cat.models.length, generated: cat.generated || null });
+    }
+    if (request.method !== "GET") return json({ error: "Use GET, or POST with x-truth-key to upload" }, 405);
+    let cat = null;
+    if (env.LTM) {
+      try {
+        const obj = await env.LTM.get(SHAPES_KEY);
+        if (obj) cat = JSON.parse(await obj.text());
+      } catch (err) {
+        cat = null;
+      }
+    }
+    if (!cat) {
+      return json({
+        ok: true,
+        source: "built-in",
+        card: SHAPE_CARD,
+        counts: null,
+        note: "catalogue.json is not in LTM yet; POST it with x-truth-key and this serves the full list",
+      });
+    }
+    if (url.searchParams.get("full") === "1") return json(cat);
+    return json({
+      ok: true,
+      source: SHAPES_KEY,
+      generated: cat.generated || null,
+      counts: cat.counts || null,
+      shapes: cat.shapes || null,
+      card: SHAPE_CARD,
+    });
   }
 
   if (url.pathname === "/prefs") {
@@ -3388,7 +3451,7 @@ async function handleChat(request, env, emit) {
   // this person's actual intent rather than another guess.
   const said = Array.isArray(body.clarify) ? body.clarify.filter((c) => c && c.q) : [];
   const told = said.length ? contextCards.concat(said.map((c) => ({ q: c.q, a: c.a }))) : contextCards;
-  const state = [buildState(prompt, told), learned].filter(Boolean).join("\n\n");
+  const state = [buildState(prompt, told), learned, SHAPE_CARD].filter(Boolean).join("\n\n");
   const failures = [];
 
   // 1. Decide — clef-flash classifies the request.

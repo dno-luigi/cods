@@ -112,6 +112,10 @@ model. `760` models are mapped in [`catalogue.json`](catalogue.json) (machine-re
   rather than guessed at; anything resolved by id guesswork is marked `id heuristic (unconfirmed)`
   in the JSON, and there are 6 such rows.
 
+**At runtime:** `GET /shapes` returns that card together with the counts and shape descriptions, and `GET /shapes?full=1` returns the whole catalogue. `POST /shapes` with the `x-truth-key` header stores `catalogue.json` at `models/catalogue.json` in the `LTM` bucket, so the list can be refreshed without a redeploy. Until that upload happens the route answers from the built-in card and reports `source: built-in`.
+
+The card is context, not control: clef-flash's typed questions are intent, domain, tone, depth, clarify, needs_web, cache_ok and sensitive, so nothing yet *consumes* a shape when routing. Giving it a `shape` question is the next step, not something this change silently did.
+
 So: if the decision model wants to answer a question, that is `chat` on either side. If it
 wants to search its own truths by meaning, that is `embed`. To order candidate truths before
 the router sees them, `rerank`. To read a photo of a page, `responses` with `input_image`. To
