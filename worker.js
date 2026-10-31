@@ -3,10 +3,10 @@
 // Pipeline per card:
 //   1. cache      — has this already been answered?
 //   2. decide     — clef-flash classifies intent / domain / need-for-web / care / depth / tone
-//   3. search     — Cloudflare Web Search API (env.AI.websearch) when the decision says the web is needed
+//   3. search     — OpenRouter's web plugin, then a real page through BROWSER
 //   4. answer     — OpenRouter or a Workers AI chat model, grounded in the sources
 //
-// Bindings: AI (clef-flash + websearch), KV (answer cache)
+// Bindings: AI (clef + Workers AI), BROWSER (real pages), KV (answer cache)
 const cH = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
@@ -1565,22 +1565,19 @@ export default {
       return json({
         status: "ok",
         clef: !!env.AI,
-        websearch: !!(env.AI && typeof env.AI.websearch === "function"),
-        search_provider: env.SEARCH_PROVIDER || "ceramic",
         search_url: env.SEARCH_URL ? "configured" : null,
         browser: !!env.BROWSER,
         ocode: !!env.OCODE,
         orproxy: !!env.ORPROXY,
         orproxy_mode: orProxyMode,
         orproxy_preset: env.ORPROXY_PRESET || OR_PROXY_PRESET,
-        search_chain: (env.OCODE ? ["harness"] : [])
+        search_chain: (env.OPENROUTER_API_KEY ? ["openrouter:web"] : [])
+          .concat(env.OCODE ? ["harness"] : [])
           .concat(env.SEARCH_URL ? ["search-url"] : [])
           .concat(env.BROWSER ? ["browser"] : [])
-          .concat(["cloudflare"])
           .concat(String(env.SEARCH_BING || "") === "1" ? ["bing"] : [])
           .concat(["duckduckgo", "github", "wikipedia"]),
         github_token: !!env.GITHUB_TOKEN,
-        gateway: env.AI_GATEWAY_ID || "default",
         ai_search: aiSearchBase(env),
         ai_search_instance: env.AI_SEARCH_INSTANCE || AI_SEARCH_INSTANCE,
         index_writer: indexHandle(env) ? "binding" : env.CF_ACCOUNT_ID && env.AI_SEARCH_TOKEN ? "rest" : "none",
@@ -2573,34 +2570,9 @@ async function notesChat(env, messages, body) {
   });
 }
 
-async function cloudflareWebSearch(env, query, limit) {
-  if (!env.AI || typeof env.AI.websearch !== "function") {
-    throw new Error("websearch() is not available on this AI binding");
-  }
-  const res = await env.AI.websearch({
-    gatewayId: env.AI_GATEWAY_ID || "default",
-    query: String(query).slice(0, 1024),
-    provider: env.SEARCH_PROVIDER || "ceramic",
-    limit,
-  });
-  if (!res || !res.ok) {
-    throw new Error("web search HTTP " + (res ? res.status : "no response"));
-  }
-  const data = await res.json();
-  const items = Array.isArray(data && data.items) ? data.items : [];
-  return items
-    .filter((i) => i && i.url)
-    .map((i) => ({
-      url: i.url,
-      title: i.title || i.url,
-      description: String(i.description || "").slice(0, 800),
-    }));
-}
-
-// Cloudflare's websearch() bills every query to AI Gateway credits and answers
-// 402 on an account without them, which used to leave the card builder with no
-// sources and the page with no cards. These two need no key and no billing, so
-// a question still gets real pages to stand on.
+// No AI Gateway: the paid search is OpenRouter's web plugin, and the way this
+// Worker reads the internet is the BROWSER binding — a real page, driven and
+// scraped. The keyless pages below are what is left if neither answers.
 
 function stripTags(s) {
   return String(s || "")
@@ -3084,7 +3056,6 @@ async function webSearch(env, query) {
   if (env.OCODE) providers.push(["harness", () => harnessSearch(env, query, limit)]);
   if (env.SEARCH_URL) providers.push(["search-url", () => externalSearch(env, query, limit)]);
   if (env.BROWSER) providers.push(["browser", () => browserSearch(env, query, limit)]);
-  providers.push(["cloudflare", () => cloudflareWebSearch(env, query, limit)]);
   if (String(env.SEARCH_BING || "") === "1") providers.push(["bing", () => bingSearch(query, limit)]);
   providers.push(["duckduckgo", () => ddgSearch(query, limit)]);
   providers.push(["github", () => githubSearch(env, query, limit)]);

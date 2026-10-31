@@ -145,7 +145,7 @@ function check(name, cond, extra) {
   calls = []; searchChunks = [];
   const d = await (await post("/chat", { prompt: "anything", cards: [] }, makeEnv())).json();
   check("no notes -> no related", d.related === null, d.related);
-  check("missing web search is reported", /websearch/i.test(String(d.search_error)), d.search_error);
+  check("a search that found nothing is reported", /no results|no search provider/i.test(String(d.search_error)), d.search_error);
 }
 
 // 5. a failing index is reported, not swallowed
@@ -245,16 +245,11 @@ function check(name, cond, extra) {
 {
   calls = []; aiInputs = []; searchChunks = [];
   const env = makeEnv();
-  env.AI.websearch = async () => ({
-    ok: true,
-    json: async () => ({
-      items: [
-        { url: "https://one.example/a", title: "Source one", description: "first description" },
-        { url: "https://two.example/b", title: "Source two", description: "second description" },
-        { url: "https://one.example/a", title: "Source one again", description: "duplicate" },
-      ],
-    }),
-  });
+  ddgBody = [
+    '<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fone.example%2Fa">Source one</a><a class="result__snippet">first description</a></div>',
+    '<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Ftwo.example%2Fb">Source two</a><a class="result__snippet">second description</a></div>',
+    '<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fone.example%2Fa">Source one again</a><a class="result__snippet">duplicate</a></div>',
+  ].join("");
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
   check("two results become two cards", d.cards && d.cards.length === 2, d.cards && d.cards.length);
   check("duplicate url dropped", new Set(d.cards.map((c) => c.source.url)).size === d.cards.length, d.cards.map((c) => c.source.url));
@@ -266,18 +261,22 @@ function check(name, cond, extra) {
     aiInputs.some((x) => JSON.stringify(x.input).includes("Source two")),
     aiInputs.length);
   check("three model calls: one per card, no extra", aiInputs.filter((x) => String(x.model).startsWith("@cf/deepseek-ai")).length === 2, aiInputs.map((x) => x.model));
+  ddgBody = null;
 }
 
 // 12. one result stays one card
 {
   const env = makeEnv();
-  env.AI.websearch = async () => ({ ok: true, json: async () => ({ items: [{ url: "https://only.example", title: "Only", description: "single" }] }) });
+  ddgBody = [
+    '<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fonly.example">Only</a><a class="result__snippet">single</a></div>',
+  ].join("");
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
   check("one result still fills the grid", Array.isArray(d.cards) && d.cards.length === 3, d.cards && d.cards.length);
   check("each synthesized card is its own angle", new Set(d.cards.map((c) => c.kind)).size === 3, d.cards.map((c) => c.kind));
   check("synthesized cards claim no source", d.cards.every((c) => !c.source), d.cards);
   check("synthesized cards carry their text", d.cards.every((c) => c.q === "latest cloudflare news" && c.a === "deepseek answer"), d.cards.map((c) => c.a));
   check("one result -> the plain answer", d.answer === "deepseek answer", d.answer);
+  ddgBody = null;
 }
 
 // 12b. a 402 from Cloudflare's web search no longer starves the cards
@@ -288,12 +287,11 @@ function check(name, cond, extra) {
     '<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgeo.example%2Fb">Geothermal limits</a><a class="result__snippet">depth decides the cost</a></div>',
   ].join("");
   const env = makeEnv();
-  env.AI.websearch = async () => ({ ok: false, status: 402 });
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
-  check("402 falls through to a keyless provider", d.search_via === "duckduckgo", d.search_via);
+  check("the keyless pages carry the search", d.search_via === "duckduckgo", d.search_via);
   check("keyless sources become cards", d.cards && d.cards.length === 2, d.cards && d.cards.length);
   check("a keyless card keeps its url", d.cards && d.cards[0].source.url === "https://geo.example/a", d.cards && d.cards[0].source);
-  check("the 402 is still reported", String(d.search_error || "").includes("402"), d.search_error);
+  check("the cards came from a real page", d.cards[0].source.url === "https://geo.example/a", d.cards[0].source);
   ddgBody = null;
 }
 
@@ -327,7 +325,6 @@ function check(name, cond, extra) {
     { title: "Self hosted two", url: "https://ext.example/2", description: "second hit" },
   ];
   const env = makeEnv({ SEARCH_URL: "https://search.example/api?format=json" });
-  env.AI.websearch = async () => ({ ok: false, status: 402 });
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
   check("SEARCH_URL is asked first", d.search_via === "search-url", d.search_via);
   check("his own search fills the grid", d.cards && d.cards.length === 2, d.cards && d.cards.length);
@@ -343,7 +340,6 @@ function check(name, cond, extra) {
     '<item><title>Cloudflare news two</title><link>https://bing.example/b</link><description>beta</description></item>' +
     '</channel></rss>';
   const env = makeEnv({ SEARCH_BING: "1" });
-  env.AI.websearch = async () => ({ ok: false, status: 402 });
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
   check("402 falls to bing rss when it is switched on", d.search_via === "bing", d.search_via);
   check("bing rss items become cards", d.cards && d.cards.length === 2 && d.cards[0].source.url === "https://bing.example/a", d.cards && d.cards.length);
@@ -365,19 +361,15 @@ function check(name, cond, extra) {
     if (String(model).startsWith("@cf/deepseek-ai")) return { response: "deepseek answer" };
     throw new Error("no such model: " + model);
   };
-  env.AI.websearch = async () => ({
-    ok: true,
-    json: async () => ({
-      items: [
-        { url: "https://a.example/1", title: "One", description: "first" },
-        { url: "https://a.example/2", title: "Two", description: "second" },
-      ],
-    }),
-  });
+  ddgBody = [
+    '<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fa.example%2F1">One</a><a class="result__snippet">first</a></div>',
+    '<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fa.example%2F2">Two</a><a class="result__snippet">second</a></div>',
+  ].join("");
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
-  check("search runs even when clef says no web", d.search_via === "cloudflare", d.search_via);
+  check("search runs even when clef says no web", d.search_via === "duckduckgo", d.search_via);
   check("those sources become cards", d.cards && d.cards.length === 2, d.cards && d.cards.length);
   check("no card echoes the instruction", d.cards.every((c) => !/never open with/i.test(String(c.a))), d.cards.map((c) => c.a));
+  ddgBody = null;
 }
 
 

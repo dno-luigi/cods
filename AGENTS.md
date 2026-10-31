@@ -6,14 +6,11 @@ before touching anything, then ask him before changing code.
 ## Hard rules (non-negotiable)
 
 - **Never touch a live deployment.** Off limits: the existing front end at
-  `ai-n-inspired.com`, `i.nspired.cc`, `orproxy`, and every worker currently
+  `ai-n-spired.com`, `i.nspired.cc`, `orproxy`, and every worker currently
   serving traffic. Reading a worker's source through the Cloudflare API is fine.
   Deploying, uploading, deleting or pushing is not. He has said this repeatedly;
   treating a deploy as "just a test" is the failure mode.
-- **Two different strings, both correct.** The domain is `ai-n-inspired.com`
-  — spelled that way, and that is not a mistake. The brand name itself is
-  `nspired`. Writing "inspired" where the brand is meant is the error; writing the
-  domain exactly as above is not.
+- **The brand and the domain are `ai-n-spired.com`.** No second "i" and no "inspired" in it. He has corrected this more than once: copy it from this line, never from memory.
 - **Do not create new workers.** He has 58 already. Fix the ones that exist.
 - **Ask before changing code.** He gives decisions; he does not want the decision
   handed back to him as a menu of options, and he does not want an assumption made
