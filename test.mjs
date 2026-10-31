@@ -1908,6 +1908,29 @@ function fakeBrowser(pages, opts) {
   check("a clip over the size ceiling is refused", huge.status === 413, huge.status);
 }
 
+// 38b. nova-3 streaming: raw 16 kHz PCM over the binding's websocket mode
+{
+  const seen = [];
+  const env = makeEnv();
+  env.AI.run = async (model, input, opts) => {
+    seen.push({ model: String(model), input, opts });
+    return new Response("upgraded", { status: 200 });
+  };
+  const bare = await worker.fetch(new Request("https://cods.example/stt/ws"), env);
+  check("a plain request is told to connect with a socket", bare.status === 426, bare.status);
+  const up = await worker.fetch(new Request("https://cods.example/stt/ws", { headers: { Upgrade: "websocket" } }), env);
+  check("the socket is opened through the binding", up.status === 200 && seen.length === 1 && !!seen[0].opts && seen[0].opts.websocket === true, seen[0] && seen[0].opts);
+  check(
+    "with nova-3 and the only encoding it takes",
+    seen[0].model === "@cf/deepgram/nova-3" && seen[0].input.encoding === "linear16" && seen[0].input.sample_rate === "16000",
+    seen[0] && seen[0].input
+  );
+  const noAi = makeEnv();
+  delete noAi.AI;
+  const off = await worker.fetch(new Request("https://cods.example/stt/ws", { headers: { Upgrade: "websocket" } }), noAi);
+  check("without the binding it says so", off.status === 503, off.status);
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
 
