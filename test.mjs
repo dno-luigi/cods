@@ -937,5 +937,60 @@ function check(name, cond, extra) {
   check("markdown has real styling", html.includes(":is(.card-a,.fs-body) strong{font-weight:700}") && html.includes("list-style:disc"), "ok");
 }
 
+
+// 23. the OpenRouter proxy answers first, however it is built
+{
+  const seen = [];
+  const env = makeEnv({
+    ORPROXY: {
+      chat: async (args) => {
+        seen.push(args);
+        return "proxy answer";
+      },
+    },
+  });
+  const d = await (await post("/chat", { prompt: "what is a limit order" }, env)).json();
+  check("the proxy answers instead of Workers AI", d.answer === "proxy answer", d.answer);
+  check("and the payload says where it came from", String(d.provider).indexOf("orproxy") > 0, d.provider);
+  check("the proxy is handed the conversation", seen.length >= 1 && Array.isArray(seen[0].messages) && seen[0].messages.length >= 2, seen[0] && seen[0].messages && seen[0].messages.length);
+  check("and a model to run", typeof seen[0].model === "string" && seen[0].model.length > 0, seen[0] && seen[0].model);
+  const health = await (await worker.fetch(new Request("https://cods.example/health"), env)).json();
+  check("health names the proxy and how it was reached", health.orproxy === true && health.orproxy_mode === "chat", health.orproxy_mode);
+}
+
+// 23b. a proxy that speaks HTTP instead of RPC is found too
+{
+  const seen = [];
+  const env = makeEnv({
+    ORPROXY: {
+      fetch: async (url, init) => {
+        seen.push({ url: String(url), body: init && init.body });
+        if (String(url).endsWith("/v1/chat/completions")) {
+          return new Response(JSON.stringify({ choices: [{ message: { content: "http proxy answer" } }] }), { status: 200 });
+        }
+        return new Response("Not found", { status: 404 });
+      },
+    },
+  });
+  const d = await (await post("/chat", { prompt: "what is slippage" }, env)).json();
+  check("an OpenAI-shaped proxy works", d.answer === "http proxy answer", d.answer);
+  check("it is asked on the OpenAI route", seen.some((c) => c.url === "https://orproxy/v1/chat/completions"), seen.map((c) => c.url));
+  check("with the model in the body", seen.length && String(seen[0].body).indexOf('"model"') > 0, seen[0] && seen[0].body);
+  const health = await (await worker.fetch(new Request("https://cods.example/health"), env)).json();
+  check("health records the route that answered", health.orproxy_mode === "fetch /v1/chat/completions", health.orproxy_mode);
+}
+
+// 23c. a proxy that is down does not take the answer with it
+{
+  const env = makeEnv({
+    ORPROXY: {
+      fetch: async () => new Response("upstream exploded", { status: 500 }),
+    },
+  });
+  const d = await (await post("/chat", { prompt: "what is a stop order" }, env)).json();
+  check("the fallback model still answers", d.answer === "granite answer", d.answer);
+  check("and it does not blame the proxy in the payload", String(d.provider).indexOf("orproxy") === -1, d.provider);
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

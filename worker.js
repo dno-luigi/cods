@@ -1152,6 +1152,8 @@ export default {
         search_url: env.SEARCH_URL ? "configured" : null,
         browser: !!env.BROWSER,
         ocode: !!env.OCODE,
+        orproxy: !!env.ORPROXY,
+        orproxy_mode: orProxyMode,
         search_chain: (env.OCODE ? ["harness"] : [])
           .concat(env.SEARCH_URL ? ["search-url"] : [])
           .concat(env.BROWSER ? ["browser"] : [])
@@ -3021,6 +3023,26 @@ async function handleChat(request, env, emit) {
       .map((m) => String(m || "").trim())
       .filter(Boolean)
   );
+  // The OpenRouter proxy first: it is the strongest model wired to this Worker,
+  // and Workers AI becomes the fallback rather than the other way round.
+  if (env.ORPROXY) {
+    try {
+      const via = await orProxyCall(
+        env,
+        body.model || env.ORPROXY_MODEL || env.OPENROUTER_MODEL || OR_MODELS[0],
+        messages,
+        body
+      );
+      return respond({
+        answer: via.text,
+        provider: "clef-flash → orproxy",
+        trace: [{ source: "orproxy", via: via.via, model: via.model }],
+      });
+    } catch (err) {
+      failures.push("orproxy: " + err.message);
+    }
+  }
+
   if (env.AI) {
     for (const cfModel of cfModels) {
       try {
@@ -3091,7 +3113,7 @@ async function handleChat(request, env, emit) {
       error:
         "No text provider answered. " +
         failures.join(" | ") +
-        " — set the key with: wrangler secret put OPENROUTER_API_KEY",
+        " — bind ORPROXY, or set the key with: wrangler secret put OPENROUTER_API_KEY",
       failures,
       decision,
       sources,
@@ -3236,6 +3258,22 @@ async function askText(env, messages, body) {
       .filter(Boolean)
   );
 
+  // The OpenRouter proxy first: it is the strongest model wired to this Worker,
+  // and Workers AI becomes the fallback rather than the other way round.
+  if (env.ORPROXY) {
+    try {
+      const via = await orProxyCall(
+        env,
+        body.model || env.ORPROXY_MODEL || env.OPENROUTER_MODEL || OR_MODELS[0],
+        messages,
+        settings
+      );
+      return { text: via.text, provider: "clef-flash → orproxy", trace: [{ source: "orproxy", via: via.via, model: via.model }] };
+    } catch (err) {
+      failures.push("orproxy: " + err.message);
+    }
+  }
+
   if (env.AI) {
     for (const cfModel of cfModels) {
       try {
@@ -3357,6 +3395,91 @@ async function finish(
     });
   }
   return json(payload);
+}
+
+// The OpenRouter proxy (binding ORPROXY) sits in front of openrouter.ai so the
+// key, the model choice and any provider pins live in one Worker instead of
+// every caller. It publishes no route table, so this tries the two shapes such
+// a proxy takes — an RPC entrypoint's methods, then an OpenAI-style POST — and
+// remembers whichever answered, so the search is paid once per isolate.
+let orProxyMode = null;
+const OR_PROXY_RPC = ["chat", "complete", "completion", "ask", "generate", "run", "proxy"];
+const OR_PROXY_PATHS = ["/v1/chat/completions", "/chat/completions", "/"];
+
+// A proxy can hand back plain text, an OpenAI envelope, or either one as a
+// JSON string; all three should reach the card as words.
+function orProxyText(out) {
+  if (typeof out === "string") {
+    const raw = out.trim();
+    if (!raw) return "";
+    try {
+      const parsed = JSON.parse(raw);
+      const fromJson = textFrom(parsed);
+      if (fromJson) return fromJson;
+    } catch (err) {}
+    return raw;
+  }
+  return textFrom(out);
+}
+
+async function orProxyCall(env, model, messages, body) {
+  const binder = env.ORPROXY;
+  if (!binder) throw new Error("ORPROXY is not bound");
+  const settings = {
+    model,
+    messages,
+    max_tokens: body.max_tokens || 2000,
+    temperature: body.temperature ?? 0.7,
+  };
+  const notes = [];
+
+  const attempt = async (mode, run) => {
+    try {
+      const text = orProxyText(await run());
+      if (text) return { text, via: mode, model };
+      notes.push(mode + ": empty reply");
+    } catch (err) {
+      notes.push(mode + ": " + ((err && err.message) || String(err)));
+    }
+    return null;
+  };
+
+  const rpc = unique([orProxyMode || "", ...OR_PROXY_RPC].filter(Boolean));
+  for (const name of rpc) {
+    if (typeof binder[name] !== "function") continue;
+    const hit = await attempt(name, () => binder[name](settings));
+    if (hit) {
+      orProxyMode = name;
+      return hit;
+    }
+  }
+
+  if (typeof binder.fetch === "function") {
+    const headers = { "Content-Type": "application/json" };
+    if (env.OPENROUTER_API_KEY) headers.Authorization = "Bearer " + env.OPENROUTER_API_KEY;
+    const cached = orProxyMode && orProxyMode.indexOf("fetch ") === 0 ? orProxyMode.slice(6) : "";
+    const paths = unique([cached, ...OR_PROXY_PATHS].filter(Boolean));
+    for (const path of paths) {
+      const hit = await attempt("fetch " + path, async () => {
+        const res = await binder.fetch("https://orproxy" + path, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(settings),
+        });
+        const text = await res.text();
+        if (!res.ok) throw new Error("HTTP " + res.status + " " + text.slice(0, 160));
+        return text;
+      });
+      if (hit) {
+        orProxyMode = "fetch " + path;
+        return hit;
+      }
+    }
+  } else {
+    notes.push("fetch: not a method");
+  }
+
+  throw new Error(notes.join(" | ") || "no callable way into ORPROXY");
 }
 
 async function callOpenRouter(env, model, messages, body) {

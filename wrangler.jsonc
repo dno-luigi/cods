@@ -65,6 +65,15 @@
       "service": "opencode-harness-example",
       "environment": "production",
       "entrypoint": "OpenCodeAgent"
+    },
+    // The OpenRouter proxy: the key, the model choice and any provider pins
+    // stay in that Worker, and cods only asks it for text. Its calling shape
+    // is discovered on first use (see orProxyCall), so an RPC entrypoint and
+    // an OpenAI-style fetch route both work without further config.
+    {
+      "binding": "ORPROXY",
+      "service": "orproxy",
+      "environment": "production"
     }
   ]
   // When the ranking admin Worker exists, add it the same way and the
