@@ -29,12 +29,17 @@
   // Memory, split by how long each piece is meant to last:
   //   CONTEXT  what the app knows about this person: learned preferences, decks, theme
   //   ARCHIVE  answers that were signed off, plus a log of what was asked
-  //   KV       only the short-lived answer cache
+  //   CACHE    only the short-lived answer cache, so it can be emptied alone
+  //   KV       the fallback for the cache, and what older answers live in
   //   LTM (R2) every answer, kept for good, so a repeat question outlives the cache TTL
   "kv_namespaces": [
     {
       "binding": "ARCHIVE",
       "id": "1904b566c36f4850ad0d084c781f3c39"
+    },
+    {
+      "binding": "CACHE",
+      "id": "b03416fb0fe547069d288cfb8ad49821"
     },
     {
       "binding": "CONTEXT",

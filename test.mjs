@@ -1149,5 +1149,41 @@ function check(name, cond, extra) {
   check("and the proxy answers when it accepts it", d.answer === "typed answer", d.answer);
 }
 
+
+// 26. the answer cache lives in its own namespace
+{
+  const kv = new Map(), cache = new Map();
+  const env = makeEnv({
+    KV: { get: async (k) => kv.get(k) || null, put: async (k, v) => kv.set(k, v) },
+    CACHE: { get: async (k) => cache.get(k) || null, put: async (k, v) => cache.set(k, v) },
+  });
+  const first = await (await post("/chat", { prompt: "what is a limit order" }, env)).json();
+  check("an answer is cached in CACHE", [...cache.keys()].some((k) => k.indexOf("ans:") === 0), [...cache.keys()]);
+  check("and nothing new lands in KV", [...kv.keys()].every((k) => k.indexOf("ans:") !== 0), [...kv.keys()]);
+  calls = []; aiInputs = [];
+  const again = await (await post("/chat", { prompt: "what is a limit order" }, env)).json();
+  check("a repeat question is served from CACHE", again.cached === true && again.route === "cache", again.route);
+  check("without waking a text model", aiInputs.every((a) => a.model.indexOf("clef") >= 0), aiInputs.map((a) => a.model));
+
+  const key = [...cache.keys()].find((k) => k.indexOf("ans:") === 0);
+  cache.clear();
+  kv.set(key, JSON.stringify({ answer: "kept from before", provider: "old" }));
+  const legacy = await (await post("/chat", { prompt: "what is a limit order" }, env)).json();
+  check("an answer stored in KV before the split still reads", legacy.answer === "kept from before", legacy.answer);
+
+  const health = await (await worker.fetch(new Request("https://cods.example/health"), env)).json();
+  check("health names the cache namespace", health.memory.cache === true, health.memory);
+}
+
+// 26b. without CACHE bound, the cache still works through KV
+{
+  const kv = new Map();
+  const env = makeEnv({ KV: { get: async (k) => kv.get(k) || null, put: async (k, v) => kv.set(k, v) } });
+  await post("/chat", { prompt: "what is a stop order" }, env);
+  check("the cache falls back to KV", [...kv.keys()].some((k) => k.indexOf("ans:") === 0), [...kv.keys()]);
+  const health = await (await worker.fetch(new Request("https://cods.example/health"), env)).json();
+  check("and health says CACHE is absent", health.memory.cache === false, health.memory.cache);
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

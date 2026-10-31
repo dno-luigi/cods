@@ -1340,7 +1340,7 @@ export default {
         card_ops: Object.keys(CARD_OPS),
         approved: !!arcStore(env),
         admin: !!env.ADMIN,
-        memory: { context: !!env.CONTEXT, archive: !!env.ARCHIVE, kv: !!env.KV, ltm: !!env.LTM, loader: !!env.LOADER },
+        memory: { context: !!env.CONTEXT, archive: !!env.ARCHIVE, cache: !!env.CACHE, kv: !!env.KV, ltm: !!env.LTM, loader: !!env.LOADER },
         stream: "ndjson",
         themes: Object.keys(THEMES),
         openrouter: !!env.OPENROUTER_API_KEY,
@@ -2652,6 +2652,28 @@ function arcStore(env) {
 // Anything saved before the stores were split still sits in KV under the same
 // key. Reads fall back to it so a phone that was already in use keeps its
 // deck, its learned preferences and its approvals; the next write moves them.
+// The answer cache has its own namespace, so it can be emptied without
+// touching what the app learned. KV is still read for anything cached before
+// the split, and is used as the store when CACHE is not bound.
+function cacheStore(env) {
+  return env.CACHE || env.KV || null;
+}
+
+async function cacheGet(env, key) {
+  const store = cacheStore(env);
+  if (!store) return null;
+  try {
+    const hit = await store.get(key);
+    if (hit) return hit;
+  } catch (err) {}
+  if (env.CACHE && env.KV) {
+    try {
+      return await env.KV.get(key);
+    } catch (err) {}
+  }
+  return null;
+}
+
 async function readMoved(env, store, key) {
   try {
     const raw = await store.get(key);
@@ -3111,9 +3133,9 @@ async function handleChat(request, env, emit) {
 
   // 2. Cache — answered before?
   const key = await cacheKeyFor(prompt, contextCards, body, env);
-  if (env.KV && body.use_cache !== false) {
+  if (cacheStore(env) && body.use_cache !== false) {
     try {
-      const cached = await env.KV.get(key);
+      const cached = await cacheGet(env, key);
       if (cached) {
         const parsed = JSON.parse(cached);
         step("cache", "answered before, served from KV");
@@ -3653,9 +3675,9 @@ async function finish(
     }
   }
 
-  if (env.KV && answer) {
+  if (cacheStore(env) && answer) {
     try {
-      await env.KV.put(key, JSON.stringify(payload), { expirationTtl: plan.ttl });
+      await cacheStore(env).put(key, JSON.stringify(payload), { expirationTtl: plan.ttl });
     } catch (err) {}
   }
 
