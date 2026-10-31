@@ -1024,14 +1024,15 @@ export default {
         text_models: CF_TEXT_MODELS,
         card_limit: CARD_LIMIT,
         card_ops: Object.keys(CARD_OPS),
-        approved: !!env.KV,
+        approved: !!arcStore(env),
         admin: !!env.ADMIN,
+        memory: { context: !!env.CONTEXT, archive: !!env.ARCHIVE, kv: !!env.KV, ltm: !!env.LTM, loader: !!env.LOADER },
         stream: "ndjson",
         themes: Object.keys(THEMES),
         openrouter: !!env.OPENROUTER_API_KEY,
         chat_model: env.CF_CHAT_MODEL || null,
         kv: !!env.KV,
-        prefs: !!env.KV,
+        prefs: !!ctxStore(env),
         domains: Object.keys(DOMAINS),
       });
     }
@@ -1089,7 +1090,25 @@ export default {
         .sort((a, b) => (b[1].rank || 0) - (a[1].rank || 0) || Date.parse(b[1].updated || 0) - Date.parse(a[1].updated || 0))
         .slice(0, 50)
         .map(([k, v]) => ({ key: k, q: v.q, rank: v.rank, cards: (v.cards || []).length, at: v.at, updated: v.updated }));
-      return json({ kv: !!env.KV, count: items.length, items });
+      return json({ store: env.ARCHIVE ? "archive" : env.KV ? "kv" : null, count: items.length, items });
+    }
+
+    if (url.pathname === "/archive") {
+      const arc = arcStore(env);
+      let log = [];
+      if (arc) {
+        try {
+          const raw = await arc.get(ARCHIVE_LOG_KEY);
+          log = raw ? JSON.parse(raw) : [];
+        } catch (err) {
+          log = [];
+        }
+      }
+      return json({
+        store: env.ARCHIVE ? "archive" : env.KV ? "kv" : null,
+        count: Array.isArray(log) ? log.length : 0,
+        log: Array.isArray(log) ? log.slice(0, 50) : [],
+      });
     }
 
     if (url.pathname === "/card") {
@@ -1111,11 +1130,13 @@ export default {
           a: String((c && c.a) || "").slice(0, 4000),
         }));
         const theme = cleanTheme(body.theme);
-        if (env.KV) await env.KV.put(key, JSON.stringify({ cards, theme: theme || null, updated: new Date().toISOString() }));
-        return json({ ok: true, saved: !!env.KV, count: cards.length, theme });
+        const store = ctxStore(env);
+        if (store) await store.put(key, JSON.stringify({ cards, theme: theme || null, updated: new Date().toISOString() }));
+        return json({ ok: true, saved: !!store, count: cards.length, theme });
       }
-      if (!env.KV) return json({ cards: [], saved: false });
-      const raw = await env.KV.get(key);
+      const store = ctxStore(env);
+      if (!store) return json({ cards: [], saved: false });
+      const raw = await store.get(key);
       let cards = [];
       let theme = null;
       try {
@@ -2022,9 +2043,10 @@ const PREFS_KEY = "prefs:v1";
 
 async function loadPrefs(env) {
   const empty = { actions: {}, domains: {}, events: [], updated: null };
-  if (!env.KV) return empty;
+  const store = ctxStore(env);
+  if (!store) return empty;
   try {
-    const raw = await env.KV.get(PREFS_KEY);
+    const raw = await store.get(PREFS_KEY);
     if (!raw) return empty;
     const parsed = JSON.parse(raw) || {};
     return {
@@ -2039,10 +2061,11 @@ async function loadPrefs(env) {
 }
 
 async function savePrefs(env, prefs) {
-  if (!env.KV) return false;
+  const store = ctxStore(env);
+  if (!store) return false;
   prefs.updated = new Date().toISOString();
   prefs.events = (prefs.events || []).slice(-24);
-  await env.KV.put(PREFS_KEY, JSON.stringify(prefs));
+  await store.put(PREFS_KEY, JSON.stringify(prefs));
   return true;
 }
 
@@ -2211,6 +2234,19 @@ async function handleCard(request, env) {
 // so the same question always returns the same vetted cards.
 const APPROVED_KEY = "approved:v1";
 const APPROVED_LIMIT = 200;
+const ARCHIVE_LOG_KEY = "archive:log:v1";
+
+// Memory is split by how long it should live. CONTEXT holds what the app knows
+// about this person (learned preferences, decks, theme); ARCHIVE keeps the
+// answers that were signed off and a log of what was asked; KV stays the
+// short-lived answer cache; LTM (R2) keeps every answer for good. Each one
+// falls back to KV so a Worker deployed without them still works.
+function ctxStore(env) {
+  return env.CONTEXT || env.KV || null;
+}
+function arcStore(env) {
+  return env.ARCHIVE || env.KV || null;
+}
 
 const THEMES = {
   default: { name: "default", primary: "#c41e3a", bg: "#101014", card: "#1c1c25", text: "#f2f2f6", line: "#2c2c38" },
@@ -2277,9 +2313,10 @@ async function themeFor(env, prompt) {
 
 async function loadApproved(env) {
   const empty = { items: {} };
-  if (!env.KV) return empty;
+  const store = arcStore(env);
+  if (!store) return empty;
   try {
-    const raw = await env.KV.get(APPROVED_KEY);
+    const raw = await store.get(APPROVED_KEY);
     if (!raw) return empty;
     const parsed = JSON.parse(raw) || {};
     return { items: parsed.items && typeof parsed.items === "object" ? parsed.items : {} };
@@ -2289,7 +2326,8 @@ async function loadApproved(env) {
 }
 
 async function saveApproved(env, store) {
-  if (!env.KV) return false;
+  const arc = arcStore(env);
+  if (!arc) return false;
   const entries = Object.entries(store.items || {}).sort(
     (a, b) => Date.parse(b[1].updated || 0) - Date.parse(a[1].updated || 0)
   );
@@ -2297,8 +2335,55 @@ async function saveApproved(env, store) {
   entries.slice(0, APPROVED_LIMIT).forEach(([k, v]) => {
     kept[k] = v;
   });
-  await env.KV.put(APPROVED_KEY, JSON.stringify({ items: kept, updated: new Date().toISOString() }));
+  await arc.put(APPROVED_KEY, JSON.stringify({ items: kept, updated: new Date().toISOString() }));
   return true;
+}
+
+// LTM is the only memory with no expiry, so a question asked months ago still
+// answers itself even though the KV cache is long gone.
+async function ltmKey(prompt) {
+  return "q/" + (await hashKey(normalized(prompt))) + ".json";
+}
+
+async function ltmPut(env, prompt, payload) {
+  if (!env.LTM) return "no bucket";
+  const body = JSON.stringify({
+    prompt,
+    answer: payload.answer,
+    cards: payload.cards,
+    provider: payload.provider,
+    route: payload.route,
+    decision: payload.decision,
+    at: new Date().toISOString(),
+  });
+  await env.LTM.put(await ltmKey(prompt), body, { httpMetadata: { contentType: "application/json" } });
+  return "kept";
+}
+
+async function ltmGet(env, prompt) {
+  if (!env.LTM) return null;
+  try {
+    const obj = await env.LTM.get(await ltmKey(prompt));
+    if (!obj) return null;
+    const parsed = JSON.parse(await obj.text());
+    return parsed && parsed.answer ? parsed : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+async function archiveLog(env, entry) {
+  const arc = arcStore(env);
+  if (!arc) return false;
+  try {
+    const raw = await arc.get(ARCHIVE_LOG_KEY);
+    const log = raw ? JSON.parse(raw) : [];
+    const next = [entry].concat(Array.isArray(log) ? log : []).slice(0, 120);
+    await arc.put(ARCHIVE_LOG_KEY, JSON.stringify(next));
+    return true;
+  } catch (err) {
+    return false;
+  }
 }
 
 async function approvedHash(prompt) {
@@ -2306,7 +2391,7 @@ async function approvedHash(prompt) {
 }
 
 async function approvedHit(env, prompt) {
-  if (!env.KV) return null;
+  if (!arcStore(env)) return null;
   const store = await loadApproved(env);
   return store.items[await approvedHash(prompt)] || null;
 }
@@ -2338,7 +2423,7 @@ async function handleApprove(request, env) {
   if (!q) return json({ error: "Need the question" }, 400);
   const proxied = await adminProxy(env, request, "/approve", JSON.stringify(body));
   if (proxied) return proxied;
-  if (!env.KV) return json({ error: "No KV bound on this Worker" }, 503);
+  if (!arcStore(env)) return json({ error: "No KV or ARCHIVE bound on this Worker" }, 503);
   const rank = body.rank === undefined ? 3 : Number(body.rank);
   if (!Number.isFinite(rank) || rank < 0 || rank > 5) return json({ error: "rank is 0 to 5" }, 400);
 
@@ -2532,6 +2617,26 @@ async function handleChat(request, env, emit) {
         approved_at: approved.at,
         thinking,
         cached: true,
+      });
+    }
+  }
+
+  // 0b. Long term — the same question, however long ago it was asked.
+  if (env.LTM && body.use_cache !== false) {
+    const remembered = await ltmGet(env, prompt);
+    if (remembered) {
+      step("memory", "answered before, kept in long-term memory");
+      return json({
+        prompt,
+        answer: remembered.answer,
+        response: remembered.answer,
+        cards: remembered.cards,
+        provider: remembered.provider,
+        route: "ltm",
+        decision: remembered.decision || null,
+        approved: false,
+        cached: true,
+        thinking,
       });
     }
   }
@@ -3080,6 +3185,21 @@ async function finish(
     try {
       await env.KV.put(key, JSON.stringify(payload), { expirationTtl: plan.ttl });
     } catch (err) {}
+  }
+
+  if (answer) {
+    try {
+      payload.long_term = await ltmPut(env, prompt, payload);
+    } catch (err) {
+      payload.long_term = "not kept: " + err.message;
+    }
+    await archiveLog(env, {
+      t: new Date().toISOString(),
+      q: String(prompt).slice(0, 200),
+      provider,
+      route,
+      cards: (cards || []).length,
+    });
   }
   return json(payload);
 }

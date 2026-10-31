@@ -16,6 +16,46 @@
   "browser": {
     "binding": "BROWSER"
   },
+  // Cards are written back to AI Search as notes.
+  //   namespace: ai-inspired   instance: NSM   on env.mainspace
+  // Namespaces must be lowercase (API code 7001), so no capitals here.
+  "ai_search_namespaces": [
+    {
+      "binding": "mainspace",
+      "namespace": "ai-inspired",
+      "remote": true
+    }
+  ],
+  // Memory, split by how long each piece is meant to last:
+  //   CONTEXT  what the app knows about this person: learned preferences, decks, theme
+  //   ARCHIVE  answers that were signed off, plus a log of what was asked
+  //   KV       only the short-lived answer cache
+  //   LTM (R2) every answer, kept for good, so a repeat question outlives the cache TTL
+  "kv_namespaces": [
+    {
+      "binding": "ARCHIVE",
+      "id": "1904b566c36f4850ad0d084c781f3c39"
+    },
+    {
+      "binding": "CONTEXT",
+      "id": "b78a25e9928e44b3ab0a3e9647a2ee33"
+    },
+    {
+      "binding": "KV",
+      "id": "4a9bfbffb4d440cba86badc508e2045a"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "LTM",
+      "bucket_name": "long-term-memory"
+    }
+  ],
+  "worker_loaders": [
+    {
+      "binding": "LOADER"
+    }
+  ],
   // The OpenCode agent harness (its own Worker) is called over a Service
   // binding rather than HTTP: the entrypoint exposes the agent as RPC methods.
   // Absent or failing, the search chain simply moves on to the next provider.
@@ -23,25 +63,11 @@
     {
       "binding": "OCODE",
       "service": "opencode-harness-example",
+      "environment": "production",
       "entrypoint": "OpenCodeAgent"
     }
-  ],
-  "kv_namespaces": [
-    {
-      "binding": "KV",
-      "id": "4a9bfbffb4d440cba86badc508e2045a"
-    }
-  ],
-  // Cards are written back to AI Search as notes.
-  //   namespace: ai-inspired   instance: NSM   on env.mainspace
-  // Namespaces must be lowercase (API code 7001), so no capitals here.
-  // The worker falls back to the REST API (CF_ACCOUNT_ID + AI_SEARCH_TOKEN)
-  // if this binding is missing.
-  "ai_search_namespaces": [
-    {
-      "binding": "mainspace",
-      "namespace": "ai-inspired",
-      "remote": true
-    }
   ]
+  // When the ranking admin Worker exists, add it the same way and the
+  // approve/list calls are handed to it:
+  //   { "binding": "ADMIN", "service": "cods-admin" }
 }

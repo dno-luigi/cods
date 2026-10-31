@@ -826,5 +826,49 @@ function check(name, cond, extra) {
   });
 }
 
+
+// 20a. each memory lands in the store it belongs to
+{
+  const ctx = new Map();
+  const kv = new Map();
+  const arc = new Map();
+  const env = makeEnv({
+    CONTEXT: { get: async (k) => ctx.get(k) || null, put: async (k, v) => ctx.set(k, v) },
+    ARCHIVE: { get: async (k) => arc.get(k) || null, put: async (k, v) => arc.set(k, v) },
+    KV: { get: async (k) => kv.get(k) || null, put: async (k, v) => kv.set(k, v) },
+  });
+  await post("/feedback", { action: "deeper", q: "how do I size a trade", a: "a" }, env);
+  check("learned preferences go to CONTEXT", [...ctx.keys()].some((k) => k.indexOf("prefs") === 0), [...ctx.keys()]);
+  const deck = await (await post("/deck?id=ctx-deck-1", { cards: [{ q: "q", a: "a" }] }, env)).json();
+  check("the deck goes to CONTEXT too", deck.saved === true && [...ctx.keys()].some((k) => k === "deck:ctx-deck-1"), [...ctx.keys()]);
+  await post("/approve", { q: "signed off", rank: 4, cards: [{ q: "signed off", a: "a" }] }, env);
+  check("approved answers go to ARCHIVE", [...arc.keys()].some((k) => k === "approved:v1"), [...arc.keys()]);
+  check("and none of it touched the cache namespace", [...kv.keys()].every((k) => k.indexOf("ans:") === 0), [...kv.keys()]);
+  const health = await (await worker.fetch(new Request("https://cods.example/health"), env)).json();
+  check("health names every store", health.memory && health.memory.context && health.memory.archive && health.memory.kv, health.memory);
+}
+
+// 20b. R2 keeps an answer for good, so a repeat question outlives the cache
+{
+  const bucket = new Map();
+  const env = makeEnv({
+    LTM: {
+      put: async (k, v) => { bucket.set(k, v); },
+      get: async (k) => (bucket.has(k) ? { text: async () => bucket.get(k) } : null),
+    },
+  });
+  const first = await (await post("/chat", { prompt: "what is position sizing" }, env)).json();
+  check("the answer is kept in R2", first.long_term === "kept" && [...bucket.keys()].some((k) => k.indexOf("q/") === 0), first.long_term);
+  calls = []; aiInputs = [];
+  const again = await (await post("/chat", { prompt: "What is position sizing" }, env)).json();
+  check("a repeat question comes back from R2", again.route === "ltm" && again.cached === true, again.route);
+  check("without waking a model", aiInputs.length === 0, aiInputs.length);
+  check("and it explains itself", (again.thinking || []).some((s) => s.step === "memory"), again.thinking);
+  const arc = await (await worker.fetch(new Request("https://cods.example/archive"), env)).json();
+  check("what was asked is logged", arc.count >= 1 && arc.log[0].q.indexOf("position sizing") > 0, arc.log[0]);
+  const health = await (await worker.fetch(new Request("https://cods.example/health"), env)).json();
+  check("health sees the bucket", health.memory.ltm === true, health.memory);
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
