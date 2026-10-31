@@ -183,231 +183,628 @@ const QUESTIONS = {
 };
 
 const HTML = `<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>kards</title>
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:#121212;color:#f5f5f5;font-family:system-ui,sans-serif;display:flex;flex-direction:column;height:100vh;height:100dvh}
-.top{padding:12px 16px;background:#1e1e1e;border-bottom:1px solid #333;display:flex;align-items:center;gap:8px;flex:0 0 auto}
-.top h1{font-size:18px;color:#c41e3a}
-.badge{background:#c41e3a;color:#fff;border-radius:12px;padding:2px 8px;font-size:12px}
-.cards{flex:1 1 auto;min-height:0;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px}
-.card{background:#1e1e1e;border:1px solid #333;border-radius:12px;padding:16px;cursor:pointer}
-.card:hover{border-color:#c41e3a}
-.card-q{font-size:13px;color:#999;margin-bottom:8px;white-space:pre-wrap;word-break:break-word}
-.card-a{font-size:14px;line-height:1.5;white-space:pre-wrap;word-break:break-word;display:none}
-.card.flipped .card-q{display:none}
-.card.flipped .card-a{display:block}
-.decision{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
-.chip{font-size:10px;padding:2px 8px;border-radius:999px;background:#262626;border:1px solid #383838;color:#9a9a9a}
-.chip.hi{border-color:#c41e3a;color:#e8a3ae}
-.sources{display:flex;flex-direction:column;gap:3px;margin-top:8px;white-space:normal}
-.source{font-size:11px;color:#8aa0c0;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.source:hover{text-decoration:underline}
-.notes{margin-top:10px;border-top:1px solid #2a2a2a;padding-top:8px;white-space:normal}
-.notes-h{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#7a7a7a;margin-bottom:6px}
-.note{border:1px solid #2c2c2c;border-radius:8px;padding:8px;margin-bottom:6px}
-.note-t{font-size:11px;color:#b9b9b9;margin-bottom:3px;word-break:break-word}
-.note-b{font-size:11px;color:#8a8a8a;line-height:1.4;margin-bottom:6px}
-.relbtn{font-size:10px;padding:3px 9px;margin-right:6px;background:#242424;color:#d0d0d0;border:1px solid #3a3a3a;border-radius:999px;cursor:pointer}
-.relbtn:hover{border-color:#c41e3a}
-.fb{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
-.provider{font-size:10px;color:#666;margin-top:8px}
-.input{padding:12px 16px;background:#1e1e1e;border-top:1px solid #333;display:flex;gap:8px;flex:0 0 auto}
-.input input{flex:1;padding:12px;background:#121212;border:1px solid #333;border-radius:8px;color:#f5f5f5;font-size:15px;outline:none}
-.input input:focus{border-color:#c41e3a}
-.input button{padding:12px 20px;background:#c41e3a;color:#fff;border:none;border-radius:8px;font-size:15px;cursor:pointer;min-width:74px}
-.input button:disabled{opacity:.6;cursor:default}
-.empty{text-align:center;padding:60px 20px;color:#666}
+:root{--bg:#101014;--panel:#16161d;--card:#1c1c25;--line:#2c2c38;--text:#f2f2f6;--dim:#8d8d9a;--p:#c41e3a;--sel:#3a1620}
+body.light{--bg:#f3f3f7;--panel:#fff;--card:#fff;--line:#dcdce6;--text:#15151b;--dim:#66667a;--sel:#ffe3e8}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;display:flex;flex-direction:column;height:100dvh;overflow:hidden}
+.top{padding:12px 16px;background:var(--panel);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px;flex:0 0 auto}
+.top h1{font-size:17px;color:var(--p);letter-spacing:.02em}
+.badge{background:var(--p);color:#fff;border-radius:12px;padding:2px 8px;font-size:12px}
+.grow{flex:1}
+.icon{background:none;border:1px solid var(--line);color:var(--dim);border-radius:8px;padding:6px 10px;font-size:13px;cursor:pointer}
+.icon.on{color:#fff;background:var(--p);border-color:var(--p)}
+.cards{flex:1 1 auto;min-height:0;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:12px;-webkit-overflow-scrolling:touch}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;cursor:pointer;overflow:hidden}
+.card.flipped{border-color:var(--p)}
+.card.sel{border-color:var(--p);background:var(--sel)}
+.fh{display:flex;align-items:center;justify-content:space-between;padding:10px 12px 0}
+.lab{font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
+.acts{display:flex;gap:8px}
+.dots{font-size:15px;color:var(--dim);cursor:pointer;line-height:1}
+.face{display:none;animation:pop .16s ease-out}
+.card:not(.flipped) .front{display:block}
+.card.flipped .back{display:block}
+@keyframes pop{from{opacity:.2;transform:translateY(3px)}to{opacity:1;transform:none}}
+.body{padding:8px 14px 12px;font-size:14px;line-height:1.55;word-break:break-word}
+.card-q{white-space:pre-wrap;font-size:15px}
+.card-a{white-space:normal}
+.card-a li{margin-left:18px}
+pre{background:#00000055;padding:8px;border-radius:8px;overflow-x:auto;font-size:12px;white-space:pre-wrap}
+code{font-size:12.5px;background:#00000044;padding:1px 4px;border-radius:4px}
+.decision{display:flex;flex-wrap:wrap;gap:6px;margin:10px 14px 0}
+.chip{font-size:10px;padding:2px 8px;border-radius:999px;background:var(--panel);border:1px solid var(--line);color:var(--dim)}
+.chip.hi{border-color:var(--p);color:#e8a3ae}
+.sources{display:flex;flex-direction:column;gap:3px;margin:8px 14px 0}
+.source{font-size:11px;color:#8aa0c0;text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.notes{margin:10px 14px 0;border-top:1px solid var(--line);padding-top:8px}
+.notes-h{font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);margin-bottom:6px}
+.note{border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px}
+.note-t{font-size:11px;margin-bottom:3px}
+.note-b{font-size:11px;color:var(--dim);line-height:1.4;margin-bottom:6px}
+.fb{display:flex;flex-wrap:wrap;gap:6px;padding:2px 14px 0}
+.relbtn{font-size:10px;padding:4px 9px;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:999px;cursor:pointer}
+.relbtn:hover{border-color:var(--p)}
+.via{padding:6px 14px 10px;font-size:10px;color:var(--dim)}
+.empty{text-align:center;padding:56px 20px;color:var(--dim)}
+.empty h3{font-size:15px;margin-bottom:6px;color:var(--text)}
+.empty p{font-size:12px;line-height:1.8}
+.input{padding:10px 12px;background:var(--panel);border-top:1px solid var(--line);display:flex;gap:8px;flex:0 0 auto}
+.input input{flex:1;padding:12px;background:var(--bg);border:1px solid var(--line);border-radius:9px;color:var(--text);font-size:15px;outline:none}
+.input input:focus{border-color:var(--p)}
+.input button{padding:12px 18px;background:var(--p);color:#fff;border:none;border-radius:9px;font-size:15px;min-width:70px}
+.input button:disabled{opacity:.55}
+.selbar{position:fixed;left:10px;right:10px;bottom:78px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px 10px;display:none;align-items:center;gap:6px;z-index:40;box-shadow:0 8px 24px #0008}
+.selbar.show{display:flex}
+.selbar .icon{font-size:11px;padding:6px 8px}
+.menu{position:fixed;z-index:60;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:6px;min-width:206px;display:none;box-shadow:0 12px 30px #000a;max-height:80vh;overflow-y:auto}
+.menu.show{display:block}
+.menu button{display:block;width:100%;text-align:left;background:none;border:none;color:var(--text);font-size:13px;padding:10px;border-radius:8px;cursor:pointer}
+.menu button:hover{background:var(--card)}
+.menu button.danger{color:#ff6b7d}
+.menu hr{border:none;border-top:1px solid var(--line);margin:5px 0}
+.menu-t{font-size:10px;color:var(--dim);padding:6px 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sheet{position:fixed;inset:0;background:#000a;display:none;z-index:70;align-items:flex-end}
+.sheet.show{display:flex}
+.sheet-body{background:var(--panel);width:100%;max-height:88%;overflow-y:auto;border-radius:14px 14px 0 0;padding:16px}
+.sheet-body h3{font-size:14px;margin-bottom:12px}
+.sect{margin-bottom:14px;border-top:1px solid var(--line);padding-top:10px}
+.sect h4{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);margin-bottom:8px}
+.row{display:flex;flex-wrap:wrap;gap:6px}
+.sect button{background:var(--card);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px 10px;font-size:12px}
+.modal{position:fixed;inset:0;background:#000b;display:none;z-index:80;align-items:center;justify-content:center;padding:18px}
+.modal.show{display:flex}
+.modal-box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;width:100%;max-width:440px}
+.modal-box h3{font-size:14px;margin-bottom:6px}
+.modal-box p{font-size:11px;color:var(--dim);margin-bottom:8px;line-height:1.5}
+.modal-box textarea{width:100%;min-height:72px;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:9px;font-size:13px;font-family:inherit}
+.modal-box .btns{display:flex;justify-content:flex-end;gap:8px;margin-top:10px}
+.fs{position:fixed;inset:0;background:var(--bg);z-index:90;display:none;flex-direction:column}
+.fs.show{display:flex}
+.fs-top{display:flex;justify-content:space-between;padding:12px;border-bottom:1px solid var(--line)}
+.fs-body{flex:1;overflow-y:auto;padding:16px;font-size:15px;line-height:1.6}
+#toast{position:fixed;left:50%;bottom:96px;transform:translateX(-50%) translateY(10px);background:#000d;color:#fff;font-size:12px;padding:8px 14px;border-radius:999px;opacity:0;transition:.2s;z-index:100;pointer-events:none;max-width:88vw;text-align:center}
+#toast.show{opacity:1;transform:translateX(-50%)}
 </style>
 </head>
 <body>
-<div class="top"><h1>kards</h1><span class="badge" id="count">0</span></div>
-<div class="cards" id="cards"></div>
-<div class="input">
-<input id="prompt" placeholder="Type a prompt..." autocomplete="off">
-<button id="send">Send</button>
+<div class="top">
+  <h1>kards</h1><span class="badge" id="count">0</span><span class="grow"></span>
+  <button class="icon" id="selBtn" title="Select">select</button>
+  <button class="icon" id="gear" title="Settings">menu</button>
 </div>
+<div class="cards" id="cards"></div>
+<div class="selbar" id="selbar">
+  <span id="selCount" style="font-size:12px">0</span><span class="grow"></span>
+  <button class="icon" data-sel="merge">Merge</button>
+  <button class="icon" data-sel="split">Split</button>
+  <button class="icon" data-sel="del">Delete</button>
+  <button class="icon" data-sel="clear">Close</button>
+</div>
+<div class="input"><input id="prompt" placeholder="Type a prompt..." autocomplete="off"><button id="send">Send</button></div>
+<div class="menu" id="menu"></div>
+<div class="sheet" id="sheet"><div class="sheet-body" id="sheetBody"></div></div>
+<div class="modal" id="modal"><div class="modal-box">
+  <h3 id="modalTitle">Card</h3><p id="modalDesc"></p><textarea id="modalInput"></textarea>
+  <div class="btns"><button class="icon" id="modalNo">Cancel</button><button class="icon on" id="modalGo">Go</button></div>
+</div></div>
+<div class="fs" id="fs">
+  <div class="fs-top"><button class="icon" id="fsClose">back</button><button class="icon" id="fsFlip">flip</button></div>
+  <div class="fs-body" id="fsBody"></div>
+</div>
+<div id="toast"></div>
 <script>
-var CHAT_URL = 'https://cods.ai-n.workers.dev/chat';
-var FEEDBACK_URL = 'https://cods.ai-n.workers.dev/feedback';
-var cards = [];
+var API = { chat: '/chat', feedback: '/feedback', card: '/card', deck: '/deck', prefs: '/prefs' };
 var NL = String.fromCharCode(10);
-var el = {
-  cards: document.getElementById('cards'),
-  prompt: document.getElementById('prompt'),
-  send: document.getElementById('send'),
-  count: document.getElementById('count')
-};
+var LS = 'cods:deck:v1';
+var S = { cards: [], flip: {}, sel: {}, ctx: null, fs: null, tts: false, light: false, deck: '', cb: null };
+var LP = null;
+
+function $(id) { return document.getElementById(id); }
 function esc(s) {
   return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
-function meta(dec, sources) {
+function md(t) {
+  if (t == null) return '';
+  var s = esc(String(t));
+  s = s.replace(/\`\`\`([\\s\\S]*?)\`\`\`/g, '<pre>$1</pre>');
+  s = s.replace(/\`([^\`]+)\`/g, '<code>$1</code>');
+  s = s.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');
+  s = s.replace(/^\\s*[-*]\\s+(.+)$/gm, '<li>$1</li>');
+  s = s.replace(/(<li>[\\s\\S]*?<\\/li>)/g, '<ul>$1</ul>');
+  s = s.split(NL).join('<br>');
+  return s;
+}
+function toast(m) {
+  var t = $('toast');
+  t.textContent = m;
+  t.classList.add('show');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(function () { t.classList.remove('show'); }, 1900);
+}
+function mk(q, a, provider, extra) {
+  var c = {
+    id: 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    q: q, a: a, provider: provider || '', decision: null, sources: null, related: null
+  };
+  if (extra) for (var k in extra) c[k] = extra[k];
+  return c;
+}
+function byId(id) {
+  for (var i = 0; i < S.cards.length; i++) if (S.cards[i].id === id) return S.cards[i];
+  return null;
+}
+function picked() { var out = []; S.cards.forEach(function (c) { if (S.sel[c.id]) out.push(c); }); return out; }
+
+function save() {
+  try {
+    localStorage.setItem(LS, JSON.stringify({ cards: S.cards.slice(0, 80), tts: S.tts, light: S.light, deck: S.deck }));
+  } catch (e) {}
+  queueDeck();
+}
+var deckT = null;
+function queueDeck() {
+  clearTimeout(deckT);
+  deckT = setTimeout(function () {
+    if (!S.deck) return;
+    fetch(API.deck + '?id=' + encodeURIComponent(S.deck), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cards: S.cards.slice(0, 80).map(function (c) { return { q: c.q, a: c.a }; }) })
+    }).catch(function () {});
+  }, 1200);
+}
+
+function meta(c) {
   var html = '';
-  var tags = [];
-  if (dec) {
-    if (dec.intent) tags.push('intent: ' + dec.intent);
-    if (dec.domain) tags.push('domain: ' + dec.domain);
-    if (dec.depth != null) tags.push('depth: ' + dec.depth);
-    if (dec.tone) tags.push('tone: ' + dec.tone);
-    if (dec.needs_web != null) tags.push('web: ' + (dec.needs_web >= 0.5 ? 'yes' : 'no'));
-    if (dec.sensitive != null && dec.sensitive >= 0.5) tags.push('care');
+  var d = c.decision, tags = [];
+  if (d) {
+    if (d.intent) tags.push('intent: ' + d.intent);
+    if (d.domain) tags.push('domain: ' + d.domain);
+    if (d.depth != null) tags.push('depth: ' + d.depth);
+    if (d.tone) tags.push('tone: ' + d.tone);
+    if (d.needs_web != null) tags.push('web: ' + (d.needs_web >= 0.5 ? 'yes' : 'no'));
+    if (d.sensitive != null && d.sensitive >= 0.5) tags.push('care');
   }
   if (tags.length) {
-    html += '<div class="decision">' + tags.map(function (t) {
-      return '<span class="chip">' + esc(t) + '</span>';
-    }).join('') + '</div>';
+    html += '<div class="decision">' + tags.map(function (t) { return '<span class="chip">' + esc(t) + '</span>'; }).join('') + '</div>';
   }
-  if (sources && sources.length) {
-    html += '<div class="sources">' + sources.map(function (s, i) {
-      return '<a class="source" href="' + esc(s.url) + '" target="_blank" rel="noopener">[' +
-        (i + 1) + '] ' + esc(s.title) + '</a>';
+  if (c.sources && c.sources.length) {
+    html += '<div class="sources">' + c.sources.map(function (s, i) {
+      return '<a class="source" href="' + esc(s.url) + '" target="_blank" rel="noopener">[' + (i + 1) + '] ' + esc(s.title) + '</a>';
     }).join('') + '</div>';
   }
   return html;
 }
-function notes(list, idx) {
-  if (!list || !list.length) return '';
-  return '<div class="notes"><div class="notes-h">Already in the notes</div>' + list.map(function (n, i) {
+function notes(c) {
+  if (!c.related || !c.related.length) return '';
+  return '<div class="notes"><div class="notes-h">Already in the notes</div>' + c.related.map(function (n, i) {
     return '<div class="note"><div class="note-t">' + esc(n.title) + '</div>' +
-      '<div class="note-b">' + esc(String(n.text || '').slice(0, 240)) + '</div>' +
-      '<button class="relbtn" data-act="combine" data-card="' + idx + '" data-note="' + i + '">Combine</button>' +
-      '<button class="relbtn" data-act="extract" data-card="' + idx + '" data-note="' + i + '">Extract</button></div>';
+      '<div class="note-b">' + esc(String(n.text || '').slice(0, 220)) + '</div>' +
+      '<button class="relbtn" data-act="combine" data-card="' + esc(c.id) + '" data-note="' + i + '">Combine</button> ' +
+      '<button class="relbtn" data-act="extract" data-card="' + esc(c.id) + '" data-note="' + i + '">Extract</button></div>';
   }).join('') + '</div>';
 }
-function fb(idx) {
+function fb(c) {
+  var id = esc(c.id);
   return '<div class="fb">' +
-    '<button class="relbtn" data-act="fb" data-fb="more" data-card="' + idx + '">More like this</button>' +
-    '<button class="relbtn" data-act="fb" data-fb="deeper" data-card="' + idx + '">Go deeper</button>' +
-    '<button class="relbtn" data-act="fb" data-fb="again" data-card="' + idx + '">Search again</button>' +
-    '<button class="relbtn" data-act="fb" data-fb="wrong" data-card="' + idx + '">Wrong</button>' +
+    '<button class="relbtn" data-act="fb" data-fb="more" data-card="' + id + '">More like this</button>' +
+    '<button class="relbtn" data-act="fb" data-fb="deeper" data-card="' + id + '">Go deeper</button>' +
+    '<button class="relbtn" data-act="fb" data-fb="again" data-card="' + id + '">Search again</button>' +
+    '<button class="relbtn" data-act="fb" data-fb="wrong" data-card="' + id + '">Wrong</button>' +
     '</div>';
 }
-function feedback(c, act) {
-  if (!c) return;
-  var q = c.prompt || c.q;
-  fetch(FEEDBACK_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: act, q: q, a: c.a, decision: c.decision || null })
-  }).catch(function () {});
-  if (act === 'more') sendPrompt('Give me three other angles on this, as separate cards: ' + q);
-  else if (act === 'deeper') sendPrompt('Go deeper on this and show the reasoning: ' + q);
-  else if (act === 'again') sendPrompt(q + ' — search the web again and give me the freshest sources');
-  else sendPrompt('That card was wrong or off target:' + NL + String(c.a || '').slice(0, 400) + NL + NL + 'Answer it properly instead: ' + q);
+function cardHTML(c) {
+  var id = esc(c.id);
+  var flipped = S.flip[c.id] ? ' flipped' : '';
+  var sel = S.sel[c.id] ? ' sel' : '';
+  return '<div class="card' + flipped + sel + '" data-id="' + id + '">' +
+    '<div class="face front"><div class="fh"><span class="lab">req</span>' +
+      '<span class="acts"><span class="dots" data-dots="' + id + '">more</span></span></div>' +
+      '<div class="body card-q">' + esc(c.q) + '</div></div>' +
+    '<div class="face back"><div class="fh"><span class="lab">answer</span><span class="acts">' +
+      '<span class="dots" data-tts="' + id + '">play</span><span class="dots" data-dots="' + id + '">more</span></span></div>' +
+      '<div class="body card-a">' + md(c.a) + '</div>' + meta(c) + notes(c) + fb(c) + '</div>' +
+    '<div class="via">via ' + esc(c.provider) + '</div></div>';
 }
 function render() {
-  el.count.textContent = cards.length;
-  if (!cards.length) {
-    el.cards.innerHTML = '<div class="empty"><h3>No cards yet</h3><p>Type below to start</p></div>';
+  $('count').textContent = String(S.cards.length);
+  var box = $('cards');
+  if (!S.cards.length) {
+    box.innerHTML = '<div class="empty"><h3>No cards yet</h3><p>Type below to start.<br>Tap a card to flip it. Long press for the menu.</p></div>';
+    updSel();
     return;
   }
-  el.cards.innerHTML = cards.map(function (c, i) {
-    return '<div class="card"><div class="card-q">' + esc(c.q) + '</div>' +
-      '<div class="card-a">' + esc(c.a) + meta(c.decision, c.sources) + notes(c.related, i) + fb(i) + '</div>' +
-      '<div class="provider">via ' + esc(c.provider) + '</div></div>';
-  }).join('');
+  box.innerHTML = S.cards.map(cardHTML).join('');
+  updSel();
 }
-function send() {
-  var p = el.prompt.value.trim();
-  if (!p) return;
-  el.prompt.value = '';
-  sendPrompt(p);
+function scrollBottom() { var b = $('cards'); b.scrollTop = b.scrollHeight; }
+
+function openMenu(id, x, y) {
+  var c = byId(id);
+  if (!c) return;
+  S.ctx = id;
+  var n = picked().length;
+  var h = '<div class="menu-t">' + esc(String(c.q || '').slice(0, 54)) + '</div>' +
+    '<button data-op="continue">Continue / refine</button>' +
+    '<button data-op="magic">Magic rewrite</button>' +
+    '<button data-op="style">Style</button>' +
+    '<button data-op="split">Split into cards</button>' +
+    '<button data-op="merge">Merge' + (n > 1 ? ' (' + n + ')' : '') + '</button>' +
+    '<hr>' +
+    '<button data-op="sel">' + (S.sel[id] ? 'Deselect' : 'Select') + '</button>' +
+    '<button data-op="copy">Copy</button>' +
+    '<button data-op="full">Fullscreen</button>' +
+    '<hr>' +
+    '<button class="danger" data-op="del">Delete</button>';
+  var m = $('menu');
+  m.innerHTML = h;
+  m.classList.add('show');
+  var w = m.offsetWidth || 210, ht = m.offsetHeight || 330;
+  m.style.left = Math.max(8, Math.min(x || 14, window.innerWidth - w - 8)) + 'px';
+  m.style.top = Math.max(8, Math.min(y || 90, window.innerHeight - ht - 8)) + 'px';
 }
-function sendPrompt(p) {
-  el.send.disabled = true;
-  el.send.textContent = '...';
+function closeMenu() { $('menu').classList.remove('show'); S.ctx = null; }
 
-  var context = cards.map(function (c) { return { q: c.q, r: c.a }; });
-  var card = { q: p, prompt: p, a: 'Thinking...', provider: 'pending', decision: null, sources: null };
-  cards.push(card);
-  render();
+function ask(title, desc, ph, cb) {
+  $('modalTitle').textContent = title;
+  $('modalDesc').textContent = desc;
+  $('modalInput').value = '';
+  $('modalInput').placeholder = ph || '';
+  S.cb = cb;
+  $('modal').classList.add('show');
+  setTimeout(function () { $('modalInput').focus(); }, 60);
+}
 
-  fetch(CHAT_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      prompt: p,
-      cards: context
-    })
-  }).then(function (r) {
-    return r.text().then(function (text) {
-      var d = null;
-      try { d = JSON.parse(text); } catch (e) { d = null; }
-      if (!d) {
-        card.a = 'Server returned ' + r.status + ': ' + text.slice(0, 300);
-        card.provider = 'error';
-      } else if (d.error) {
-        card.a = d.error;
-        card.provider = 'error ' + r.status;
-        card.decision = d.decision || null;
+function act(name) {
+  var c = byId(S.ctx);
+  closeMenu();
+  if (name === 'merge') {
+    var p = picked();
+    if (p.length < 2) { toast('Select two cards first'); return; }
+    ask('Merge cards', 'Combine the selected cards into one.', 'optional: how to combine', function (v) { run('merge', p, v); });
+    return;
+  }
+  if (name === 'sel') { if (c) { if (S.sel[c.id]) delete S.sel[c.id]; else S.sel[c.id] = true; render(); } return; }
+  if (!c) return;
+  if (name === 'copy') {
+    var text = String(c.q || '') + NL + NL + String(c.a || '');
+    if (navigator.clipboard) navigator.clipboard.writeText(text).then(function () { toast('Copied'); }, function () { toast('Copy failed'); });
+    else toast('Copy unavailable');
+    return;
+  }
+  if (name === 'full') { openFs(c); return; }
+  if (name === 'del') { del(c.id); return; }
+  if (name === 'split') { ask('Split card', 'Break this card into separate cards. The decision model still picks the domain.', 'optional: how to split', function (v) { run('split', [c], v); }); return; }
+  if (name === 'continue') { ask('Continue', 'Extend this card with the next step.', 'optional: what to continue', function (v) { run('continue', [c], v); }); return; }
+  if (name === 'style') { ask('Style', 'Rewrite the card in a style.', 'e.g. bullets, plain, tighter', function (v) { run('style', [c], v || 'bullets'); }); return; }
+  if (name === 'magic') { run('magic', [c], 'tighter and clearer'); return; }
+}
+
+function run(kind, list, instruction) {
+  var payload = { op: kind };
+  if (kind === 'merge') payload.cards = list.map(function (c) { return { q: c.q, a: c.a }; });
+  else payload.card = { q: list[0].q, a: list[0].a, prompt: list[0].prompt };
+  if (instruction) payload.instruction = instruction;
+  toast(kind);
+  fetch(API.card, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (!d || d.error) { toast('Error: ' + ((d && d.error) || 'no reply')); return; }
+      var got = d.cards || [];
+      if (!got.length) { toast('Nothing came back'); return; }
+      if (kind === 'merge') {
+        var at = Math.max(0, S.cards.indexOf(list[0]));
+        S.cards = S.cards.filter(function (c) { return list.indexOf(c) < 0; });
+        S.cards.splice(Math.min(at, S.cards.length), 0, mk(got[0].q || 'Merged', got[0].a, d.provider, { decision: d.decision }));
+        S.sel = {};
+      } else if (kind === 'split') {
+        var i = S.cards.indexOf(list[0]);
+        S.cards.splice(i, 1, mk(got[0].q, got[0].a, d.provider, { decision: d.decision }));
+        for (var n = 1; n < got.length; n++) S.cards.splice(i + n, 0, mk(got[n].q, got[n].a, d.provider, { decision: d.decision }));
       } else {
-        var got = d.cards && d.cards.length ? d.cards : null;
-        if (got && got.length > 1) {
-          var at = cards.indexOf(card);
-          if (at >= 0) cards.splice(at, 1);
-          got.forEach(function (c, i) {
-            cards.push({
-              q: p + ' · ' + (c.kind ? c.kind : i + 1) + (c.source && c.source.title ? ' — ' + c.source.title : ''),
-              prompt: p,
-              a: c.a,
-              provider: (c.provider || d.provider || '') + (d.route ? ' · ' + d.route : ''),
-              decision: d.decision || null,
-              sources: c.source ? [c.source] : (d.sources || null),
-              related: d.related || null
-            });
-          });
-        } else {
-          card.a = d.answer || d.response || '(no response)';
-          card.provider = (d.provider || 'openrouter') + (d.route ? ' · ' + d.route : '');
-          card.decision = d.decision || null;
-          card.sources = d.sources || null;
-          card.related = d.related || null;
-        }
+        var c = list[0];
+        c.a = got[0].a;
+        c.provider = d.provider || c.provider;
+        S.flip[c.id] = true;
       }
-    });
-  }).catch(function (e) {
-    card.a = 'Network error: ' + (e && e.message ? e.message : e);
-    card.provider = 'error';
-  }).then(function () {
-    el.send.disabled = false;
-    el.send.textContent = 'Send';
-    render();
-  });
+      render(); save(); toast(kind + ' done');
+    })
+    .catch(function (e) { toast('Failed: ' + (e && e.message ? e.message : e)); });
 }
-el.send.onclick = send;
-el.prompt.onkeydown = function (e) { if (e.key === 'Enter') send(); };
-el.cards.onclick = function (e) {
-  var btn = e.target.closest ? e.target.closest('.relbtn') : null;
-  if (btn) {
+
+function del(id) {
+  S.cards = S.cards.filter(function (c) { return c.id !== id; });
+  delete S.sel[id];
+  delete S.flip[id];
+  if (S.fs === id) closeFs();
+  render(); save();
+}
+function updSel() {
+  var n = picked().length;
+  $('selCount').textContent = String(n);
+  $('selbar').classList.toggle('show', n > 0);
+}
+function clearSel() { S.sel = {}; render(); }
+
+function openFs(c) {
+  S.fs = c.id;
+  $('fsBody').innerHTML = '<div class="card-q" style="color:var(--dim);font-size:13px;margin-bottom:10px">' + esc(c.q) + '</div>' + md(c.a);
+  $('fs').classList.add('show');
+}
+function closeFs() { $('fs').classList.remove('show'); S.fs = null; }
+
+function sendPrompt(p) {
+  var input = $('prompt'), btn = $('send');
+  if (!p) {
+    p = input.value.trim();
+    if (!p) return;
+  }
+  input.value = '';
+  btn.disabled = true;
+  btn.textContent = '...';
+  var ctx = S.cards.map(function (c) { return { q: c.q, r: c.a }; }).slice(-12);
+  var pending = mk(p, 'Thinking...', 'pending');
+  pending.prompt = p;
+  S.cards.push(pending);
+  var pid = pending.id;
+  render(); scrollBottom();
+  fetch(API.chat, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: p, cards: ctx }) })
+    .then(function (r) { return r.text().then(function (t) { return { status: r.status, text: t }; }); })
+    .then(function (res) {
+      var d = null;
+      try { d = JSON.parse(res.text); } catch (e) { d = null; }
+      var cur = byId(pid);
+      if (!d) { if (cur) { cur.a = 'Server returned ' + res.status + ': ' + res.text.slice(0, 300); cur.provider = 'error'; } return; }
+      if (d.error) { if (cur) { cur.a = d.error; cur.provider = 'error ' + res.status; cur.decision = d.decision || null; } return; }
+      var got = d.cards && d.cards.length ? d.cards : null;
+      if (got && got.length > 1) {
+        var at = S.cards.indexOf(cur);
+        if (at < 0) at = S.cards.length;
+        S.cards.splice(at, 1);
+        got.forEach(function (g, i) {
+          var title = p + (g.kind ? ' · ' + g.kind : '') + (g.source && g.source.title ? ' — ' + g.source.title : '');
+          var card = mk(title, g.a, (g.provider || d.provider || '') + (d.route ? ' · ' + d.route : ''), {
+            prompt: p, decision: d.decision || null,
+            sources: g.source ? [g.source] : (d.sources || null), related: d.related || null
+          });
+          S.cards.splice(at + i, 0, card);
+        });
+      } else if (cur) {
+        cur.a = d.answer || d.response || '(no response)';
+        cur.provider = (d.provider || 'openrouter') + (d.route ? ' · ' + d.route : '');
+        cur.decision = d.decision || null;
+        cur.sources = d.sources || null;
+        cur.related = d.related || null;
+        S.flip[cur.id] = true;
+      }
+    })
+    .catch(function (e) {
+      var cur = byId(pid);
+      if (cur) { cur.a = 'Network error: ' + (e && e.message ? e.message : e); cur.provider = 'error'; }
+    })
+    .then(function () {
+      btn.disabled = false;
+      btn.textContent = 'Send';
+      render(); save(); scrollBottom();
+    });
+}
+
+function feedback(c, act) {
+  if (!c) return;
+  fetch(API.feedback, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: act, q: c.prompt || c.q, a: c.a, decision: c.decision || null })
+  }).then(function (r) { return r.json(); }).then(function (d) {
+    if (d && d.learned) toast('Noted: ' + String(d.learned).slice(0, 90));
+  }).catch(function () {});
+  if (act === 'more') sendPrompt('Give me three other angles on this, as separate cards: ' + c.q);
+  else if (act === 'deeper') sendPrompt('Go deeper on this and show the reasoning: ' + c.q);
+  else if (act === 'again') sendPrompt(c.q + ' — search the web again and give me the freshest sources');
+  else sendPrompt('That card was wrong or off target:' + NL + String(c.a || '').slice(0, 400) + NL + NL + 'Answer it properly instead: ' + c.q);
+}
+
+function openSheet() {
+  $('sheetBody').innerHTML =
+    '<h3>Settings</h3>' +
+    '<div class="sect"><h4>Data</h4><div class="row">' +
+      '<button data-set="export">Export cards</button>' +
+      '<button data-set="import">Import cards</button>' +
+      '<button data-set="clear">Clear all cards</button>' +
+      '<button data-set="newdeck">New deck</button>' +
+    '</div><p style="font-size:11px;color:var(--dim);margin-top:8px;line-height:1.5">Deck ' + esc(S.deck) + ' is saved in KV, so the cards come back on another phone.</p></div>' +
+    '<div class="sect"><h4>View</h4><div class="row">' +
+      '<button data-set="theme">' + (S.light ? 'Dark theme' : 'Light theme') + '</button>' +
+      '<button data-set="tts">Voice ' + (S.tts ? 'on' : 'off') + '</button>' +
+    '</div></div>' +
+    '<div class="sect"><h4>What it learned</h4><p id="prefText" style="font-size:12px;color:var(--dim);line-height:1.5">loading...</p>' +
+      '<div class="row" style="margin-top:8px"><button data-set="prefs">Refresh</button><button data-set="forget">Forget it</button></div></div>' +
+    '<div class="sect"><h4>API</h4><p style="font-size:11px;color:var(--dim);line-height:1.6">' + esc(location.origin) + '/chat · /card · /deck · /prefs</p></div>';
+  $('sheet').classList.add('show');
+  loadPrefs();
+}
+function loadPrefs() {
+  fetch(API.prefs).then(function (r) { return r.json(); }).then(function (d) {
+    var p = $('prefText');
+    if (!p) return;
+    p.textContent = d && d.hint ? d.hint : 'Nothing yet. Press a card button and it starts learning.';
+  }).catch(function () {});
+}
+function exportCards() {
+  var blob = new Blob([JSON.stringify({ cards: S.cards }, null, 2)], { type: 'application/json' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'kards.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  toast('Exported ' + S.cards.length + ' cards');
+}
+function importCards() {
+  var picker = document.createElement('input');
+  picker.type = 'file';
+  picker.accept = '.json,application/json';
+  picker.onchange = function () {
+    var f = picker.files && picker.files[0];
+    if (!f) return;
+    var rd = new FileReader();
+    rd.onload = function () {
+      try {
+        var d = JSON.parse(String(rd.result));
+        var arr = Array.isArray(d) ? d : d.cards;
+        if (!Array.isArray(arr)) throw new Error('no cards');
+        S.cards = arr.map(function (c) { return mk(c.q || c.question || '', c.a || c.r || c.response || '', 'imported'); });
+        render(); save();
+        toast('Imported ' + S.cards.length);
+      } catch (e) { toast('Invalid JSON'); }
+    };
+    rd.readAsText(f);
+  };
+  picker.click();
+}
+
+$('cards').addEventListener('click', function (e) {
+  var t = e.target;
+  var dots = t.closest('[data-dots]');
+  if (dots) { e.stopPropagation(); openMenu(dots.getAttribute('data-dots'), e.clientX, e.clientY); return; }
+  var spk = t.closest('[data-tts]');
+  if (spk) {
     e.stopPropagation();
-    var idx = Number(btn.getAttribute('data-card'));
-    var c = cards[idx];
-    if (btn.getAttribute('data-act') === 'fb') {
-      feedback(c, btn.getAttribute('data-fb'));
-      return;
-    }
-    var n = c && c.related && c.related[Number(btn.getAttribute('data-note'))];
-    if (!c || !n) return;
-    var head = btn.getAttribute('data-act') === 'combine'
-      ? 'Combine this saved note with my card and answer with the merged version.'
-      : 'Extract from this saved note only what answers my card, as separate cards.';
-    el.prompt.value = head + NL + NL + 'My card:' + NL + c.q + NL + (c.a || '') +
-      NL + NL + 'Saved note:' + NL + n.title + NL + n.text;
-    send();
+    var sc = byId(spk.getAttribute('data-tts'));
+    if (!sc) return;
+    if (!('speechSynthesis' in window)) { toast('No voice here'); return; }
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(new SpeechSynthesisUtterance(String(sc.a || '')));
     return;
   }
-  var card = e.target.closest ? e.target.closest('.card') : null;
-  if (card) card.classList.toggle('flipped');
+  var b = t.closest('.relbtn');
+  if (b) {
+    e.stopPropagation();
+    var id = b.getAttribute('data-card');
+    if (b.getAttribute('data-act') === 'fb') { feedback(byId(id), b.getAttribute('data-fb')); return; }
+    var c = byId(id), n = c && c.related && c.related[Number(b.getAttribute('data-note'))];
+    if (!c || !n) return;
+    var head = b.getAttribute('data-act') === 'combine'
+      ? 'Combine this saved note with my card and answer with the merged version.'
+      : 'Extract from this saved note only what answers my card.';
+    sendPrompt(head + NL + NL + 'My card:' + NL + c.q + NL + (c.a || '') + NL + NL + 'Saved note:' + NL + n.title + NL + n.text);
+    return;
+  }
+  var card = t.closest('.card');
+  if (!card) return;
+  var cid = card.getAttribute('data-id');
+  if (S.sel[cid]) { delete S.sel[cid]; render(); return; }
+  S.flip[cid] = !S.flip[cid];
+  render();
+});
+$('cards').addEventListener('touchstart', function (e) {
+  var card = e.target.closest('.card');
+  if (!card) return;
+  var touch = e.touches && e.touches[0] ? e.touches[0] : e;
+  clearTimeout(LP);
+  LP = setTimeout(function () {
+    if (navigator.vibrate) navigator.vibrate(30);
+    openMenu(card.getAttribute('data-id'), touch.clientX, touch.clientY);
+  }, 450);
+}, { passive: true });
+['touchend', 'touchmove', 'touchcancel'].forEach(function (ev) {
+  $('cards').addEventListener(ev, function () { clearTimeout(LP); }, { passive: true });
+});
+$('menu').addEventListener('click', function (e) {
+  var b = e.target.closest('[data-op]');
+  if (!b) return;
+  act(b.getAttribute('data-op'));
+});
+document.addEventListener('click', function (e) {
+  if (!e.target.closest('#menu') && !e.target.closest('[data-dots]')) closeMenu();
+});
+$('selbar').addEventListener('click', function (e) {
+  var b = e.target.closest('[data-sel]');
+  if (!b) return;
+  var what = b.getAttribute('data-sel');
+  if (what === 'clear') return clearSel();
+  if (what === 'del') { picked().forEach(function (c) { del(c.id); }); S.sel = {}; render(); save(); return; }
+  if (what === 'merge') {
+    var p = picked();
+    if (p.length < 2) return toast('Pick two or more');
+    ask('Merge cards', 'Combine the selected cards into one.', 'optional instruction', function (v) { run('merge', p, v); });
+    return;
+  }
+  if (what === 'split') { var c = picked()[0]; if (!c) return; ask('Split card', 'Break this card into separate cards.', 'optional instruction', function (v) { run('split', [c], v); }); }
+});
+$('modalNo').onclick = function () { $('modal').classList.remove('show'); S.cb = null; };
+$('modalGo').onclick = function () {
+  var v = $('modalInput').value.trim();
+  var cb = S.cb;
+  $('modal').classList.remove('show');
+  S.cb = null;
+  if (cb) cb(v);
 };
-render();
+$('selBtn').onclick = function () {
+  var c = S.cards[S.cards.length - 1];
+  if (!c) return toast('No cards yet');
+  openMenu(c.id, window.innerWidth / 2 - 100, 120);
+};
+$('gear').onclick = openSheet;
+$('sheet').addEventListener('click', function (e) {
+  if (e.target === $('sheet')) $('sheet').classList.remove('show');
+  var b = e.target.closest('[data-set]');
+  if (!b) return;
+  var w = b.getAttribute('data-set');
+  if (w === 'export') return exportCards();
+  if (w === 'import') return importCards();
+  if (w === 'clear') { if (!window.confirm('Clear all cards?')) return; S.cards = []; S.sel = {}; S.flip = {}; render(); save(); toast('Cleared'); return; }
+  if (w === 'newdeck') { S.cards = []; S.sel = {}; S.flip = {}; S.deck = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); render(); save(); toast('New deck'); return; }
+  if (w === 'theme') { S.light = !S.light; document.body.classList.toggle('light', S.light); save(); openSheet(); return; }
+  if (w === 'tts') { S.tts = !S.tts; save(); openSheet(); return; }
+  if (w === 'prefs') return loadPrefs();
+  if (w === 'forget') {
+    fetch(API.prefs, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reset: true }) })
+      .then(function () { toast('Forgotten'); loadPrefs(); }).catch(function () {});
+  }
+});
+$('fsClose').onclick = closeFs;
+$('fsFlip').onclick = function () {
+  var c = byId(S.fs);
+  if (!c) return;
+  S.flip[c.id] = !S.flip[c.id];
+  $('fsBody').innerHTML = '<div class="card-q" style="color:var(--dim);font-size:13px;margin-bottom:10px">' + esc(c.q) + '</div>' + md(c.a);
+};
+$('send').onclick = function () { sendPrompt(null); };
+$('prompt').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); sendPrompt(null); } });
+document.addEventListener('keydown', function (e) {
+  if (e.key === 'Escape') { closeMenu(); closeFs(); $('modal').classList.remove('show'); $('sheet').classList.remove('show'); }
+});
+
+(function boot() {
+  var had = false;
+  try {
+    var d = JSON.parse(localStorage.getItem(LS) || 'null');
+    if (d && Array.isArray(d.cards)) {
+      S.cards = d.cards;
+      S.tts = !!d.tts;
+      S.light = !!d.light;
+      S.deck = d.deck || '';
+      had = S.cards.length > 0;
+    }
+  } catch (e) {}
+  if (!S.deck) S.deck = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  document.body.classList.toggle('light', !!S.light);
+  render();
+  if (!had) {
+    fetch(API.deck + '?id=' + encodeURIComponent(S.deck)).then(function (r) { return r.json(); }).then(function (d) {
+      if (d && d.cards && d.cards.length && !S.cards.length) {
+        S.cards = d.cards.map(function (c) { return mk(c.q, c.a, 'kv'); });
+        render();
+      }
+    }).catch(function () {});
+  }
+})();
 </script>
 </body>
 </html>`;
@@ -442,6 +839,7 @@ export default {
         index_writer: indexHandle(env) ? "binding" : env.CF_ACCOUNT_ID && env.AI_SEARCH_TOKEN ? "rest" : "none",
         text_models: CF_TEXT_MODELS,
         card_limit: CARD_LIMIT,
+        card_ops: Object.keys(CARD_OPS),
         openrouter: !!env.OPENROUTER_API_KEY,
         chat_model: env.CF_CHAT_MODEL || null,
         kv: !!env.KV,
@@ -488,6 +886,38 @@ export default {
     if (url.pathname === "/notes") {
       if (request.method !== "POST") return json({ error: "Use POST" }, 405);
       return handleNotes(request, env);
+    }
+
+    if (url.pathname === "/card") {
+      if (request.method !== "POST") return json({ error: "Use POST" }, 405);
+      return handleCard(request, env);
+    }
+
+    if (url.pathname === "/deck") {
+      // The card list itself, kept in KV so a phone that lost its storage comes
+      // back to the same cards.
+      const id = String(url.searchParams.get("id") || "");
+      if (!/^[A-Za-z0-9_-]{6,64}$/.test(id)) return json({ error: "Need a deck id" }, 400);
+      const key = "deck:" + id;
+      if (request.method === "POST") {
+        const { body, error } = await readBody(request);
+        if (error) return error;
+        const cards = (Array.isArray(body.cards) ? body.cards : []).slice(0, 80).map((c) => ({
+          q: String((c && c.q) || "").slice(0, 600),
+          a: String((c && c.a) || "").slice(0, 4000),
+        }));
+        if (env.KV) await env.KV.put(key, JSON.stringify({ cards, updated: new Date().toISOString() }));
+        return json({ ok: true, saved: !!env.KV, count: cards.length });
+      }
+      if (!env.KV) return json({ cards: [], saved: false });
+      const raw = await env.KV.get(key);
+      let cards = [];
+      try {
+        cards = raw ? JSON.parse(raw).cards || [] : [];
+      } catch (err) {
+        cards = [];
+      }
+      return json({ cards, saved: true });
     }
 
     if (url.pathname === "/feedback") {
@@ -1424,6 +1854,110 @@ function prefsHint(prefs) {
   if (parts.length) hint = "Learned from this user's cards: " + parts.join("; ") + ".";
   if (domains.length) hint += (hint ? " " : "") + "Most feedback is in: " + domains.join(", ") + ".";
   return hint.trim();
+}
+
+// ─── card operations ─────────────────────────────────────────────────────────
+// The card menu is not a separate feature: continue, rewrite, split and merge
+// all run the same decision model first, so the domain, the care rules and
+// what this person has taught the system still steer every card.
+const CARD_OPS = {
+  continue: "Extend the answer with the next step of the thinking. Keep it under 900 characters.",
+  magic: "Rewrite the answer so it is clearer and tighter. Keep the meaning. Under 900 characters.",
+  style: "Rewrite the answer in the requested style. Keep the meaning. Under 900 characters.",
+  split: "Divide the material into 2 or 3 cards, each on its own subject. Separate them with a line containing only three dashes.",
+  merge: "Combine the cards into one card. Under 1000 characters.",
+};
+
+function paragraphsOf(text) {
+  return String(text || "")
+    .split(/\n{2,}/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 40);
+}
+
+async function handleCard(request, env) {
+  const { body, error } = await readBody(request);
+  if (error) return error;
+
+  const op = String(body.op || "");
+  if (!CARD_OPS[op]) return json({ error: "Unknown op: " + (op || "(none)") }, 400);
+
+  const one = body.card && typeof body.card === "object" ? body.card : null;
+  const many = Array.isArray(body.cards) ? body.cards.filter((c) => c && (c.a || c.q)).slice(0, 6) : [];
+  if (op === "merge" ? many.length < 2 : !one) {
+    return json({ error: op === "merge" ? "Merge needs at least two cards" : "No card sent" }, 400);
+  }
+
+  const material =
+    op === "merge"
+      ? many
+          .map((c, i) => "Card " + (i + 1) + " request: " + String(c.q || "") + "\nanswer: " + String(c.a || ""))
+          .join("\n\n")
+      : "Request: " + String(one.q || one.prompt || "") + "\nAnswer: " + String(one.a || "");
+  const instruction = String(body.instruction || "").slice(0, 400);
+  const failures = [];
+
+  let decision = null;
+  try {
+    decision = await decide(env, [instruction, material].filter(Boolean).join("\n\n"));
+  } catch (err) {
+    failures.push("clef-flash: " + err.message);
+  }
+  const plan = planRoute(decision);
+  const learned = prefsHint(await loadPrefs(env));
+
+  const systemBits = [
+    CARD_OPS[op],
+    styleHint(decision),
+    plan.pack.guidance,
+    plan.care ? plan.pack.safety : "",
+    learned,
+    instruction,
+  ].filter(Boolean);
+
+  let text = "";
+  let provider = "";
+  try {
+    const r = await askText(
+      env,
+      [
+        { role: "system", content: systemBits.join("\n") },
+        { role: "user", content: material },
+      ],
+      { max_tokens: 800, temperature: 0.5 }
+    );
+    text = r.text;
+    provider = r.provider;
+  } catch (err) {
+    failures.push("model: " + err.message);
+    return json({ error: "No model answered", failures }, 502);
+  }
+
+  let cards;
+  if (op === "split") {
+    const parts = String(text)
+      .split(/\n\s*-{3,}\s*\n/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 40);
+    let list = parts.length > 1 ? parts : paragraphsOf(text);
+    if (list.length < 2) list = slicesFor(text, 2);
+    if (list.length < 2) list = [text];
+    cards = list.slice(0, 4).map((t, i) => ({
+      q: String((one.q || "Card") + " · " + (i + 1)),
+      a: t,
+      provider,
+    }));
+  } else {
+    cards = [
+      {
+        q: (op === "merge" ? "Merged: " : "") + String((many[0] && many[0].q) || (one && one.q) || ""),
+        a: text,
+        provider,
+      },
+    ];
+  }
+
+  return json({ op, cards, provider, decision: slimDecision(decision), learned, failures });
 }
 
 async function handleFeedback(request, env) {

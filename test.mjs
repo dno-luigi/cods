@@ -644,5 +644,63 @@ function check(name, cond, extra) {
   check("and it stays clear", Object.keys(after.actions).length === 0 && after.hint === "", after);
 }
 
+
+// 17a. card ops still run the decision model, and refuse nonsense
+{
+  calls = []; aiInputs = [];
+  const env = makeEnv({});
+  const card = { q: "what is a trading journal", a: "x".repeat(120) };
+  const con = await (await post("/card", { op: "continue", card: card }, env)).json();
+  check("continue returns one card", con.cards.length === 1 && con.cards[0].a.length > 5, con.cards);
+  const clefCall = aiInputs.find((i) => i.model.indexOf("clef") >= 0);
+  check("card ops still ask the decision model", !!clefCall, "no clef call");
+  const mg = await (await post("/card", { op: "merge", cards: [card, { q: "other", a: "y".repeat(80) }] }, env)).json();
+  check("merge returns one card", mg.cards.length === 1, mg.cards);
+  const bad = await post("/card", { op: "nonsense", card: card }, env);
+  check("unknown op is refused", bad.status === 400, bad.status);
+  const few = await post("/card", { op: "merge", cards: [card] }, env);
+  check("merge needs two cards", few.status === 400, few.status);
+  const none = await post("/card", { op: "split" }, env);
+  check("split needs a card", none.status === 400, none.status);
+}
+
+// 17b. split cuts one card into several
+{
+  calls = []; aiInputs = [];
+  const env = makeEnv({});
+  const first = "First part explains the rule and why it matters for the journal. ".repeat(2);
+  const second = "Second part covers the review loop and the numbers to watch. ".repeat(2);
+  env.AI = {
+    run: async (m) => (String(m).indexOf("clef") >= 0
+      ? { answers: { intent: { probabilities: { answer: 0.9 } }, domain: { probabilities: { finance: 0.9 } }, depth: { score: 2 }, tone: { probabilities: { plain: 0.7 } }, needs_web: { probability: 0.2 }, sensitive: { probability: 0.1 } } }
+      : { response: first + "\n---\n" + second }),
+  };
+  const s = await (await post("/card", { op: "split", card: { q: "trading journal", a: "text" } }, env)).json();
+  check("split returns two cards", s.cards.length === 2, s.cards.length);
+  check("split keeps both halves", /First part/.test(s.cards[0].a) && /Second part/.test(s.cards[1].a), s.cards.map((x) => x.a.slice(0, 18)));
+}
+
+// 17c. the deck lives in KV
+{
+  const env = makeEnv({});
+  const put = await (await post("/deck?id=deck-test-1", { cards: [{ q: "a", a: "1" }, { q: "b", a: "2" }] }, env)).json();
+  check("deck saves to KV", put.saved === true && put.count === 2, put);
+  const got = await (await worker.fetch(new Request("https://cods.example/deck?id=deck-test-1"), env)).json();
+  check("deck reads back", got.cards.length === 2 && got.cards[1].q === "b", got);
+  const bad = await worker.fetch(new Request("https://cods.example/deck?id=x"), env);
+  check("deck id is validated", bad.status === 400, bad.status);
+  const emptyEnv = makeEnv({});
+  const empty = await (await worker.fetch(new Request("https://cods.example/deck?id=deck-test-2"), emptyEnv)).json();
+  check("unknown deck is empty", empty.cards.length === 0, empty);
+}
+
+// 17d. the page carries the card menu
+{
+  const html = await (await worker.fetch(new Request("https://cods.example/"), makeEnv({}))).text();
+  ['id="selbar"', 'data-op="split"', 'data-op="merge"', 'id="menu"', "Continue / refine", "Fullscreen", "/deck"].forEach(function (needle) {
+    check("page has " + needle, html.indexOf(needle) >= 0, needle);
+  });
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
