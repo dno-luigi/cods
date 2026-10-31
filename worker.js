@@ -419,6 +419,8 @@ body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;dis
 @keyframes pop{from{opacity:.2;transform:translateY(3px)}to{opacity:1;transform:none}}
 .body{padding:8px 14px 12px;font-size:14px;line-height:1.55;word-break:break-word}
 .card-q{white-space:pre-wrap;font-size:15px}
+.front .card-q{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.front .card-q.open{display:block;overflow:visible}
 .card-a{white-space:normal}
 :is(.card-a,.fs-body){-webkit-user-select:text;user-select:text;overflow-wrap:anywhere}
 :is(.card-a,.fs-body) p{margin:0 0 10px}
@@ -874,7 +876,7 @@ function cardHTML(c) {
   var sel = S.sel[c.id] ? ' sel' : '';
   return '<div class="card' + flipped + sel + '" data-id="' + id + '">' +
     '<div class="face front"><div class="fh"><span class="lab">req</span>' +
-      '<span class="acts"><span class="dots" data-dots="' + id + '">more</span></span></div>' +
+      '<span class="acts"><span class="dots" data-expand="' + id + '">expand</span><span class="dots" data-dots="' + id + '">more</span></span></div>' +
       '<div class="body card-q">' + esc(c.q) + '</div></div>' +
     '<div class="face back"><div class="fh"><span class="lab">answer</span><span class="acts">' +
       '<span class="dots" data-tts="' + id + '">' + (S.speaking === c.id ? 'stop' : 'play') + '</span><span class="dots" data-dots="' + id + '">more</span></span></div>' +
@@ -892,6 +894,17 @@ function render() {
   box.innerHTML = S.cards.map(cardHTML).join('');
   updSel();
 }
+document.addEventListener('click', function (ev) {
+  var t = ev.target && ev.target.closest ? ev.target.closest('[data-expand]') : null;
+  if (!t) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  var card = t.closest('.card');
+  var q = card && card.querySelector('.card-q');
+  if (!q) return;
+  var open = q.classList.toggle('open');
+  t.textContent = open ? 'collapse' : 'expand';
+}, true);
 function scrollBottom() { var b = $('cards'); b.scrollTop = b.scrollHeight; }
 
 function openMenu(id, x, y) {
@@ -2931,10 +2944,118 @@ const BROWSER_ENGINES = [
   },
 ];
 
-async function browserPuppeteer() {
-  if (globalThis.__codsPuppeteer) return globalThis.__codsPuppeteer;
-  const mod = await import("@cloudflare/puppeteer");
-  return mod.default || mod;
+// Browser Run is a typed binding. Acquire a session, connect a CDP socket to
+// it, drive the page over Chrome DevTools Protocol, close the session. There
+// is no puppeteer here and no HTTP endpoint to call: the binding hands back the
+// socket, and the socket is the only way in.
+let cdpSeq = 0;
+
+function cdpCommand(socket, method, params, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const id = ++cdpSeq;
+    const limit = Number(timeoutMs) || 20000;
+    let finished = false;
+    const done = () => {
+      if (finished) return false;
+      finished = true;
+      clearTimeout(timer);
+      try { socket.removeEventListener("message", onMessage); } catch (err) {}
+      try { socket.removeEventListener("close", onClose); } catch (err) {}
+      return true;
+    };
+    const timer = setTimeout(() => {
+      if (done()) reject(new Error(method + " timed out after " + limit + "ms"));
+    }, limit);
+    function onClose() {
+      if (done()) reject(new Error("browser session closed before " + method));
+    }
+    function onMessage(event) {
+      let msg = null;
+      try { msg = JSON.parse(String((event && event.data) || "")); } catch (err) { return; }
+      if (!msg || msg.id !== id) return;
+      if (!done()) return;
+      if (msg.error) reject(new Error(msg.error.message || method + " failed"));
+      else resolve(msg.result);
+    }
+    socket.addEventListener("message", onMessage);
+    socket.addEventListener("close", onClose);
+    try {
+      socket.send(JSON.stringify({ id: id, method: method, params: params || {} }));
+    } catch (err) {
+      if (done()) reject(err);
+    }
+  });
+}
+
+async function browserSession(env) {
+  if (!env.BROWSER) throw new Error("no BROWSER binding");
+  if (typeof env.BROWSER.acquire !== "function") {
+    throw new Error("BROWSER binding has no acquire(); check the browser binding");
+  }
+  const session = await env.BROWSER.acquire({ keepAlive: 60000 });
+  const sessionId = session && session.sessionId;
+  if (!sessionId) throw new Error("the browser binding returned no session id");
+  const shut = async () => {
+    try { await env.BROWSER.closeSession(sessionId); } catch (err) {}
+  };
+  try {
+    const connection = await env.BROWSER.connectSession(sessionId);
+    if (!connection || !connection.webSocket) throw new Error("the browser binding returned no CDP socket");
+    const upgraded = await connection.webSocket.fetch("https://browser-binding.invalid", {
+      headers: { Upgrade: "websocket" },
+    });
+    if (!upgraded || !upgraded.webSocket) throw new Error("Browser Run did not return a WebSocket");
+    const socket = upgraded.webSocket;
+    socket.accept();
+    return {
+      sessionId: sessionId,
+      socket: socket,
+      close: async () => {
+        try { socket.close(); } catch (err) {}
+        await shut();
+      },
+    };
+  } catch (err) {
+    await shut();
+    throw err;
+  }
+}
+
+async function browserPage(env, engine, q) {
+  const session = await browserSession(env);
+  try {
+    await cdpCommand(session.socket, "Page.enable");
+    await cdpCommand(session.socket, "Runtime.enable");
+    await cdpCommand(session.socket, "Emulation.setUserAgentOverride", { userAgent: BROWSER_UA });
+    const nav = await cdpCommand(session.socket, "Page.navigate", { url: engine.url(q) }, 30000);
+    if (nav && nav.errorText) throw new Error("the page did not load: " + nav.errorText);
+    const expression =
+      "(() => {" +
+      " var sel = " + JSON.stringify(engine.selector) + ";" +
+      " var rows = Array.prototype.map.call(document.querySelectorAll(sel), function (row) {" +
+      " var a = row.matches && row.matches('a') ? row : (row.querySelector('h2 a') || row.querySelector('a'));" +
+      " var p = row.querySelector('p');" +
+      " return { url: a ? a.href : '', title: a ? a.textContent.trim() : '', description: p ? p.textContent.trim() : '' };" +
+      " });" +
+      " return { rows: rows, total: rows.length, title: String(document.title || '') };" +
+      "})()";
+    let out = { rows: [], total: 0, title: "" };
+    // A results page paints after the load event. Poll the document instead of
+    // reading once and deciding the page was empty.
+    for (let attempt = 0; attempt < 16; attempt++) {
+      const res = await cdpCommand(session.socket, "Runtime.evaluate", {
+        expression: expression,
+        returnByValue: true,
+      });
+      const value = res && res.result ? res.result.value : null;
+      if (value && Array.isArray(value.rows)) out = value;
+      if (out.rows.length) break;
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    return out;
+  } finally {
+    await session.close();
+  }
 }
 
 // Rows straight off the page: drop anything that is not a real link, and
@@ -2948,7 +3069,7 @@ function browserItems(rows, limit) {
     if (seen.has(url)) continue;
     seen.add(url);
     out.push({
-      url,
+      url: url,
       title: stripTags(row.title) || url,
       description: String(row.description || "").slice(0, 800),
     });
@@ -2959,61 +3080,28 @@ function browserItems(rows, limit) {
 
 async function browserSearch(env, query, limit) {
   if (!env.BROWSER) throw new Error("no BROWSER binding");
-  const puppeteer = await browserPuppeteer();
   const q = encodeURIComponent(String(query).slice(0, 300));
-  const browser = await puppeteer.launch(env.BROWSER);
-  try {
-    for (const engine of BROWSER_ENGINES) {
-      let page = null;
-      try {
-        page = await browser.newPage();
-        if (typeof page.setUserAgent === "function") {
-          try {
-            await page.setUserAgent(BROWSER_UA);
-          } catch (err) {}
-        }
-        await page.goto(engine.url(q), { waitUntil: "load", timeout: 20000 });
-        // A results page that paints after load needs a moment before the
-        // rows exist; giving up early is what makes a real browser look empty.
-        if (typeof page.waitForSelector === "function") {
-          try {
-            await page.waitForSelector(engine.selector, { timeout: 8000 });
-          } catch (err) {}
-        }
-        const rows = await page.evaluate((selector) => {
-          return Array.from(document.querySelectorAll(selector)).map((row) => {
-            const a = row.matches && row.matches("a") ? row : row.querySelector("h2 a") || row.querySelector("a");
-            const p = row.querySelector("p");
-            return {
-              url: a ? a.href : "",
-              title: a ? a.textContent.trim() : "",
-              description: p ? p.textContent.trim() : "",
-            };
-          });
-        }, engine.selector);
-        const items = browserItems(rows, limit);
-        // Carry the provenance out with the rows, so a failure downstream can
-        // say which engine answered and what it actually said.
-        items.engine = engine.name;
-        items.seen = (rows || []).length;
-        items.sample = String(((rows || [])[0] || {}).title || "").slice(0, 60);
-        if (items.length) return items;
-      } catch (err) {
-        // that engine did not load; the next one gets a turn
-      } finally {
-        try {
-          if (page) await page.close();
-        } catch (err) {}
-      }
-    }
-    return [];
-  } finally {
+  let lastError = null;
+  for (const engine of BROWSER_ENGINES) {
+    let page = null;
     try {
-      await browser.close();
-    } catch (err) {}
+      page = await browserPage(env, engine, q);
+    } catch (err) {
+      // this engine did not open; the next one gets a turn
+      lastError = err;
+      continue;
+    }
+    const items = browserItems(page.rows, limit);
+    // Carry the provenance out with the rows, so a failure downstream can say
+    // which engine answered and what it actually said.
+    items.engine = engine.name;
+    items.seen = page.total;
+    items.sample = String(((page.rows || [])[0] || {}).title || "").slice(0, 60);
+    if (items.length) return items;
   }
+  if (lastError) throw lastError;
+  return [];
 }
-
 async function openRouterSearch(env, query, limit) {
   if (!env.OPENROUTER_API_KEY) throw new Error("no OpenRouter key on this Worker");
   const model = env.OPENROUTER_SEARCH_MODEL || env.OPENROUTER_MODEL || OR_MODELS[0];

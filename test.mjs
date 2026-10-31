@@ -386,32 +386,75 @@ function check(name, cond, extra) {
 }
 
 
-// 12g. the browser binding drives a real page and its rows become sources
+// A Browser Run binding stand-in: a session is acquired, the CDP socket is
+// scripted, and the session is closed again. `pages` maps the URL that was
+// navigated to the rows that page would render.
+function fakeSocket(handler) {
+  const listeners = { message: [], close: [] };
+  return {
+    accept() {},
+    close() {
+      (listeners.close || []).slice().forEach((fn) => fn());
+    },
+    addEventListener(type, fn) {
+      if (!listeners[type]) listeners[type] = [];
+      listeners[type].push(fn);
+    },
+    removeEventListener(type, fn) {
+      const a = listeners[type] || [];
+      const i = a.indexOf(fn);
+      if (i >= 0) a.splice(i, 1);
+    },
+    send(payload) {
+      const msg = JSON.parse(String(payload));
+      const reply = handler(msg);
+      Promise.resolve().then(() => {
+        (listeners.message || []).slice().forEach((fn) => fn({ data: JSON.stringify(reply) }));
+      });
+    },
+  };
+}
+
+function fakeBrowser(pages, opts) {
+  const state = { sessions: 0, closed: 0, navigated: [] };
+  const binding = {
+    acquire: async () => {
+      if (opts && opts.acquireError) throw new Error(opts.acquireError);
+      state.sessions++;
+      return { sessionId: "session-" + state.sessions };
+    },
+    connectSession: async () => {
+      const socket = fakeSocket((msg) => {
+        if (msg.method === "Page.navigate") {
+          state.navigated.push(msg.params && msg.params.url);
+          return { id: msg.id, result: {} };
+        }
+        if (msg.method === "Runtime.evaluate") {
+          const url = state.navigated[state.navigated.length - 1];
+          const rows = (pages ? pages(url) : []) || [];
+          return { id: msg.id, result: { result: { value: { rows: rows, total: rows.length } } } };
+        }
+        return { id: msg.id, result: {} };
+      });
+      return { webSocket: { fetch: async () => ({ webSocket: socket }) } };
+    },
+    closeSession: async () => {
+      state.closed++;
+    },
+  };
+  return { binding: binding, state: state };
+}
+
+// 12g. the browser binding acquires a session, drives a real page, closes it
 {
   calls = []; aiInputs = []; extResults = [];
-  const closed = { pages: 0, browsers: 0 };
-  globalThis.__codsPuppeteer = {
-    launch: async () => ({
-      newPage: async () => ({
-        goto: async (url) => {
-          calls.push(url);
-        },
-        evaluate: async () => [
-          { url: "https://example.org/browser-one", title: "Cloudflare news browser one", description: "from a real page" },
-          { url: "", title: "junk" },
-          { url: "https://example.org/junk", title: "Make vs. Makes", description: "grammar rules" },
-          { url: "https://example.org/browser-two", title: "Cloudflare news browser two", description: "also real" },
-        ],
-        close: async () => {
-          closed.pages++;
-        },
-      }),
-      close: async () => {
-        closed.browsers++;
-      },
-    }),
-  };
-  const env = makeEnv({ BROWSER: {} });
+  const fake = fakeBrowser(() => [
+    { url: "https://example.org/browser-one", title: "Cloudflare news browser one", description: "from a real page" },
+    { url: "", title: "junk" },
+    { url: "https://example.org/junk", title: "Make vs. Makes", description: "grammar rules" },
+    { url: "https://example.org/browser-two", title: "Cloudflare news browser two", description: "also real" },
+  ]);
+  const env = makeEnv({ BROWSER: fake.binding });
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
   check("browser rows win the chain", d.search_via === "browser", d.search_via);
   check(
@@ -419,23 +462,22 @@ function check(name, cond, extra) {
     d.cards.length === 2 && d.cards[0].source.url === "https://example.org/browser-one",
     d.cards.map((c) => c.source && c.source.url)
   );
-  check("the page and browser are closed", closed.browsers === 1 && closed.pages === 1, closed);
-  delete globalThis.__codsPuppeteer;
+  check(
+    "the page was navigated inside the session",
+    fake.state.navigated.length === 1 && /duckduckgo\.com/.test(fake.state.navigated[0]),
+    fake.state.navigated
+  );
+  check("the session is opened and closed once", fake.state.sessions === 1 && fake.state.closed === 1, fake.state);
 }
 
-// 12h. a broken browser falls through instead of failing the request
+// 12h. a browser that will not open falls through instead of failing the request
 {
   calls = []; aiInputs = [];
-  globalThis.__codsPuppeteer = {
-    launch: async () => {
-      throw new Error("browser offline");
-    },
-  };
-  const env = makeEnv({ BROWSER: {} });
+  const fake = fakeBrowser(null, { acquireError: "browser offline" });
+  const env = makeEnv({ BROWSER: fake.binding });
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
   check("a browser failure is not fatal", !!d.cards && d.cards.length === 3, d.cards && d.cards.length);
   check("the chain kept going after the browser", /browser offline/.test(String(d.search_error)), d.search_error);
-  delete globalThis.__codsPuppeteer;
 }
 
 // 12i. health reports the binding honestly
@@ -446,79 +488,42 @@ function check(name, cond, extra) {
   check("health lists browser when bound", h2.browser === true && h2.search_chain.indexOf("browser") === 0, h2.search_chain);
 }
 
-
 // 12j. a long query is not satisfied by two incidental word matches
 {
   calls = []; aiInputs = [];
-  globalThis.__codsPuppeteer = {
-    launch: async () => ({
-      newPage: async () => ({
-        goto: async () => {},
-        evaluate: async () => [
-          { url: "https://example.org/partial", title: "Cloudflare worker notes", description: "generic page" },
-        ],
-        close: async () => {},
-      }),
-      close: async () => {},
-    }),
-  };
-  const env = makeEnv({ BROWSER: {} });
+  const fake = fakeBrowser(() => [
+    { url: "https://example.org/partial", title: "Cloudflare worker notes", description: "generic page" },
+  ]);
+  const env = makeEnv({ BROWSER: fake.binding });
   const d = await (await post("/chat", { prompt: "open source cloudflare worker web search proxy", cards: [] }, env)).json();
   check("two of six words is not enough", /dropped 1 of 1 off-topic/.test(String(d.search_error)), d.search_error);
   check("and the cards still arrive", !!d.cards && d.cards.length === 3, d.cards && d.cards.length);
-  delete globalThis.__codsPuppeteer;
 }
-
 
 // 12k. the browser reports which engine answered, and what it said
 {
   calls = []; aiInputs = [];
-  globalThis.__codsPuppeteer = {
-    launch: async () => ({
-      newPage: async () => ({
-        setUserAgent: async () => {},
-        goto: async () => {},
-        waitForSelector: async () => null,
-        evaluate: async () => [
-          { url: "https://example.org/off", title: "Make vs. Makes", description: "grammar" },
-          { url: "https://example.org/off2", title: "Dictionary entry", description: "words" },
-        ],
-        close: async () => {},
-      }),
-      close: async () => {},
-    }),
-  };
-  const env = makeEnv({ BROWSER: {} });
+  const fake = fakeBrowser(() => [
+    { url: "https://example.org/off", title: "Make vs. Makes", description: "grammar" },
+    { url: "https://example.org/off2", title: "Dictionary entry", description: "words" },
+  ]);
+  const env = makeEnv({ BROWSER: fake.binding });
   const d = await (await post("/chat", { prompt: "what makes a good trading journal", cards: [] }, env)).json();
   check("the engine that answered is named", /browser\(ddg\): dropped 2 of 2 off-topic/.test(String(d.search_error)), d.search_error);
   check("the offending title is quoted back", /first was "Make vs\. Makes"/.test(String(d.search_error)), d.search_error);
-  delete globalThis.__codsPuppeteer;
 }
-
 
 // 12l. a word family counts as a match, not as a different word
 {
   calls = []; aiInputs = [];
-  globalThis.__codsPuppeteer = {
-    launch: async () => ({
-      newPage: async () => ({
-        setUserAgent: async () => {},
-        goto: async () => {},
-        waitForSelector: async () => null,
-        evaluate: async () => [
-          { url: "https://example.org/trade", title: "How to Build a Trade Journal", description: "a guide" },
-          { url: "https://example.org/traders", title: "Trading Journals for Traders", description: "why they work" },
-        ],
-        close: async () => {},
-      }),
-      close: async () => {},
-    }),
-  };
-  const env = makeEnv({ BROWSER: {} });
+  const fake = fakeBrowser(() => [
+    { url: "https://example.org/trade", title: "How to Build a Trade Journal", description: "a guide" },
+    { url: "https://example.org/traders", title: "Trading Journals for Traders", description: "why they work" },
+  ]);
+  const env = makeEnv({ BROWSER: fake.binding });
   const d = await (await post("/chat", { prompt: "what makes a good trading journal", cards: [] }, env)).json();
   check("trade counts for trading", d.search_via === "browser", d.search_via);
   check("both family matches become cards", d.cards.length === 2, d.cards.length);
-  delete globalThis.__codsPuppeteer;
 }
 
 
@@ -1738,3 +1743,12 @@ function check(name, cond, extra) {
 
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
+
+
+// 13z. a long request is clamped on the card, with a way to open it
+{
+  const html = await (await worker.fetch(new Request("https://x/"), makeEnv())).text();
+  check("the request is clamped to three lines", /\.front \.card-q\{[^}]*-webkit-line-clamp:3/.test(html), html.length);
+  check("and can be opened again", /\.front \.card-q\.open\{/.test(html));
+  check("the card carries the expand control", /data-expand=/.test(html), html.length);
+}
