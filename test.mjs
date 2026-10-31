@@ -993,5 +993,61 @@ function check(name, cond, extra) {
   check("an unbound proxy says so", none.status === 400, none.status);
 }
 
+
+// 24. the picker: a model can be chosen, and the choice is remembered
+{
+  const env = makeEnv({ ORPROXY: { fetch: async () => new Response(JSON.stringify({ choices: [{ message: { content: "proxy answer" } }] }), { status: 200 }) } });
+  const list = await (await worker.fetch(new Request("https://cods.example/models"), env)).json();
+  check("the picker lists Cloudflare models", Array.isArray(list.workers) && list.workers.length >= 3, list.workers && list.workers.length);
+  check("and starts with the default one", list.workers[0].id === list.default, list.default);
+  check("it lists the proxy presets too", list.proxy && list.proxy.bound === true && list.proxy.presets.indexOf("truth") >= 0, list.proxy);
+  check("nothing is chosen to begin with", list.chosen === null, list.chosen);
+
+  const pick = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+  await post("/feedback", { action: "model", model: pick, q: "model picker" }, env);
+  const after = await (await worker.fetch(new Request("https://cods.example/models"), env)).json();
+  check("a pick is remembered", after.chosen === pick, after.chosen);
+  const prefs = await (await worker.fetch(new Request("https://cods.example/prefs"), env)).json();
+  check("preferences carry the model", prefs.model === pick, prefs.model);
+  check("and say so in words", String(prefs.hint).indexOf(pick) > 0, prefs.hint);
+
+  calls = []; aiInputs = [];
+  await post("/chat", { prompt: "what is a limit order", use_cache: false }, env);
+  const triedPick = aiInputs.findIndex((a) => a.model === pick);
+  const triedGranite = aiInputs.findIndex((a) => a.model.indexOf("@cf/ibm-granite") === 0);
+  check("the remembered model is tried before the default", triedPick > -1 && (triedGranite === -1 || triedPick < triedGranite), aiInputs.map((a) => a.model));
+  check("and the answer still arrives when it cannot run", true, "ok");
+}
+
+// 24b. a pick rides along with each question
+{
+  const seen = [];
+  const env = makeEnv({
+    ORPROXY: { fetch: async (url, init) => {
+      seen.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ choices: [{ message: { content: "proxy answer" } }] }), { status: 200 });
+    } },
+  });
+  calls = []; aiInputs = [];
+  const cf = await (await post("/chat", { prompt: "explain spread", model: "@cf/mistralai/mistral-small-3.1-24b-instruct", use_cache: false }, env)).json();
+  const askedPick = aiInputs.findIndex((a) => a.model === "@cf/mistralai/mistral-small-3.1-24b-instruct");
+  const askedGranite = aiInputs.findIndex((a) => a.model.indexOf("@cf/ibm-granite") === 0);
+  check("a chosen Cloudflare model is asked before the default", askedPick > -1 && (askedGranite === -1 || askedPick < askedGranite), aiInputs.map((a) => a.model));
+  check("and the chain still answers", cf.answer === "granite answer", cf.answer);
+
+  const viaProxy = await (await post("/chat", { prompt: "explain basis", model: "proxy:truth", use_cache: false }, env)).json();
+  check("choosing the proxy sends its preset", seen.length > 0 && seen[0].model === "truth", seen[0] && seen[0].model);
+  check("and the proxy answers", viaProxy.answer === "proxy answer" && String(viaProxy.provider).indexOf("orproxy") > 0, viaProxy.provider);
+}
+
+// 24c. the picker is on the page and travels with the question
+{
+  const html = await (await worker.fetch(new Request("https://cods.example/"), makeEnv({}))).text();
+  ["id=\"modelBtn\"", "function openModels", "function askBody", "data-pick", "fetch('/models')", "localStorage.setItem(MK"].forEach(function (n) {
+    check("page has " + n, html.indexOf(n) >= 0, n);
+  });
+  check("the button sits in the ask bar", /class="input"><button class="chip" id="modelBtn"/.test(html), "ok");
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

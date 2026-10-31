@@ -24,6 +24,22 @@ const TTL_VOLATILE = 3600; // 1 hour
 // Text layer: Workers AI models in this order, then OpenRouter.
 const CF_TEXT_MODELS = ["@cf/ibm-granite/granite-4.0-h-micro"];
 
+// What the picker on the phone offers. Cloudflare models need no key, so they
+// come first; a proxy preset is the OpenRouter route. A pick this account
+// cannot run falls through the chain, so the answer still arrives.
+const MODEL_CHOICES = [
+  { id: "@cf/ibm-granite/granite-4.0-h-micro", short: "granite", label: "Granite 4 micro — fastest" },
+  { id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", short: "llama 70B", label: "Llama 3.3 70B — strongest here" },
+  { id: "@cf/qwen/qwen2.5-coder-32b-instruct", short: "qwen 32B", label: "Qwen 2.5 32B — code and maths" },
+  { id: "@cf/mistralai/mistral-small-3.1-24b-instruct", short: "mistral 24B", label: "Mistral Small 3.1 24B" },
+];
+
+function proxyPresets(env) {
+  const raw = String(env.ORPROXY_PRESETS || "").trim();
+  if (!raw) return [env.ORPROXY_PRESET || OR_PROXY_PRESET];
+  return raw.split(",").map((p) => p.trim()).filter(Boolean);
+}
+
 // One card per web result, so a search fills the grid.
 const CARD_LIMIT = 3;
 
@@ -262,6 +278,7 @@ code{font-size:12.5px;background:#00000044;padding:1px 4px;border-radius:4px}
 .input input:focus{border-color:var(--p)}
 .input button{padding:12px 18px;background:var(--p);color:#fff;border:none;border-radius:9px;font-size:15px;min-width:70px}
 .input button:disabled{opacity:.55}
+.input .chip{padding:10px 10px;background:var(--bg);color:var(--dim);border:1px solid var(--line);font-size:11px;min-width:0;max-width:76px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .selbar{position:fixed;left:10px;right:10px;bottom:78px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px 10px;display:none;align-items:center;gap:6px;z-index:40;box-shadow:0 8px 24px #0008}
 .selbar.show{display:flex}
 .selbar .icon{font-size:11px;padding:6px 8px}
@@ -314,7 +331,7 @@ code{font-size:12.5px;background:#00000044;padding:1px 4px;border-radius:4px}
   <button class="icon" data-sel="del">Delete</button>
   <button class="icon" data-sel="clear">Close</button>
 </div>
-<div class="input"><input id="prompt" placeholder="Type a prompt..." autocomplete="off"><button id="send">Send</button></div>
+<div class="input"><button class="chip" id="modelBtn" title="Model">auto</button><input id="prompt" placeholder="Type a prompt..." autocomplete="off"><button id="send">Send</button></div>
 <div class="menu" id="menu"></div>
 <div class="sheet" id="sheet"><div class="sheet-body" id="sheetBody"></div></div>
 <div class="modal" id="modal"><div class="modal-box">
@@ -330,7 +347,9 @@ code{font-size:12.5px;background:#00000044;padding:1px 4px;border-radius:4px}
 var API = { chat: '/chat', feedback: '/feedback', card: '/card', deck: '/deck', prefs: '/prefs' };
 var NL = String.fromCharCode(10);
 var LS = 'cods:deck:v1';
-var S = { cards: [], flip: {}, sel: {}, ctx: null, fs: null, tts: false, light: false, deck: '', cb: null, theme: null, speaking: null, think: false };
+var S = { cards: [], flip: {}, sel: {}, ctx: null, fs: null, tts: false, light: false, deck: '', cb: null, theme: null, speaking: null, think: false, model: null };
+var MK = 'cods:model:v1';
+var MODELS = null;
 var LP = null;
 
 function $(id) { return document.getElementById(id); }
@@ -838,6 +857,7 @@ function sendPrompt(p) {
   var pid = pending.id, fresh = [];
   render(); scrollBottom();
 
+  var ask = askBody(p, ctx);
   function onStep(ev) {
     var cur = byId(pid);
     if (!cur) return;
@@ -849,7 +869,7 @@ function sendPrompt(p) {
   fetch(API.chat, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt: p, cards: ctx, stream: true })
+    body: JSON.stringify(ask)
   })
     .then(function (r) { return readStream(r, onStep); })
     .then(function (res) {
@@ -908,6 +928,75 @@ function sendPrompt(p) {
     });
 }
 
+// The pick travels with the question. Workers AI models are named directly;
+// a proxy pick rides the binding with its preset.
+function askBody(p, ctx) {
+  var b = { prompt: p, cards: ctx, stream: true };
+  var m = S.model;
+  if (!m) return b;
+  if (m.proxy) { b.proxy = true; if (m.preset) b.preset = m.preset; }
+  else if (m.cf) { b.model = m.cf; b.cf_models = [m.cf]; }
+  return b;
+}
+
+function paintModel() {
+  var b = $('modelBtn');
+  if (b) b.textContent = S.model && S.model.label ? S.model.label : 'auto';
+}
+
+function keepModel(m) {
+  S.model = m;
+  try { localStorage.setItem(MK, JSON.stringify(m)); } catch (e) {}
+  try { if (window.speechSynthesis) stopVoice(); } catch (e) {}
+  paintModel();
+  $('sheet').classList.remove('show');
+  toast('Model: ' + ((m && m.label) || 'auto'));
+  fetch(API.feedback, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'model', model: (m && m.store) || '', q: 'model picker' })
+  }).catch(function () {});
+}
+
+function openModels() {
+  $('sheetBody').innerHTML = '<h3>Model</h3>' +
+    '<p style="font-size:11px;color:var(--dim);margin:0 0 8px;line-height:1.5">Auto lets the decision model choose. Whatever you pick here is remembered and used for the next questions.</p>' +
+    '<div id="modelList">loading...</div>';
+  $('sheet').classList.add('show');
+  fetch('/models').then(function (r) { return r.json(); }).then(function (d) {
+    MODELS = d;
+    var out = '<div class="row"><button data-pick="0">auto — decision model</button></div>';
+    out += '<div class="sect"><h4>Cloudflare</h4><div class="row">';
+    (d.workers || []).forEach(function (m, i) { out += '<button data-pick="' + (i + 1) + '">' + esc(m.label) + '</button>'; });
+    out += '</div></div>';
+    if (d.proxy && d.proxy.bound) {
+      out += '<div class="sect"><h4>OpenRouter (proxy)</h4><div class="row">';
+      (d.proxy.presets || []).forEach(function (p, i) { out += '<button data-pick="p' + i + '">' + esc(p) + '</button>'; });
+      out += '</div></div>';
+    }
+    var el = $('modelList');
+    if (el) el.innerHTML = out;
+  }).catch(function (e) {
+    var el = $('modelList');
+    if (el) el.textContent = 'Could not load models: ' + ((e && e.message) || e);
+  });
+}
+
+document.addEventListener('click', function (e) {
+  var b = e.target && e.target.closest ? e.target.closest('[data-pick]') : null;
+  if (!b) return;
+  var v = b.getAttribute('data-pick') || '';
+  e.preventDefault();
+  if (v === '0') return keepModel(null);
+  if (v.charAt(0) === 'p') {
+    var p = ((MODELS && MODELS.proxy && MODELS.proxy.presets) || [])[Number(v.slice(1))];
+    if (!p) return;
+    return keepModel({ label: 'proxy · ' + p, store: 'proxy:' + p, proxy: true, preset: p });
+  }
+  var m = (MODELS.workers || [])[Number(v) - 1];
+  if (!m) return;
+  return keepModel({ label: m.short || m.label, store: m.id, cf: m.id });
+});
+
 function feedback(c, act) {
   if (!c) return;
   fetch(API.feedback, {
@@ -921,6 +1010,8 @@ function feedback(c, act) {
   else if (act === 'again') sendPrompt(c.q + ' — search the web again and give me the freshest sources');
   else sendPrompt('That card was wrong or off target:' + NL + String(c.a || '').slice(0, 400) + NL + NL + 'Answer it properly instead: ' + c.q);
 }
+
+$('modelBtn').onclick = function () { openModels(); };
 
 function openSheet() {
   $('sheetBody').innerHTML =
@@ -1108,6 +1199,8 @@ document.addEventListener('keydown', function (e) {
   var had = false;
   try {
     var d = JSON.parse(localStorage.getItem(LS) || 'null');
+    try { var picked = JSON.parse(localStorage.getItem(MK) || 'null'); if (picked) S.model = picked; } catch (e) {}
+    paintModel();
     if (d && Array.isArray(d.cards)) {
       S.cards = d.cards;
       S.tts = !!d.tts;
@@ -1200,6 +1293,18 @@ export default {
     }
   }
 
+  // The picker's list: what can answer, what the proxy offers, and what this
+  // person chose last time.
+  if (url.pathname === "/models") {
+    const prefs = await loadPrefs(env);
+    return json({
+      default: CF_TEXT_MODELS[0],
+      workers: MODEL_CHOICES,
+      proxy: { bound: !!env.ORPROXY, presets: proxyPresets(env), default_preset: env.ORPROXY_PRESET || OR_PROXY_PRESET },
+      chosen: prefs.model || null,
+    });
+  }
+
   if (url.pathname === "/prefs") {
       // POST { reset: true } forgets everything learned, so drift can be undone.
       if (request.method === "POST") {
@@ -1216,6 +1321,7 @@ export default {
         domains: prefs.domains,
         events: (prefs.events || []).slice(-10),
         hint: prefsHint(prefs),
+        model: prefs.model || null,
         updated: prefs.updated,
       });
     }
@@ -1360,6 +1466,21 @@ function normalized(s) {
     .toLowerCase()
     .replace(/\s+/g, " ")
     .trim();
+}
+
+// What this question should run on: an explicit pick, the model this person
+// chose last time, or nothing so the usual order applies.
+async function pickModel(env, body) {
+  if (body.proxy === true || String(body.provider || "") === "orproxy") {
+    return { proxy: true, preset: String(body.preset || "").trim() };
+  }
+  const wanted = String(body.model || "").trim();
+  if (wanted.indexOf("@cf/") === 0) return { cf: wanted };
+  if (wanted.indexOf("proxy:") === 0) return { proxy: true, preset: wanted.slice(6) };
+  const saved = String((await loadPrefs(env)).model || "").trim();
+  if (saved.indexOf("@cf/") === 0) return { cf: saved, learned: true };
+  if (saved.indexOf("proxy:") === 0) return { proxy: true, preset: saved.slice(6), learned: true };
+  return {};
 }
 
 async function cacheKeyFor(prompt, contextCards, body, env) {
@@ -2222,6 +2343,7 @@ async function loadPrefs(env) {
       actions: parsed.actions && typeof parsed.actions === "object" ? parsed.actions : {},
       domains: parsed.domains && typeof parsed.domains === "object" ? parsed.domains : {},
       events: Array.isArray(parsed.events) ? parsed.events : [],
+      model: parsed.model || null,
       updated: parsed.updated || null,
     };
   } catch (err) {
@@ -2245,6 +2367,7 @@ function prefsHint(prefs) {
   if (a.more) parts.push("wants more angles (more x" + a.more + ")");
   if (a.again) parts.push("wants fresher sources (again x" + a.again + ")");
   if (a.wrong) parts.push("called earlier answers off target (wrong x" + a.wrong + ")");
+  if (prefs && prefs.model) parts.push("picks " + prefs.model + " to answer");
   const domains = Object.entries((prefs && prefs.domains) || {})
     .filter(([, v]) => v && (v.n || 0) > 0)
     .sort((x, y) => (y[1].n || 0) - (x[1].n || 0))
@@ -2658,6 +2781,11 @@ async function handleFeedback(request, env) {
   slot.n = (slot.n || 0) + 1;
   slot[action] = (slot[action] || 0) + 1;
   prefs.domains[domain] = slot;
+  if (action === "model") {
+    const chosenModel = String(body.model || "").trim();
+    if (chosenModel) prefs.model = chosenModel;
+    else delete prefs.model;
+  }
   prefs.events.push({ at: new Date().toISOString(), action, domain, q: q.slice(0, 120) });
   const remembered = await savePrefs(env, prefs);
 
@@ -2780,9 +2908,10 @@ async function handleChat(request, env, emit) {
 
   const prompt = String(body.prompt || "").trim();
 
-  // Asking for the proxy asks for a fresh answer from that model, so it is
-  // not served from what an earlier Workers AI answer remembered.
-  const proxyWanted = body.proxy === true || String(body.provider || "") === "orproxy";
+  // What this question runs on. A pick is a preference, so it is also never
+  // served from what another model remembered.
+  const pick = await pickModel(env, body);
+  const proxyWanted = pick.proxy === true;
   if (!prompt) return json({ error: "No prompt" }, 400);
 
   // 0. Approved — a question this person has signed off on answers itself.
@@ -3055,9 +3184,11 @@ async function handleChat(request, env, emit) {
   );
   // The proxy answers only when a request asks for it outright, with
   // { proxy: true } (or provider: "orproxy"), optionally naming a preset.
+  if (pick.cf) cfModels.unshift(pick.cf);
+
   if (env.ORPROXY && proxyWanted) {
     try {
-      const via = await orProxyCall(env, messages, body);
+      const via = await orProxyCall(env, messages, pick.preset ? Object.assign({}, body, { preset: pick.preset }) : body);
       return respond({
         answer: via.text,
         provider: "clef-flash → orproxy",
