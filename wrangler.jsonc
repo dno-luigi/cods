@@ -61,26 +61,29 @@
       "binding": "LOADER"
     }
   ],
-  // The OpenCode agent harness (its own Worker) is called over a Service
-  // binding rather than HTTP: the entrypoint exposes the agent as RPC methods.
-  // Absent or failing, the search chain simply moves on to the next provider.
-  "services": [
-    {
-      "binding": "OCODE",
-      "service": "opencode-harness-example",
-      "environment": "production",
-      "entrypoint": "OpenCodeAgent"
-    },
-    // The OpenRouter proxy: the key and the model stay in that Worker, and
-    // cods asks it for text at POST /api/generate. It prefixes the model with
-    // "@preset/", so it is sent a preset name ("truth" unless ORPROXY_PRESET
-    // says otherwise), and stream:false so the reply is one normal envelope.
-    {
-      "binding": "ORPROXY",
-      "service": "orproxy",
-      "environment": "production"
-    }
-  ]
+  // The OpenRouter proxy: the key and the model stay in that Worker, and cods
+  // asks it for text at POST /api/generate. It prefixes the model with
+  // "@preset/", so it is sent a preset name ("truth" unless ORPROXY_PRESET says
+  // otherwise), and stream:false so the reply is one normal envelope.
+  //
+  // Declared under unsafe.bindings, the same way this deployment already runs
+  // it. A services entry is checked against the account at deploy time and a
+  // binding to a Worker that is not there fails the whole deploy, so the shape
+  // that is known to work is the one kept here.
+  //
+  // OCODE (the OpenCode harness) is not bound in this account: /health reports
+  // ocode:false and worker.js simply skips it, moving down the search chain.
+  // Add it back under "services" once that Worker exists there.
+  "unsafe": {
+    "bindings": [
+      {
+        "name": "ORPROXY",
+        "type": "service",
+        "service": "orproxy",
+        "environment": "production"
+      }
+    ]
+  }
   // When the ranking admin Worker exists, add it the same way and the
   // approve/list calls are handed to it:
   //   { "binding": "ADMIN", "service": "cods-admin" }
