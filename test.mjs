@@ -1232,6 +1232,7 @@ function check(name, cond, extra) {
   check("and it answers", d.answer === "proxy answer", d.answer);
   const bare = await (await post("/chat", { prompt: "explain gamma", model: "openrouter:openai/gpt-4o-mini", use_cache: false }, env)).json();
   check("a model id without a key falls through instead of pretending", bare.answer === "granite answer", bare.answer);
+  check("and the card names the answer that was asked for", !!bare.pick && bare.pick.requested === "openai/gpt-4o-mini" && String(bare.pick.error).indexOf("OPENROUTER_API_KEY") >= 0, bare.pick);
 }
 
 // 28c. the page offers both, and carries no hard-coded audit card

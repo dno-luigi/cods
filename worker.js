@@ -934,7 +934,10 @@ function sendPrompt(p, extra) {
         });
       } else if (cur) {
         cur.a = d.answer || d.response || '(no response)';
-        cur.provider = d.approved ? 'approved · rank ' + d.rank : (d.provider || 'openrouter') + (d.route ? ' · ' + d.route : '');
+        cur.provider = d.approved
+          ? 'approved · rank ' + d.rank
+          : (d.provider || 'openrouter') + (d.route ? ' · ' + d.route : '') +
+            (d.pick && d.pick.error ? ' · ' + d.pick.requested + ' failed' : '');
         cur.decision = d.decision || null;
         cur.thinking = d.thinking || null;
         cur.sources = d.sources || null;
@@ -3080,6 +3083,14 @@ async function handleChat(request, env, emit) {
   // served from what another model remembered.
   const pick = await pickModel(env, body);
   let proxyWanted = pick.proxy === true;
+  const pickLabel = pick.openrouter
+    ? pick.preset
+      ? "@preset/" + pick.preset
+      : pick.model
+    : pick.proxy
+      ? "proxy" + (pick.preset ? ":" + pick.preset : "")
+      : pick.cf || "";
+  let pickError = "";
   if (!prompt) return json({ error: "No prompt" }, 400);
 
   // 0. Approved — a question this person has signed off on answers itself.
@@ -3344,6 +3355,7 @@ async function handleChat(request, env, emit) {
     step("cards", (shaped.length || 1) + " card" + ((shaped.length || 1) === 1 ? "" : "s") + " written");
     return finish(env, key, plan, {
       prompt,
+      pick: pickLabel ? { requested: pickLabel, error: pickError || null } : null,
       longTerm: !proxyWanted,
       related,
       theme,
@@ -3400,12 +3412,14 @@ async function handleChat(request, env, emit) {
           trace: [{ source: "openrouter", model: target }],
         });
       } catch (err) {
+        pickError = err.message;
         failures.push("openrouter " + target + ": " + err.message);
       }
     } else if (env.ORPROXY && pick.preset) {
       proxyWanted = true;
     } else {
-      failures.push("openrouter: OPENROUTER_API_KEY is not set, and a model id needs it");
+      pickError = "OPENROUTER_API_KEY is not set, and a model id needs it";
+      failures.push("openrouter: " + pickError);
     }
   }
 
@@ -3422,6 +3436,7 @@ async function handleChat(request, env, emit) {
         trace: [{ source: "orproxy", via: via.via, model: via.model }],
       });
     } catch (err) {
+      pickError = err.message;
       failures.push("orproxy: " + err.message);
     }
   }
@@ -3702,7 +3717,7 @@ async function finish(
   env,
   key,
   plan,
-  { prompt, answer, provider, route, decision, sources, trace, searchError, searchVia, related, relatedError, cards, theme, thinking, longTerm }
+  { prompt, answer, provider, route, decision, sources, trace, searchError, searchVia, related, relatedError, cards, theme, thinking, longTerm, pick }
 ) {
   const payload = {
     answer,
@@ -3726,6 +3741,7 @@ async function finish(
     search_via: searchVia || null,
     related: related && related.length ? related : null,
     related_error: relatedError || null,
+    pick: pick || null,
     trace,
     thinking: thinking || null,
     cached: false,
