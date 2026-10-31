@@ -1049,5 +1049,105 @@ function check(name, cond, extra) {
   check("the button sits in the ask bar", /class="input"><button class="chip" id="modelBtn"/.test(html), "ok");
 }
 
+
+// 25. the decision layer asks, you answer, it decides again
+{
+  const base = makeEnv();
+  const inner = base.AI.run;
+  const env = makeEnv({
+    AI: { run: async (m, i) => {
+      if (String(m).startsWith("@cf/cloudflare/clef")) {
+        return { answers: {
+          intent: { probabilities: { answer: 0.6, decide: 0.4 } },
+          domain: { probabilities: { general: 0.6, finance: 0.4 } },
+          tone: { probabilities: { plain: 0.8 } },
+          depth: { score: 2 },
+          needs_web: { probability: 0.5 },
+          cache_ok: { probability: 0.2 },
+          sensitive: { probability: 0.1 },
+          clarify: { probability: 0.8 },
+        } };
+      }
+      return inner(m, i);
+    } },
+  });
+
+  const first = await (await post("/chat", { prompt: "help me sort this out" }, env)).json();
+  check("an unsure decision asks instead of guessing", first.clarify && first.clarify.questions.length >= 1 && first.answer === null, first.clarify && first.clarify.questions.length);
+  const ids = first.clarify.questions.map((q) => q.id);
+  check("it asks about searching the web", ids.indexOf("web") >= 0, ids);
+  check("and what shape of answer is wanted", ids.indexOf("goal") >= 0, ids);
+  check("the search question offers both answers", first.clarify.questions[0].options.length === 2, first.clarify.questions[0].options);
+
+  const second = await (await post("/chat", { prompt: "help me sort this out", clarify: [{ id: "web", q: "Should I search?", a: "Answer from knowledge" }] }, env)).json();
+  check("the answered question is not asked twice", second.clarify && second.clarify.questions.every((q) => q.id !== "web"), second.clarify && second.clarify.questions.map((q) => q.id));
+
+  const third = await (await post("/chat", {
+    prompt: "help me sort this out",
+    clarify: [
+      { id: "web", q: "Should I search?", a: "Answer from knowledge" },
+      { id: "goal", q: "What do you want back?", a: "Steps to act on" },
+    ],
+  }, env)).json();
+  check("after the answers it answers", !third.clarify && !!third.answer, third.answer);
+  check("and the answers shaped the work", (third.thinking || []).some((x) => x.step === "decide") || !!third.decision, third.thinking && third.thinking.length);
+}
+
+// 25b. saying yes to the web question actually searches
+{
+  const base = makeEnv();
+  const inner = base.AI.run;
+  const env = makeEnv({
+    SEARCH_URL: "https://search.example/q",
+    AI: { run: async (m, i) => {
+      if (String(m).startsWith("@cf/cloudflare/clef")) {
+        return { answers: {
+          intent: { probabilities: { answer: 0.7 } },
+          domain: { probabilities: { general: 0.9 } },
+          tone: { probabilities: { plain: 0.9 } },
+          depth: { score: 2 },
+          needs_web: { probability: 0.5 },
+          cache_ok: { probability: 0.2 },
+          sensitive: { probability: 0.1 },
+          clarify: { probability: 0.8 },
+        } };
+      }
+      return inner(m, i);
+    } },
+  });
+  searchChunks = [{ title: "a source", url: "https://example.com/a", text: "something useful about the topic" }];
+  extResults = [{ title: "a source", url: "https://example.com/a", description: "something useful" }];
+  calls = [];
+  const yes = await (await post("/chat", {
+    prompt: "what changed in the rules",
+    search: "yes",
+    clarify: [{ id: "web", q: "Should I search?", a: "Search the web" }, { id: "goal", q: "What?", a: "Short answer" }],
+  }, env)).json();
+  check("saying yes reaches the web", calls.some((u) => u.indexOf("search.example") >= 0), calls);
+  check("and the answer still comes back", !!yes.answer, yes.answer);
+}
+
+// 25c. the picker offers both sides, and any OpenRouter name can be typed
+{
+  const env = makeEnv({ ORPROXY: {} });
+  const list = await (await worker.fetch(new Request("https://cods.example/models"), env)).json();
+  check("Cloudflare models are listed", list.workers.length >= 3 && !!list.workers[0].id, list.workers.length);
+  check("OpenRouter is listed separately", list.openrouter && list.openrouter.bound === true && list.openrouter.models.length >= 1, list.openrouter);
+  const html = await (await worker.fetch(new Request("https://cods.example/"), makeEnv({}))).text();
+  ["function showClarify", "function nextClarify", "data-clar", "type a model", 'data-pick="x"'].forEach(function (n) {
+    check("page has " + n, html.indexOf(n) >= 0, n);
+  });
+  const seen = [];
+  const proxyEnv = makeEnv({
+    ORPROXY: { fetch: async (url, init) => {
+      seen.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ choices: [{ message: { content: "typed answer" } }] }), { status: 200 });
+    } },
+  });
+  const d = await (await post("/chat", { prompt: "explain gamma", model: "proxy:anthropic/claude-3.5-sonnet", use_cache: false }, proxyEnv)).json();
+  check("a typed OpenRouter name travels as the preset", seen.length > 0 && seen[0].model === "anthropic/claude-3.5-sonnet", seen[0] && seen[0].model);
+  check("and the proxy answers when it accepts it", d.answer === "typed answer", d.answer);
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

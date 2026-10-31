@@ -17,6 +17,12 @@ const CLEF_MODEL = "@cf/cloudflare/clef-flash";
 const OR_MODELS = ["openai/gpt-4o-mini"];
 const WEB_THRESHOLD = 0.5;
 const CARE_THRESHOLD = 0.5;
+// How many times the decision layer may ask before it answers anyway.
+const CLARIFY_ROUNDS = 2;
+// Between these two it genuinely cannot tell whether the web would help, so
+// that is worth one question rather than a guess.
+const WEB_ASK_LOW = 0.35;
+const WEB_ASK_HIGH = 0.7;
 const STABLE_THRESHOLD = 0.55;
 const TTL_STABLE = 604800; // 7 days
 const TTL_VOLATILE = 3600; // 1 hour
@@ -837,7 +843,7 @@ function openFs(c) {
 }
 function closeFs() { $('fs').classList.remove('show'); S.fs = null; }
 
-function sendPrompt(p) {
+function sendPrompt(p, extra) {
   var input = $('prompt'), btn = $('send');
   if (!p) {
     p = input.value.trim();
@@ -857,7 +863,7 @@ function sendPrompt(p) {
   var pid = pending.id, fresh = [];
   render(); scrollBottom();
 
-  var ask = askBody(p, ctx);
+  var ask = Object.assign(askBody(p, ctx), extra || {});
   function onStep(ev) {
     var cur = byId(pid);
     if (!cur) return;
@@ -885,6 +891,18 @@ function sendPrompt(p) {
       }
       if (d.error) {
         if (cur) { cur.a = d.error; cur.provider = 'error'; cur.decision = d.decision || null; }
+        return;
+      }
+      if (d.clarify) {
+        if (cur) {
+          cur.a = d.clarify.questions.map(function (q) { return '• ' + q.q; }).join(NL);
+          cur.provider = 'decision model · needs a word from you';
+          cur.decision = d.decision || null;
+          cur.ask = d.clarify;
+          S.flip[cur.id] = true;
+        }
+        render(); scrollBottom();
+        showClarify(p, d.clarify);
         return;
       }
       if (d.theme) { applyTheme(d.theme); save(); toast('Theme: ' + d.theme.name); }
@@ -939,6 +957,59 @@ function askBody(p, ctx) {
   return b;
 }
 
+// The decision layer asked something. Ask the questions one at a time, take
+// the typed answer or the suggested option, then send it all back with the
+// original question so the decision is made on real intent.
+var CLARIFY = null;
+
+function showClarify(prompt, c) {
+  CLARIFY = { prompt: prompt, round: c.round || 0, queue: (c.questions || []).slice(), asked: (c.said || []).slice() };
+  nextClarify();
+}
+
+function nextClarify() {
+  if (!CLARIFY) return;
+  if (!CLARIFY.queue.length) {
+    var job = CLARIFY;
+    CLARIFY = null;
+    var extra = { clarify: job.asked };
+    var web = job.asked.filter(function (x) { return x.id === 'web'; })[0];
+    if (web) extra.search = /search|web|look/i.test(String(web.a)) ? 'yes' : 'no';
+    return sendPrompt(job.prompt, extra);
+  }
+  var q = CLARIFY.queue[0];
+  $('modalTitle').textContent = q.q;
+  $('modalDesc').textContent = q.options && q.options.length ? 'Tap one, or type your own answer.' : 'Type your answer.';
+  $('modalInput').value = '';
+  $('modalInput').placeholder = (q.options && q.options[0]) || 'your answer';
+  $('modal').classList.add('show');
+  var go = function (ev) {
+    if (!CLARIFY) return;
+    if (ev) ev.preventDefault();
+    var v = $('modalInput').value.trim() || (q.options && q.options[0]) || '';
+    CLARIFY.asked.push({ id: q.id, q: q.q, a: v });
+    CLARIFY.queue.shift();
+    $('modal').classList.remove('show');
+    nextClarify();
+  };
+  $('modalGo').onclick = go;
+  if (q.options && q.options.length) {
+    Array.prototype.forEach.call($('modalDesc').parentNode.querySelectorAll('[data-clar]'), function (n) { n.remove(); });
+    var box = document.createElement('div');
+    box.className = 'row';
+    box.style.marginBottom = '8px';
+    q.options.forEach(function (o) {
+      var b = document.createElement('button');
+      b.className = 'icon';
+      b.setAttribute('data-clar', '1');
+      b.textContent = o;
+      b.onclick = function () { $('modalInput').value = o; go(); };
+      box.appendChild(b);
+    });
+    $('modalDesc').parentNode.insertBefore(box, $('modalInput'));
+  }
+}
+
 function paintModel() {
   var b = $('modelBtn');
   if (b) b.textContent = S.model && S.model.label ? S.model.label : 'auto';
@@ -968,10 +1039,10 @@ function openModels() {
     out += '<div class="sect"><h4>Cloudflare</h4><div class="row">';
     (d.workers || []).forEach(function (m, i) { out += '<button data-pick="' + (i + 1) + '">' + esc(m.label) + '</button>'; });
     out += '</div></div>';
-    if (d.proxy && d.proxy.bound) {
-      out += '<div class="sect"><h4>OpenRouter (proxy)</h4><div class="row">';
-      (d.proxy.presets || []).forEach(function (p, i) { out += '<button data-pick="p' + i + '">' + esc(p) + '</button>'; });
-      out += '</div></div>';
+    if (d.openrouter && d.openrouter.bound) {
+      out += '<div class="sect"><h4>OpenRouter</h4><div class="row">';
+      (d.openrouter.models || []).forEach(function (p, i) { out += '<button data-pick="p' + i + '">' + esc(p) + '</button>'; });
+      out += '<button data-pick="x">type a model…</button></div></div>';
     }
     var el = $('modelList');
     if (el) el.innerHTML = out;
@@ -987,8 +1058,13 @@ document.addEventListener('click', function (e) {
   var v = b.getAttribute('data-pick') || '';
   e.preventDefault();
   if (v === '0') return keepModel(null);
+  if (v === 'x') {
+    var slug = (window.prompt('OpenRouter model or preset name', '') || '').trim();
+    if (!slug) return;
+    return keepModel({ label: slug, store: 'proxy:' + slug, proxy: true, preset: slug });
+  }
   if (v.charAt(0) === 'p') {
-    var p = ((MODELS && MODELS.proxy && MODELS.proxy.presets) || [])[Number(v.slice(1))];
+    var p = ((MODELS && MODELS.openrouter && MODELS.openrouter.models) || [])[Number(v.slice(1))];
     if (!p) return;
     return keepModel({ label: 'proxy · ' + p, store: 'proxy:' + p, proxy: true, preset: p });
   }
@@ -1301,6 +1377,7 @@ export default {
       default: CF_TEXT_MODELS[0],
       workers: MODEL_CHOICES,
       proxy: { bound: !!env.ORPROXY, presets: proxyPresets(env), default_preset: env.ORPROXY_PRESET || OR_PROXY_PRESET },
+      openrouter: { bound: !!env.ORPROXY, models: proxyPresets(env) },
       chosen: prefs.model || null,
     });
   }
@@ -1542,6 +1619,38 @@ function planRoute(decision) {
     ttl: stable ? TTL_STABLE : TTL_VOLATILE,
     pack,
   };
+}
+
+// What the decision layer is unsure about, turned into questions a person can
+// answer on a phone. Each answer is sent back with the question, so the next
+// decision is made with more of this person's actual intent.
+function clarifyQuestions(decision, said) {
+  const d = decision || {};
+  const asked = new Set((said || []).map((s) => String((s && s.id) || "")));
+  const out = [];
+
+  if (!asked.has("web") && typeof d.needs_web === "number" && d.needs_web >= WEB_ASK_LOW && d.needs_web < WEB_ASK_HIGH) {
+    out.push({
+      id: "web",
+      q: "Should I search the web for this, or answer from what the model already knows?",
+      options: ["Search the web", "Answer from knowledge"],
+    });
+  }
+  if (!asked.has("goal") && typeof d.clarify === "number" && d.clarify >= 0.5) {
+    out.push({
+      id: "goal",
+      q: "What do you want back: the short answer, the reasoning, or the steps to act on?",
+      options: ["Short answer", "The reasoning", "Steps to act on"],
+    });
+  }
+  if (!asked.has("target") && typeof d.clarify === "number" && d.clarify >= 0.75) {
+    out.push({
+      id: "target",
+      q: "Who is this for, and what are you going to do with it?",
+      options: [],
+    });
+  }
+  return out.slice(0, 2);
 }
 
 function readChoice(v) {
@@ -2962,7 +3071,11 @@ async function handleChat(request, env, emit) {
   step("memory", learned ? learned : "nothing learned yet");
   const theme = themeIntent(prompt) ? await themeFor(env, prompt) : null;
   if (theme) step("theme", theme.name + " " + theme.primary);
-  const state = [buildState(prompt, contextCards), learned].filter(Boolean).join("\n\n");
+  // Answers from earlier rounds ride along, so the next decision is made with
+  // this person's actual intent rather than another guess.
+  const said = Array.isArray(body.clarify) ? body.clarify.filter((c) => c && c.q) : [];
+  const told = said.length ? contextCards.concat(said.map((c) => ({ q: c.q, a: c.a }))) : contextCards;
+  const state = [buildState(prompt, told), learned].filter(Boolean).join("\n\n");
   const failures = [];
 
   // 1. Decide — clef-flash classifies the request.
@@ -2970,6 +3083,23 @@ async function handleChat(request, env, emit) {
   let decisionError = null;
   try {
     decision = await decide(env, state, body.questions);
+    if (String(body.search || "").toLowerCase() === "yes") decision.needs_web = 0.95;
+    if (String(body.search || "").toLowerCase() === "no") decision.needs_web = 0.02;
+
+    // Ask while it is still unsure, and stop after CLARIFY_ROUNDS so the loop
+    // stays a conversation rather than an interrogation.
+    const asks = said.length < CLARIFY_ROUNDS ? clarifyQuestions(decision, said) : [];
+    if (asks.length) {
+      step("clarify", asks.length + (asks.length === 1 ? " question" : " questions"));
+      return json({
+        prompt,
+        clarify: { round: said.length, max: CLARIFY_ROUNDS, questions: asks, said },
+        decision: slimDecision(decision),
+        answer: null,
+        cards: null,
+        thinking,
+      });
+    }
   } catch (err) {
     decisionError = err.message;
     failures.push("clef-flash: " + err.message);
