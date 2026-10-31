@@ -199,8 +199,8 @@ body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;dis
 .grow{flex:1}
 .icon{background:none;border:1px solid var(--line);color:var(--dim);border-radius:8px;padding:6px 10px;font-size:13px;cursor:pointer}
 .icon.on{color:#fff;background:var(--p);border-color:var(--p)}
-.cards{flex:1 1 auto;min-height:0;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:12px;-webkit-overflow-scrolling:touch}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;cursor:pointer;overflow:hidden}
+.cards{flex:1 1 auto;min-height:0;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:12px;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;touch-action:pan-y}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;cursor:pointer;overflow:hidden;flex:0 0 auto}
 .card.flipped{border-color:var(--p)}
 .card.sel{border-color:var(--p);background:var(--sel)}
 .fh{display:flex;align-items:center;justify-content:space-between;padding:10px 12px 0}
@@ -251,7 +251,7 @@ code{font-size:12.5px;background:#00000044;padding:1px 4px;border-radius:4px}
 .menu-t{font-size:10px;color:var(--dim);padding:6px 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sheet{position:fixed;inset:0;background:#000a;display:none;z-index:70;align-items:flex-end}
 .sheet.show{display:flex}
-.sheet-body{background:var(--panel);width:100%;max-height:88%;overflow-y:auto;border-radius:14px 14px 0 0;padding:16px}
+.sheet-body{background:var(--panel);width:100%;max-height:88dvh;overflow-y:auto;border-radius:14px 14px 0 0;padding:16px;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
 .sheet-body h3{font-size:14px;margin-bottom:12px}
 .sect{margin-bottom:14px;border-top:1px solid var(--line);padding-top:10px}
 .sect h4{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);margin-bottom:8px}
@@ -259,15 +259,15 @@ code{font-size:12.5px;background:#00000044;padding:1px 4px;border-radius:4px}
 .sect button{background:var(--card);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px 10px;font-size:12px}
 .modal{position:fixed;inset:0;background:#000b;display:none;z-index:80;align-items:center;justify-content:center;padding:18px}
 .modal.show{display:flex}
-.modal-box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;width:100%;max-width:440px}
+.modal-box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;width:100%;max-width:440px;max-height:88dvh;overflow-y:auto;overscroll-behavior:contain}
 .modal-box h3{font-size:14px;margin-bottom:6px}
 .modal-box p{font-size:11px;color:var(--dim);margin-bottom:8px;line-height:1.5}
-.modal-box textarea{width:100%;min-height:72px;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:9px;font-size:13px;font-family:inherit}
+.modal-box textarea{width:100%;min-height:72px;max-height:40dvh;overflow-y:auto;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:9px;font-size:13px;font-family:inherit}
 .modal-box .btns{display:flex;justify-content:flex-end;gap:8px;margin-top:10px}
 .fs{position:fixed;inset:0;background:var(--bg);z-index:90;display:none;flex-direction:column}
 .fs.show{display:flex}
 .fs-top{display:flex;justify-content:space-between;padding:12px;border-bottom:1px solid var(--line)}
-.fs-body{flex:1;overflow-y:auto;padding:16px;font-size:15px;line-height:1.6}
+.fs-body{flex:1;min-height:0;overflow-y:auto;padding:16px;font-size:15px;line-height:1.6;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
 #toast{position:fixed;left:50%;bottom:96px;transform:translateX(-50%) translateY(10px);background:#000d;color:#fff;font-size:12px;padding:8px 14px;border-radius:999px;opacity:0;transition:.2s;z-index:100;pointer-events:none;max-width:88vw;text-align:center}
 #toast.show{opacity:1;transform:translateX(-50%)}
 .why{margin-top:10px;padding-top:8px;border-top:1px solid var(--line);font-size:11px;color:var(--dim);line-height:1.55}

@@ -891,5 +891,18 @@ function check(name, cond, extra) {
   check("nothing was rewritten behind the scenes", ctx.size === 0, [...ctx.keys()]);
 }
 
+
+// 21. long answers scroll instead of being clipped
+{
+  const html = await (await worker.fetch(new Request("https://cods.example/"), makeEnv({}))).text();
+  const css = html.slice(html.indexOf("<style>"), html.indexOf("</style>"));
+  check("cards stop shrinking to fit the screen", /\.card\{[^}]*flex:0 0 auto/.test(css), css.match(/\.card\{[^}]*\}/));
+  check("the card column scrolls on its own", /\.cards\{[^}]*overflow-y:auto/.test(css) && /\.cards\{[^}]*overscroll-behavior:contain/.test(css), css.match(/\.cards\{[^}]*\}/));
+  check("fullscreen scrolls", /\.fs-body\{[^}]*overflow-y:auto/.test(css), css.match(/\.fs-body\{[^}]*\}/));
+  check("settings scroll", /\.sheet-body\{[^}]*max-height:88dvh/.test(css) && /\.sheet-body\{[^}]*overflow-y:auto/.test(css), css.match(/\.sheet-body\{[^}]*\}/));
+  check("the edit box scrolls instead of running off screen", /\.modal-box\{[^}]*max-height:88dvh/.test(css), css.match(/\.modal-box\{[^}]*\}/));
+  check("nothing still clips the card body", !/\.card-a\{[^}]*max-height/.test(css) && !/\.card-a\{[^}]*line-clamp/.test(css), "ok");
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
