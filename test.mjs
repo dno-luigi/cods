@@ -780,5 +780,51 @@ function check(name, cond, extra) {
   });
 }
 
+
+// 19a. the answer streams its working before the cards land
+{
+  const env = makeEnv({});
+  const res = await post("/chat", { prompt: "what is a stop loss", stream: true }, env);
+  const type = res.headers.get("Content-Type") || "";
+  check("chat can stream", type.indexOf("ndjson") >= 0, type);
+  const events = (await res.text()).split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  const steps = events.filter((e) => e.type === "step");
+  const done = events[events.length - 1];
+  check("it reports each step as it happens", steps.length >= 3 && steps.some((s) => s.step === "decide"), steps.map((s) => s.step));
+  check("steps carry timings", steps.every((s) => typeof s.ms === "number"), steps[0]);
+  check("and finishes with the usual payload", done && done.type === "done" && done.payload.cards && done.payload.cards.length >= 1, done && done.type);
+  check("the payload explains itself", Array.isArray(done.payload.thinking) && done.payload.thinking.length >= 3, done.payload.thinking && done.payload.thinking.length);
+  const plain = await (await post("/chat", { prompt: "what is slippage" }, env)).json();
+  check("a plain answer carries the same working", Array.isArray(plain.thinking) && plain.thinking.some((s) => s.step === "write"), plain.thinking && plain.thinking.map((s) => s.step));
+}
+
+// 19b. an admin Worker takes over ranking once it is bound
+{
+  const seen = [];
+  const env = makeEnv({
+    ADMIN: {
+      fetch: async (url, init) => {
+        seen.push({ url: String(url), method: init.method, body: init.body });
+        return new Response(JSON.stringify({ ok: true, from: "admin", rank: 5, count: 9 }), { status: 200, headers: { "Content-Type": "application/json" } });
+      },
+    },
+  });
+  const d = await (await post("/approve", { q: "rank this", rank: 5, cards: [{ q: "rank this", a: "a" }] }, env)).json();
+  check("approve goes to the admin worker", d.from === "admin" && seen[0].url === "https://admin/approve", seen[0] && seen[0].url);
+  check("the ranked answer travels with it", String(seen[0].body).indexOf("rank this") > 0, seen[0].body);
+  const listed = await (await worker.fetch(new Request("https://cods.example/approved"), env)).json();
+  check("the admin list comes from there too", listed.from === "admin" && seen[1].url === "https://admin/approved", seen[1] && seen[1].url);
+  const health = await (await worker.fetch(new Request("https://cods.example/health"), env)).json();
+  check("health admits it is attached", health.admin === true && health.stream === "ndjson", health);
+}
+
+// 19c. the page ships play/stop, the stream reader and the why toggle
+{
+  const html = await (await worker.fetch(new Request("https://cods.example/"), makeEnv({}))).text();
+  ['function stopVoice', 'function speak', 'stream: true', 'function readStream', 'data-set="think"', 'function typeIn'].forEach(function (n) {
+    check("page has " + n, html.indexOf(n) >= 0, n);
+  });
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

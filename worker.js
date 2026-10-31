@@ -270,6 +270,11 @@ code{font-size:12.5px;background:#00000044;padding:1px 4px;border-radius:4px}
 .fs-body{flex:1;overflow-y:auto;padding:16px;font-size:15px;line-height:1.6}
 #toast{position:fixed;left:50%;bottom:96px;transform:translateX(-50%) translateY(10px);background:#000d;color:#fff;font-size:12px;padding:8px 14px;border-radius:999px;opacity:0;transition:.2s;z-index:100;pointer-events:none;max-width:88vw;text-align:center}
 #toast.show{opacity:1;transform:translateX(-50%)}
+.why{margin-top:10px;padding-top:8px;border-top:1px solid var(--line);font-size:11px;color:var(--dim);line-height:1.55}
+.why-h{text-transform:uppercase;letter-spacing:.08em;font-size:9px;color:var(--p);margin-bottom:4px}
+.why-r{padding:2px 0}
+.why-r b{color:var(--text);font-weight:600}
+.why-ms{opacity:.55}
 </style>
 </head>
 <body>
@@ -302,7 +307,7 @@ code{font-size:12.5px;background:#00000044;padding:1px 4px;border-radius:4px}
 var API = { chat: '/chat', feedback: '/feedback', card: '/card', deck: '/deck', prefs: '/prefs' };
 var NL = String.fromCharCode(10);
 var LS = 'cods:deck:v1';
-var S = { cards: [], flip: {}, sel: {}, ctx: null, fs: null, tts: false, light: false, deck: '', cb: null, theme: null };
+var S = { cards: [], flip: {}, sel: {}, ctx: null, fs: null, tts: false, light: false, deck: '', cb: null, theme: null, speaking: null, think: false };
 var LP = null;
 
 function $(id) { return document.getElementById(id); }
@@ -374,7 +379,7 @@ function applyTheme(t) {
 
 function save() {
   try {
-    localStorage.setItem(LS, JSON.stringify({ cards: S.cards.slice(0, 80), tts: S.tts, light: S.light, deck: S.deck, theme: S.theme }));
+    localStorage.setItem(LS, JSON.stringify({ cards: S.cards.slice(0, 80), tts: S.tts, light: S.light, deck: S.deck, theme: S.theme, think: S.think }));
   } catch (e) {}
   queueDeck();
 }
@@ -430,6 +435,88 @@ function fb(c) {
     '<button class="relbtn" data-act="fb" data-fb="wrong" data-card="' + id + '">Wrong</button>' +
     '</div>';
 }
+var reduceMotion = false;
+try { reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) {}
+
+function stopVoice() {
+  try { if ('speechSynthesis' in window) window.speechSynthesis.cancel(); } catch (e) {}
+  if (S.speaking) {
+    var old = S.speaking;
+    S.speaking = null;
+    var b = document.querySelector('[data-tts="' + old + '"]');
+    if (b) b.textContent = 'play';
+  }
+}
+function speak(c) {
+  if (!c) return;
+  if (!('speechSynthesis' in window)) { toast('No voice here'); return; }
+  if (S.speaking === c.id) { stopVoice(); toast('Stopped'); return; }
+  stopVoice();
+  var text = String(c.a || '').replace(/\\s+/g, ' ').trim();
+  if (!text) return;
+  var u = new SpeechSynthesisUtterance(text);
+  S.speaking = c.id;
+  var b = document.querySelector('[data-tts="' + c.id + '"]');
+  if (b) b.textContent = 'stop';
+  u.onend = u.onerror = function () { if (S.speaking === c.id) stopVoice(); };
+  window.speechSynthesis.speak(u);
+}
+
+function why(c) {
+  if (!S.think || !c.thinking || !c.thinking.length) return '';
+  return '<div class="why"><div class="why-h">how it got here</div>' + c.thinking.map(function (s) {
+    return '<div class="why-r"><b>' + esc(s.step) + '</b> ' + esc(s.detail || '') +
+      (s.ms != null ? ' <span class="why-ms">' + s.ms + 'ms</span>' : '') + '</div>';
+  }).join('') + '</div>';
+}
+
+function readStream(res, onStep) {
+  var done = null;
+  if (!res.body || !res.body.getReader) {
+    return res.text().then(function (t) { return { status: res.status, text: t, json: null }; });
+  }
+  var reader = res.body.getReader();
+  var dec = new TextDecoder();
+  var buf = '';
+  return (function pump() {
+    return reader.read().then(function (r) {
+      if (r.done) {
+        if (done) return { status: 200, json: done };
+        return { status: res.status, text: buf, json: null };
+      }
+      buf += dec.decode(r.value, { stream: true });
+      var lines = buf.split('\\n');
+      buf = lines.pop();
+      lines.forEach(function (line) {
+        line = line.trim();
+        if (!line) return;
+        var ev = null;
+        try { ev = JSON.parse(line); } catch (e) { return; }
+        if (ev.type === 'step') { if (onStep) onStep(ev); }
+        else if (ev.type === 'done') done = ev.payload;
+        else if (ev.type === 'error') done = { error: ev.error };
+      });
+      return pump();
+    });
+  })();
+}
+
+function typeIn(c) {
+  if (reduceMotion) return;
+  var node = document.querySelector('.card[data-id="' + c.id + '"] .card-a');
+  if (!node) return;
+  var text = String(c.a || '');
+  if (text.length < 40) return;
+  var i = 0;
+  node.textContent = '';
+  var timer = setInterval(function () {
+    if (!node.isConnected) { clearInterval(timer); return; }
+    i += 9;
+    node.textContent = text.slice(0, i);
+    if (i >= text.length) { clearInterval(timer); node.innerHTML = md(c.a); }
+  }, 18);
+}
+
 function cardHTML(c) {
   var id = esc(c.id);
   var flipped = S.flip[c.id] ? ' flipped' : '';
@@ -439,8 +526,8 @@ function cardHTML(c) {
       '<span class="acts"><span class="dots" data-dots="' + id + '">more</span></span></div>' +
       '<div class="body card-q">' + esc(c.q) + '</div></div>' +
     '<div class="face back"><div class="fh"><span class="lab">answer</span><span class="acts">' +
-      '<span class="dots" data-tts="' + id + '">play</span><span class="dots" data-dots="' + id + '">more</span></span></div>' +
-      '<div class="body card-a">' + md(c.a) + '</div>' + meta(c) + notes(c) + fb(c) + '</div>' +
+      '<span class="dots" data-tts="' + id + '">' + (S.speaking === c.id ? 'stop' : 'play') + '</span><span class="dots" data-dots="' + id + '">more</span></span></div>' +
+      '<div class="body card-a">' + md(c.a) + '</div>' + meta(c) + why(c) + notes(c) + fb(c) + '</div>' +
     '<div class="via">via ' + esc(c.provider) + '</div></div>';
 }
 function render() {
@@ -467,6 +554,7 @@ function openMenu(id, x, y) {
     '<button data-op="style">Style</button>' +
     '<button data-op="split">Split into cards</button>' +
     '<button data-op="merge">Merge' + (n > 1 ? ' (' + n + ')' : '') + '</button>' +
+    '<button data-op="speak">' + (S.speaking === c.id ? 'Stop reading' : 'Read aloud') + '</button>' +
     '<button data-op="approve">Approve this answer</button>' +
     '<button data-op="unapprove">Unapprove</button>' +
     '<hr>' +
@@ -503,6 +591,7 @@ function act(name) {
     ask('Merge cards', 'Combine the selected cards into one.', 'optional: how to combine', function (v) { run('merge', p, v); });
     return;
   }
+  if (name === 'speak') { speak(c); return; }
   if (name === 'approve' || name === 'unapprove') { approveCard(c, name === 'unapprove' ? 0 : 3); return; }
   if (name === 'sel') { if (c) { if (S.sel[c.id]) delete S.sel[c.id]; else S.sel[c.id] = true; render(); } return; }
   if (!c) return;
@@ -566,6 +655,7 @@ function approveCard(c, rank) {
 }
 
 function del(id) {
+  if (S.speaking === id) stopVoice();
   S.cards = S.cards.filter(function (c) { return c.id !== id; });
   delete S.sel[id];
   delete S.flip[id];
@@ -595,20 +685,46 @@ function sendPrompt(p) {
   input.value = '';
   btn.disabled = true;
   btn.textContent = '...';
-  var ctx = S.cards.map(function (c) { return { q: c.q, r: c.a }; }).slice(-12);
-  var pending = mk(p, 'Thinking...', 'pending');
+  stopVoice();
+  var ctx = S.cards.filter(function (c) { return c.provider !== 'working'; })
+    .map(function (c) { return { q: c.q, r: c.a }; }).slice(-12);
+  var pending = mk(p, 'Thinking...', 'working');
   pending.prompt = p;
+  pending.thinking = [];
   S.cards.push(pending);
-  var pid = pending.id;
+  S.flip[pending.id] = true;
+  var pid = pending.id, fresh = [];
   render(); scrollBottom();
-  fetch(API.chat, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: p, cards: ctx }) })
-    .then(function (r) { return r.text().then(function (t) { return { status: r.status, text: t }; }); })
+
+  function onStep(ev) {
+    var cur = byId(pid);
+    if (!cur) return;
+    cur.thinking.push({ step: ev.step, detail: ev.detail, ms: ev.ms });
+    cur.a = cur.thinking.map(function (s) { return s.step + ' — ' + (s.detail || ''); }).join(NL);
+    render(); scrollBottom();
+  }
+
+  fetch(API.chat, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt: p, cards: ctx, stream: true })
+  })
+    .then(function (r) { return readStream(r, onStep); })
     .then(function (res) {
-      var d = null;
-      try { d = JSON.parse(res.text); } catch (e) { d = null; }
+      var d = res && res.json ? res.json : null;
+      if (!d && res && res.text) { try { d = JSON.parse(res.text); } catch (e) { d = null; } }
       var cur = byId(pid);
-      if (!d) { if (cur) { cur.a = 'Server returned ' + res.status + ': ' + res.text.slice(0, 300); cur.provider = 'error'; } return; }
-      if (d.error) { if (cur) { cur.a = d.error; cur.provider = 'error ' + res.status; cur.decision = d.decision || null; } return; }
+      if (!d) {
+        if (cur) {
+          cur.a = 'Server returned ' + ((res && res.status) || '?') + ': ' + String((res && res.text) || '').slice(0, 300);
+          cur.provider = 'error';
+        }
+        return;
+      }
+      if (d.error) {
+        if (cur) { cur.a = d.error; cur.provider = 'error'; cur.decision = d.decision || null; }
+        return;
+      }
       if (d.theme) { applyTheme(d.theme); save(); toast('Theme: ' + d.theme.name); }
       var got = d.cards && d.cards.length ? d.cards : null;
       if (got && got.length > 1) {
@@ -618,19 +734,24 @@ function sendPrompt(p) {
         got.forEach(function (g, i) {
           var title = p + (g.kind ? ' · ' + g.kind : '') + (g.source && g.source.title ? ' — ' + g.source.title : '');
           var card = mk(title, g.a, (g.provider || d.provider || '') + (d.route ? ' · ' + d.route : ''), {
-            prompt: p, decision: d.decision || null,
+            prompt: p, decision: d.decision || null, thinking: d.thinking || null,
             sources: g.source ? [g.source] : (d.sources || null), related: d.related || null
           });
           S.cards.splice(at + i, 0, card);
+          fresh.push(card);
         });
       } else if (cur) {
         cur.a = d.answer || d.response || '(no response)';
         cur.provider = d.approved ? 'approved · rank ' + d.rank : (d.provider || 'openrouter') + (d.route ? ' · ' + d.route : '');
         cur.decision = d.decision || null;
+        cur.thinking = d.thinking || null;
         cur.sources = d.sources || null;
         cur.related = d.related || null;
         S.flip[cur.id] = true;
+        fresh.push(cur);
       }
+      render();
+      fresh.forEach(function (c) { if (S.flip[c.id]) typeIn(c); });
     })
     .catch(function (e) {
       var cur = byId(pid);
@@ -639,7 +760,9 @@ function sendPrompt(p) {
     .then(function () {
       btn.disabled = false;
       btn.textContent = 'Send';
-      render(); save(); scrollBottom();
+      if (!fresh.length) render();
+      save();
+      scrollBottom();
     });
 }
 
@@ -669,6 +792,7 @@ function openSheet() {
     '<div class="sect"><h4>View</h4><div class="row">' +
       Object.keys(PRESETS).map(function (k) { return '<button data-set="preset" data-name="' + k + '">' + k + '</button>'; }).join('') +
       '<button data-set="tts">Voice ' + (S.tts ? 'on' : 'off') + '</button>' +
+      '<button data-set="think">Thought process ' + (S.think ? 'on' : 'off') + '</button>' +
     '</div></div>' +
     '<div class="sect"><h4>What it learned</h4><p id="prefText" style="font-size:12px;color:var(--dim);line-height:1.5">loading...</p>' +
       '<div class="row" style="margin-top:8px"><button data-set="prefs">Refresh</button><button data-set="forget">Forget it</button></div></div>' +
@@ -734,11 +858,7 @@ $('cards').addEventListener('click', function (e) {
   var spk = t.closest('[data-tts]');
   if (spk) {
     e.stopPropagation();
-    var sc = byId(spk.getAttribute('data-tts'));
-    if (!sc) return;
-    if (!('speechSynthesis' in window)) { toast('No voice here'); return; }
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(new SpeechSynthesisUtterance(String(sc.a || '')));
+    speak(byId(spk.getAttribute('data-tts')));
     return;
   }
   var b = t.closest('.relbtn');
@@ -817,11 +937,12 @@ $('sheet').addEventListener('click', function (e) {
   var w = b.getAttribute('data-set');
   if (w === 'export') return exportCards();
   if (w === 'import') return importCards();
-  if (w === 'clear') { if (!window.confirm('Clear all cards?')) return; S.cards = []; S.sel = {}; S.flip = {}; render(); save(); toast('Cleared'); return; }
+  if (w === 'clear') { if (!window.confirm('Clear all cards?')) return; stopVoice(); S.cards = []; S.sel = {}; S.flip = {}; render(); save(); toast('Cleared'); return; }
   if (w === 'newdeck') { S.cards = []; S.sel = {}; S.flip = {}; S.deck = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); render(); save(); toast('New deck'); return; }
   if (w === 'preset') { applyTheme(PRESETS[b.getAttribute('data-name')] || PRESETS.default); save(); openSheet(); return; }
   if (w === 'approved') return loadApprovedList();
-  if (w === 'tts') { S.tts = !S.tts; save(); openSheet(); return; }
+  if (w === 'tts') { S.tts = !S.tts; if (!S.tts) stopVoice(); save(); openSheet(); return; }
+  if (w === 'think') { S.think = !S.think; save(); render(); openSheet(); return; }
   if (w === 'prefs') return loadPrefs();
   if (w === 'forget') {
     fetch(API.prefs, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reset: true }) })
@@ -851,6 +972,7 @@ document.addEventListener('keydown', function (e) {
       S.light = !!d.light;
       S.deck = d.deck || '';
       S.theme = d.theme || null;
+      S.think = !!d.think;
       had = S.cards.length > 0;
     }
   } catch (e) {}
@@ -903,6 +1025,8 @@ export default {
         card_limit: CARD_LIMIT,
         card_ops: Object.keys(CARD_OPS),
         approved: !!env.KV,
+        admin: !!env.ADMIN,
+        stream: "ndjson",
         themes: Object.keys(THEMES),
         openrouter: !!env.OPENROUTER_API_KEY,
         chat_model: env.CF_CHAT_MODEL || null,
@@ -958,6 +1082,8 @@ export default {
     }
 
     if (url.pathname === "/approved") {
+      const proxied = await adminProxy(env, request, "/approved", "");
+      if (proxied) return proxied;
       const store = await loadApproved(env);
       const items = Object.entries(store.items || {})
         .sort((a, b) => (b[1].rank || 0) - (a[1].rank || 0) || Date.parse(b[1].updated || 0) - Date.parse(a[1].updated || 0))
@@ -1009,7 +1135,7 @@ export default {
 
     if (url.pathname === "/chat") {
       if (request.method !== "POST") return json({ error: "Use POST" }, 405);
-      return handleChat(request, env, ctx);
+      return handleChat(request, env);
     }
 
     if ((url.pathname === "/" || url.pathname === "/index.html") && request.method === "GET") {
@@ -2185,11 +2311,33 @@ async function approvedHit(env, prompt) {
   return store.items[await approvedHash(prompt)] || null;
 }
 
+// A separate admin Worker owns ranking when one is bound. Until then the
+// main Worker keeps the store itself, so nothing waits on a second deploy.
+async function adminProxy(env, request, path, raw) {
+  if (!env.ADMIN || typeof env.ADMIN.fetch !== "function") return null;
+  try {
+    const res = await env.ADMIN.fetch("https://admin" + path, {
+      method: request.method === "POST" ? "POST" : "GET",
+      headers: { "Content-Type": "application/json" },
+      body: raw ? raw : undefined,
+    });
+    const text = await res.text();
+    return new Response(text || "{}", {
+      status: res.status || 200,
+      headers: { "Content-Type": "application/json", "X-Admin-Worker": "1", ...cH },
+    });
+  } catch (err) {
+    return json({ error: "admin worker unreachable: " + err.message }, 502);
+  }
+}
+
 async function handleApprove(request, env) {
   const { body, error } = await readBody(request);
   if (error) return error;
   const q = String(body.q || "").trim();
   if (!q) return json({ error: "Need the question" }, 400);
+  const proxied = await adminProxy(env, request, "/approve", JSON.stringify(body));
+  if (proxied) return proxied;
   if (!env.KV) return json({ error: "No KV bound on this Worker" }, 503);
   const rank = body.rank === undefined ? 3 : Number(body.rank);
   if (!Number.isFinite(rank) || rank < 0 || rank > 5) return json({ error: "rank is 0 to 5" }, 400);
@@ -2320,9 +2468,48 @@ async function handleRoute(request, env) {
   });
 }
 
-async function handleChat(request, env) {
+async function handleChat(request, env, emit) {
   const { body, error } = await readBody(request);
   if (error) return error;
+
+  // stream:true answers with newline-delimited JSON: one line per step while
+  // the work happens, then a final {type:"done"} carrying the usual payload.
+  // The page shows those lines filling a card, so the wait is visible.
+  if (body.stream === true && !emit) {
+    const encoder = new TextEncoder();
+    const { readable, writable } = new TransformStream();
+    const writer = writable.getWriter();
+    const send = (ev) => { writer.write(encoder.encode(JSON.stringify(ev) + "\n")).catch(() => {}); };
+    const inner = Object.assign({}, body);
+    delete inner.stream;
+    const innerReq = new Request(request.url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(inner),
+    });
+    (async () => {
+      try {
+        const res = await handleChat(innerReq, env, send);
+        const payload = await res.json();
+        send({ type: "done", status: res.status, payload });
+      } catch (err) {
+        send({ type: "error", error: String((err && err.message) || err) });
+      } finally {
+        try { await writer.close(); } catch (err) {}
+      }
+    })();
+    return new Response(readable, {
+      headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
+    });
+  }
+
+  const t0 = Date.now();
+  const thinking = [];
+  const step = (name, detail) => {
+    const entry = { step: name, detail: detail == null ? "" : String(detail), ms: Date.now() - t0 };
+    thinking.push(entry);
+    if (emit) { try { emit({ type: "step", step: entry.step, detail: entry.detail, ms: entry.ms }); } catch (err) {} }
+  };
 
   const prompt = String(body.prompt || "").trim();
   if (!prompt) return json({ error: "No prompt" }, 400);
@@ -2331,6 +2518,7 @@ async function handleChat(request, env) {
   if (body.use_approved !== false) {
     const approved = await approvedHit(env, prompt);
     if (approved) {
+      step("approved", "signed off before, rank " + approved.rank);
       const first = approved.cards[0] || { a: "" };
       return json({
         prompt,
@@ -2342,6 +2530,7 @@ async function handleChat(request, env) {
         approved: true,
         rank: approved.rank,
         approved_at: approved.at,
+        thinking,
         cached: true,
       });
     }
@@ -2350,7 +2539,9 @@ async function handleChat(request, env) {
   const contextCards = Array.isArray(body.cards) ? body.cards.filter((c) => c && c.q) : [];
   const prefs = await loadPrefs(env);
   const learned = prefsHint(prefs);
+  step("memory", learned ? learned : "nothing learned yet");
   const theme = themeIntent(prompt) ? await themeFor(env, prompt) : null;
+  if (theme) step("theme", theme.name + " " + theme.primary);
   const state = [buildState(prompt, contextCards), learned].filter(Boolean).join("\n\n");
   const failures = [];
 
@@ -2364,6 +2555,9 @@ async function handleChat(request, env) {
     failures.push("clef-flash: " + err.message);
   }
   if (decision && learned) decision.preferences = learned;
+  step("decide", decision
+    ? "domain " + decision.domain + " · intent " + decision.intent + " · depth " + decision.depth + (decision.needs_web != null ? " · web " + decision.needs_web : "")
+    : "clef-flash failed: " + decisionError);
 
   // 2. Cache — answered before?
   const key = await cacheKeyFor(prompt, contextCards, body, env);
@@ -2372,8 +2566,10 @@ async function handleChat(request, env) {
       const cached = await env.KV.get(key);
       if (cached) {
         const parsed = JSON.parse(cached);
+        step("cache", "answered before, served from KV");
         parsed.cached = true;
         parsed.route = "cache";
+        parsed.thinking = thinking;
         return json(parsed);
       }
     } catch (err) {}
@@ -2390,6 +2586,7 @@ async function handleChat(request, env) {
       relatedError = err.message;
     }
   }
+  step("notes", related.length + " saved notes matched" + (relatedError ? " (notes failed)" : ""));
 
   const plan = planRoute(decision);
 
@@ -2417,6 +2614,9 @@ async function handleChat(request, env) {
       failures.push("web search: " + err.message);
     }
   }
+  step("search", sources.length
+    ? sources.length + " sources via " + (searchVia || "web")
+    : "no fresh sources" + (searchError ? ": " + String(searchError).slice(0, 90) : ""));
 
   // 4. Answer — grounded in whatever we have.
   const systemBits = [styleHint(decision), plan.pack.guidance, plan.care ? plan.pack.safety : "", learned]
@@ -2491,10 +2691,12 @@ async function handleChat(request, env) {
       .filter(Boolean)
       .map((c) => ({ q: prompt, a: c.text, provider: c.provider, source: c.source, decision: slimDecision(decision) }));
     if (cards.length >= 2) {
+      step("cards", cards.length + " cards, one per source");
       return finish(env, key, plan, {
         prompt,
         related,
       theme,
+        thinking,
         relatedError,
         answer: cards[0].a,
         cards,
@@ -2512,6 +2714,7 @@ async function handleChat(request, env) {
   // 5. Text: Workers AI models in order, then OpenRouter. Every answer walks
   //    out with cards, so the send never lands as one flat blob.
   const respond = async ({ answer, provider, trace }) => {
+    step("write", provider);
     let cards = [];
     try {
       cards = await synthesizeCards(env, prompt, answer, decision, wanted, body, failures);
@@ -2529,10 +2732,12 @@ async function handleChat(request, env) {
         kind: c.kind,
         decision: slimDecision(decision),
       }));
+    step("cards", (shaped.length || 1) + " card" + ((shaped.length || 1) === 1 ? "" : "s") + " written");
     return finish(env, key, plan, {
       prompt,
       related,
       theme,
+      thinking,
       relatedError,
       answer,
       cards: shaped,
@@ -2823,7 +3028,7 @@ async function finish(
   env,
   key,
   plan,
-  { prompt, answer, provider, route, decision, sources, trace, searchError, searchVia, related, relatedError, cards, theme }
+  { prompt, answer, provider, route, decision, sources, trace, searchError, searchVia, related, relatedError, cards, theme, thinking }
 ) {
   const payload = {
     answer,
@@ -2848,6 +3053,7 @@ async function finish(
     related: related && related.length ? related : null,
     related_error: relatedError || null,
     trace,
+    thinking: thinking || null,
     cached: false,
   };
 
