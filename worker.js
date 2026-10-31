@@ -3421,7 +3421,12 @@ async function finish(
 // a proxy takes — an RPC entrypoint's methods, then an OpenAI-style POST — and
 // remembers whichever answered, so the search is paid once per isolate.
 let orProxyMode = null;
-const OR_PROXY_RPC = ["chat", "complete", "completion", "ask", "generate", "run", "proxy"];
+const OR_PROXY_RPC = [
+  "chat", "chatCompletion", "chatCompletions", "complete", "completion", "completions",
+  "ask", "askModel", "generate", "generateText", "run", "proxy", "proxyChat", "orChat",
+  "openrouter", "openRouter", "callOpenRouter", "callModel", "invoke", "query", "prompt",
+  "answer", "respond", "messages", "text", "llm", "model", "models", "getAnswer",
+];
 const OR_PROXY_PATHS = ["/v1/chat/completions", "/chat/completions", "/"];
 
 // A proxy can hand back plain text, an OpenAI envelope, or either one as a
