@@ -15,6 +15,18 @@ const cH = {
 
 const CLEF_MODEL = "@cf/cloudflare/clef-flash";
 const OR_MODELS = ["openai/gpt-4o-mini"];
+
+// OpenRouter models the picker offers. With OPENROUTER_API_KEY these go
+// straight to the API, so any model id works. A preset is just a name too:
+// OpenRouter accepts "@preset/<slug>" as the model, and the proxy rewrites a
+// bare name to exactly that.
+const OR_CHOICES = [
+  { id: "deepseek/deepseek-chat-v3.1", short: "deepseek v3.1", label: "DeepSeek V3.1 — cheap and strong" },
+  { id: "openai/gpt-4o-mini", short: "gpt-4o-mini", label: "GPT-4o mini — dependable" },
+  { id: "google/gemini-2.0-flash-001", short: "gemini flash", label: "Gemini 2.0 Flash — very fast" },
+  { id: "anthropic/claude-3.5-haiku", short: "haiku", label: "Claude 3.5 Haiku — good writing" },
+  { id: "meta-llama/llama-3.3-70b-instruct", short: "llama 70B", label: "Llama 3.3 70B — open weights" },
+];
 const WEB_THRESHOLD = 0.5;
 const CARE_THRESHOLD = 0.5;
 // How many times the decision layer may ask before it answers anyway.
@@ -952,7 +964,7 @@ function askBody(p, ctx) {
   var b = { prompt: p, cards: ctx, stream: true };
   var m = S.model;
   if (!m) return b;
-  if (m.audit) { b.audit = true; return b; }
+  if (m.openrouter) { b.model = m.preset ? 'preset:' + m.preset : 'openrouter:' + m.model; return b; }
   if (m.proxy) { b.proxy = true; if (m.preset) b.preset = m.preset; }
   else if (m.cf) { b.model = m.cf; b.cf_models = [m.cf]; }
   return b;
@@ -1037,17 +1049,14 @@ function openModels() {
   fetch('/models').then(function (r) { return r.json(); }).then(function (d) {
     MODELS = d;
     var out = '<div class="row"><button data-pick="0">auto — decision model</button></div>';
-    if (d.audit && d.audit.bound) {
-      out += '<div class="sect"><h4>Truth Engine</h4><div class="row"><button data-pick="a">audit this</button></div>' +
-        '<p style="font-size:11px;color:var(--dim);margin:6px 0 0;line-height:1.5">Runs the structural audit on the question and returns it as a card.</p></div>';
-    }
     out += '<div class="sect"><h4>Cloudflare</h4><div class="row">';
     (d.workers || []).forEach(function (m, i) { out += '<button data-pick="' + (i + 1) + '">' + esc(m.label) + '</button>'; });
     out += '</div></div>';
     if (d.openrouter && d.openrouter.bound) {
-      out += '<div class="sect"><h4>OpenRouter</h4><div class="row">';
-      (d.openrouter.models || []).forEach(function (p, i) { out += '<button data-pick="p' + i + '">' + esc(p) + '</button>'; });
-      out += '<button data-pick="x">type a model…</button></div></div>';
+      out += '<div class="sect"><h4>OpenRouter' + (d.openrouter.via === 'proxy' ? ' · via proxy' : '') + '</h4><div class="row">';
+      (d.openrouter.models || []).forEach(function (m, i) { out += '<button data-pick="o:' + i + '">' + esc(m.short || m.id) + '</button>'; });
+      (d.openrouter.presets || []).forEach(function (p) { out += '<button data-pick="p:' + esc(p) + '">preset · ' + esc(p) + '</button>'; });
+      out += '<button data-pick="x">type a model or preset…</button></div></div>';
     }
     var el = $('modelList');
     if (el) el.innerHTML = out;
@@ -1063,16 +1072,23 @@ document.addEventListener('click', function (e) {
   var v = b.getAttribute('data-pick') || '';
   e.preventDefault();
   if (v === '0') return keepModel(null);
-  if (v === 'a') return keepModel({ label: 'audit', store: 'audit', audit: true });
   if (v === 'x') {
-    var slug = (window.prompt('OpenRouter model or preset name', '') || '').trim();
-    if (!slug) return;
-    return keepModel({ label: slug, store: 'proxy:' + slug, proxy: true, preset: slug });
+    var typed = (window.prompt('Model id, or a preset name', 'openai/gpt-4o-mini') || '').trim();
+    if (!typed) return;
+    if (typed.charAt(0) === '@' || typed.indexOf('/') > 0) {
+      return keepModel({ label: typed, store: 'openrouter:' + typed, openrouter: true, model: typed });
+    }
+    return keepModel({ label: 'preset · ' + typed, store: 'preset:' + typed, openrouter: true, preset: typed });
   }
-  if (v.charAt(0) === 'p') {
-    var p = ((MODELS && MODELS.openrouter && MODELS.openrouter.models) || [])[Number(v.slice(1))];
-    if (!p) return;
-    return keepModel({ label: 'proxy · ' + p, store: 'proxy:' + p, proxy: true, preset: p });
+  if (v.indexOf('o:') === 0) {
+    var om = ((MODELS && MODELS.openrouter && MODELS.openrouter.models) || [])[Number(v.slice(2))];
+    if (!om) return;
+    return keepModel({ label: om.short || om.id, store: 'openrouter:' + om.id, openrouter: true, model: om.id });
+  }
+  if (v.indexOf('p:') === 0) {
+    var pslug = v.slice(2);
+    if (!pslug) return;
+    return keepModel({ label: 'preset · ' + pslug, store: 'preset:' + pslug, openrouter: true, preset: pslug });
   }
   var m = (MODELS.workers || [])[Number(v) - 1];
   if (!m) return;
@@ -1383,8 +1399,12 @@ export default {
       default: CF_TEXT_MODELS[0],
       workers: MODEL_CHOICES,
       proxy: { bound: !!env.ORPROXY, presets: proxyPresets(env), default_preset: env.ORPROXY_PRESET || OR_PROXY_PRESET },
-      openrouter: { bound: !!env.ORPROXY, models: proxyPresets(env) },
-      audit: { bound: !!env.ORPROXY, route: "/v1/audit", preset: env.ORPROXY_PRESET || OR_PROXY_PRESET },
+      openrouter: {
+        bound: !!(env.OPENROUTER_API_KEY || env.ORPROXY),
+        via: env.OPENROUTER_API_KEY ? "key" : env.ORPROXY ? "proxy" : "none",
+        models: OR_CHOICES,
+        presets: proxyPresets(env),
+      },
       chosen: prefs.model || null,
     });
   }
@@ -1555,18 +1575,23 @@ function normalized(s) {
 // What this question should run on: an explicit pick, the model this person
 // chose last time, or nothing so the usual order applies.
 async function pickModel(env, body) {
-  if (body.audit === true || String(body.model || "").trim() === "audit") return { audit: true };
   if (body.proxy === true || String(body.provider || "") === "orproxy") {
     return { proxy: true, preset: String(body.preset || "").trim() };
   }
   const wanted = String(body.model || "").trim();
   if (wanted.indexOf("@cf/") === 0) return { cf: wanted };
   if (wanted.indexOf("proxy:") === 0) return { proxy: true, preset: wanted.slice(6) };
-  if (wanted === "audit") return { audit: true };
+  if (wanted.indexOf("preset:") === 0) return { openrouter: true, preset: wanted.slice(7) };
+  if (wanted.indexOf("@preset/") === 0) return { openrouter: true, preset: wanted.slice(8) };
+  if (wanted.indexOf("openrouter:") === 0) return { openrouter: true, model: wanted.slice(11) };
+  if (wanted && wanted.indexOf("/") > 0) return { openrouter: true, model: wanted };
+
   const saved = String((await loadPrefs(env)).model || "").trim();
   if (saved.indexOf("@cf/") === 0) return { cf: saved, learned: true };
   if (saved.indexOf("proxy:") === 0) return { proxy: true, preset: saved.slice(6), learned: true };
-  if (saved === "audit") return { audit: true, learned: true };
+  if (saved.indexOf("preset:") === 0) return { openrouter: true, preset: saved.slice(7), learned: true };
+  if (saved.indexOf("openrouter:") === 0) return { openrouter: true, model: saved.slice(11), learned: true };
+  if (saved && saved.indexOf("/") > 0) return { openrouter: true, model: saved, learned: true };
   return {};
 }
 
@@ -3054,7 +3079,7 @@ async function handleChat(request, env, emit) {
   // What this question runs on. A pick is a preference, so it is also never
   // served from what another model remembered.
   const pick = await pickModel(env, body);
-  const proxyWanted = pick.proxy === true;
+  let proxyWanted = pick.proxy === true;
   if (!prompt) return json({ error: "No prompt" }, 400);
 
   // 0. Approved — a question this person has signed off on answers itself.
@@ -3364,9 +3389,33 @@ async function handleChat(request, env, emit) {
 
   if (pick.cf) cfModels.unshift(pick.cf);
 
+  if (pick.openrouter) {
+    const target = pick.preset ? "@preset/" + pick.preset : pick.model;
+    if (env.OPENROUTER_API_KEY) {
+      try {
+        const answer = await callOpenRouter(env, target, messages, body);
+        return respond({
+          answer,
+          provider: "clef-flash → openrouter · " + target,
+          trace: [{ source: "openrouter", model: target }],
+        });
+      } catch (err) {
+        failures.push("openrouter " + target + ": " + err.message);
+      }
+    } else if (env.ORPROXY && pick.preset) {
+      proxyWanted = true;
+    } else {
+      failures.push("openrouter: OPENROUTER_API_KEY is not set, and a model id needs it");
+    }
+  }
+
   if (env.ORPROXY && proxyWanted) {
     try {
-      const via = await orProxyCall(env, messages, pick.preset ? Object.assign({}, body, { preset: pick.preset }) : body);
+      const via = await orProxyCall(
+        env,
+        messages,
+        pick.preset && !body.preset ? Object.assign({}, body, { preset: pick.preset }) : body
+      );
       return respond({
         answer: via.text,
         provider: "clef-flash → orproxy",

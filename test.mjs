@@ -1186,39 +1186,61 @@ function check(name, cond, extra) {
 }
 
 
-// 27. the Truth Engine audit is a card you can pick
+// 28. OpenRouter: model ids with our own key, presets by name
 {
+  const real = globalThis.fetch;
   const seen = [];
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes("openrouter.ai")) {
+      seen.push({ url: String(url), body: JSON.parse(init.body), auth: init.headers && (init.headers.Authorization || init.headers.authorization) });
+      return new Response(JSON.stringify({ choices: [{ message: { content: "openrouter answer" } }] }), { status: 200 });
+    }
+    return real(url, init);
+  };
+  try {
+    const withKey = makeEnv({ OPENROUTER_API_KEY: "k" });
+    const list = await (await worker.fetch(new Request("https://cods.example/models"), withKey)).json();
+    check("with a key the picker goes direct", list.openrouter.via === "key", list.openrouter.via);
+    check("OpenRouter models are listed", list.openrouter.models.length >= 3, list.openrouter.models.length);
+
+    const d = await (await post("/chat", { prompt: "explain swap", model: "openrouter:anthropic/claude-3.5-sonnet", use_cache: false }, withKey)).json();
+    check("any model id is sent as-is", seen.length > 0 && seen[0].body.model === "anthropic/claude-3.5-sonnet", seen[0] && seen[0].body.model);
+    check("with our own key", String(seen[0].auth).indexOf("Bearer k") === 0, seen[0].auth);
+    check("and the answer comes back", d.answer === "openrouter answer" && String(d.provider).indexOf("openrouter") > 0, d.provider);
+
+    const p = await (await post("/chat", { prompt: "explain funding", model: "preset:truth", use_cache: false }, withKey)).json();
+    check("a preset is referenced the documented way", seen.length > 1 && seen[1].body.model === "@preset/truth", seen[1] && seen[1].body.model);
+    check("and answers through the key too", p.answer === "openrouter answer", p.answer);
+  } finally {
+    globalThis.fetch = real;
+  }
+}
+
+// 28b. no key: presets ride the proxy, model ids say what is missing
+{
+  const proxied = [];
   const env = makeEnv({
     ORPROXY: { fetch: async (url, init) => {
-      seen.push({ url: String(url), body: JSON.parse(init.body) });
-      return new Response(JSON.stringify({ choices: [{ message: { content: "# Audit\n\nStructural findings: the docket is missing a proof of service." } }] }), { status: 200 });
+      proxied.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ choices: [{ message: { content: "proxy answer" } }] }), { status: 200 });
     } },
   });
   const list = await (await worker.fetch(new Request("https://cods.example/models"), env)).json();
-  check("the picker offers the audit", list.audit && list.audit.bound === true && list.audit.route === "/v1/audit", list.audit);
-  const d = await (await post("/chat", { prompt: "review this docket", audit: true }, env)).json();
-  check("the audit route is the one called", seen.length > 0 && seen[0].url === "https://orproxy/v1/audit", seen.map((s) => s.url));
-  check("it gets the question as its content", seen[0].body.content === "review this docket", seen[0].body);
-  check("and is asked not to stream", seen[0].body.stream === false, seen[0].body.stream);
-  check("the audit comes back as the answer", String(d.answer).indexOf("Structural findings") > 0, d.answer);
-  check("and the card says it is an audit", String(d.provider).indexOf("audit") > 0, d.provider);
+  check("without a key the picker says it goes via proxy", list.openrouter.via === "proxy", list.openrouter.via);
+  const d = await (await post("/chat", { prompt: "explain basis", model: "preset:truth", use_cache: false }, env)).json();
+  check("a preset is sent to the proxy by name", proxied.length > 0 && proxied[0].model === "truth", proxied[0] && proxied[0].model);
+  check("and it answers", d.answer === "proxy answer", d.answer);
+  const bare = await (await post("/chat", { prompt: "explain gamma", model: "openrouter:openai/gpt-4o-mini", use_cache: false }, env)).json();
+  check("a model id without a key falls through instead of pretending", bare.answer === "granite answer", bare.answer);
 }
 
-// 27b. an audit that streams as events is still read into one card
-{
-  const sse = 'data: {"choices":[{"delta":{"content":"# Audit"}}]}\n\ndata: {"choices":[{"delta":{"content":" body"}}]}\n\ndata: [DONE]\n';
-  const env = makeEnv({ ORPROXY: { fetch: async () => new Response(sse, { status: 200 }) } });
-  const d = await (await post("/chat", { prompt: "audit this", audit: true }, env)).json();
-  check("a streamed audit becomes one answer", d.answer === "# Audit body", d.answer);
-}
-
-// 27c. the audit appears in the picker on the page
+// 28c. the page offers both, and carries no hard-coded audit card
 {
   const html = await (await worker.fetch(new Request("https://cods.example/"), makeEnv({}))).text();
-  ['data-pick="a"', "audit this", "Runs the structural audit"].forEach(function (n) {
+  ['data-pick="o:', "preset · ", "type a model or preset", "'preset:' +"].forEach(function (n) {
     check("page has " + n, html.indexOf(n) >= 0, n);
   });
+  check("and no hard-coded audit button", html.indexOf("audit this") === -1, "audit this");
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");
