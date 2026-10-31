@@ -702,5 +702,37 @@ function check(name, cond, extra) {
   });
 }
 
+
+// 17e. split never fakes a pair of identical cards
+{
+  calls = []; aiInputs = [];
+  const env = makeEnv({});
+  const one = "Risk rules cap position size at one percent of the account and put the stop below the invalidation level of the setup. ".repeat(2);
+  env.AI = {
+    run: async (m) => (String(m).indexOf("clef") >= 0
+      ? { answers: { intent: { probabilities: { answer: 0.9 } }, domain: { probabilities: { finance: 0.9 } }, depth: { score: 2 }, tone: { probabilities: { plain: 0.7 } }, needs_web: { probability: 0.2 }, sensitive: { probability: 0.1 } } }
+      : { response: one }),
+  };
+  const s = await (await post("/card", { op: "split", card: { q: "risk", a: "text" } }, env)).json();
+  check("a model that refuses to split gives one card", s.cards.length === 1, s.cards.length);
+  check("and that card is not a duplicate", s.cards[0].a === s.cards[0].a.trim(), s.cards[0].a.slice(0, 40));
+}
+
+// 17f. numbered cards are understood too
+{
+  calls = []; aiInputs = [];
+  const env = makeEnv({});
+  const a = "Position size is capped at one percent of the account and never more than that on a single idea at all. ";
+  const b = "Reviews happen weekly, and every broken rule gets written down with the reason it broke that week. ";
+  env.AI = {
+    run: async (m) => (String(m).indexOf("clef") >= 0
+      ? { answers: { intent: { probabilities: { answer: 0.9 } }, domain: { probabilities: { finance: 0.9 } }, depth: { score: 2 }, tone: { probabilities: { plain: 0.7 } }, needs_web: { probability: 0.2 }, sensitive: { probability: 0.1 } } }
+      : { response: "Card 1: " + a + "\nCard 2: " + b }),
+  };
+  const s = await (await post("/card", { op: "split", card: { q: "rules", a: "text" } }, env)).json();
+  check("numbered output splits in two", s.cards.length === 2, s.cards.length);
+  check("both halves survive", /Position size/.test(s.cards[0].a) && /Reviews/.test(s.cards[1].a), s.cards.map((x) => x.a.slice(0, 16)));
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

@@ -1864,9 +1864,45 @@ const CARD_OPS = {
   continue: "Extend the answer with the next step of the thinking. Keep it under 900 characters.",
   magic: "Rewrite the answer so it is clearer and tighter. Keep the meaning. Under 900 characters.",
   style: "Rewrite the answer in the requested style. Keep the meaning. Under 900 characters.",
-  split: "Divide the material into 2 or 3 cards, each on its own subject. Separate them with a line containing only three dashes.",
+  split: "Return two or three numbered cards, each on its own subject. Start each one with Card 1: or Card 2: on its own line.",
   merge: "Combine the cards into one card. Under 1000 characters.",
 };
+
+// Split is the one op that can silently lie: a model that ignores the separator
+// gives one blob, and duplicating it would show two identical cards. Parts are
+// deduped, and a single honest card beats a fake pair.
+function splitParts(text) {
+  const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
+  let parts = String(text || "")
+    .split(/\n\s*-{3,}\s*\n/)
+    .map(norm)
+    .filter((s) => s.length > 40);
+  if (parts.length < 2) {
+    const numbered = String(text || "")
+      .split(/\n\s*(?:#{1,3}\s*)?card\s*\d+\s*[:.)-]\s*/i)
+      .map(norm)
+      .filter((s) => s.length > 40);
+    if (numbered.length > 1) parts = numbered;
+  }
+  if (parts.length < 2) parts = paragraphsOf(text).map(norm);
+  if (parts.length < 2) {
+    const sentences = sentenceSplit(text);
+    if (sentences.length >= 4) {
+      const half = Math.ceil(sentences.length / 2);
+      parts = [sentences.slice(0, half).join(" "), sentences.slice(half).join(" ")];
+    }
+  }
+  const seen = new Set();
+  const out = [];
+  parts.forEach((p) => {
+    const key = p.slice(0, 120).toLowerCase();
+    if (p.length > 40 && !seen.has(key)) {
+      seen.add(key);
+      out.push(p);
+    }
+  });
+  return out;
+}
 
 function paragraphsOf(text) {
   return String(text || "")
@@ -1935,18 +1971,16 @@ async function handleCard(request, env) {
 
   let cards;
   if (op === "split") {
-    const parts = String(text)
-      .split(/\n\s*-{3,}\s*\n/)
-      .map((s) => s.trim())
-      .filter((s) => s.length > 40);
-    let list = parts.length > 1 ? parts : paragraphsOf(text);
-    if (list.length < 2) list = slicesFor(text, 2);
-    if (list.length < 2) list = [text];
-    cards = list.slice(0, 4).map((t, i) => ({
-      q: String((one.q || "Card") + " · " + (i + 1)),
-      a: t,
-      provider,
-    }));
+    const list = splitParts(text);
+    if (!list.length) {
+      cards = [{ q: String(one.q || "Card"), a: text, provider }];
+    } else {
+      cards = list.slice(0, 4).map((t, i) => ({
+        q: String((one.q || "Card") + " · " + (i + 1)),
+        a: t,
+        provider,
+      }));
+    }
   } else {
     cards = [
       {
