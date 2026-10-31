@@ -14,6 +14,60 @@ const cH = {
 };
 
 const CLEF_MODEL = "@cf/cloudflare/clef-flash";
+// clef-flash reads a 24,576-token window. The platform does not trim text state
+// for you: it answers 413 with code 5021 ("exceeded this model context window
+// limit"), which used to lose the decision entirely. So the state is budgeted
+// here, and the question is placed first: whatever else is dropped, clef still
+// sees what was actually asked.
+const CLEF_CONTEXT_TOKENS = 24576;
+const CLEF_STATE_TOKENS = 23000;
+// ~3 characters per token for mixed prose and JSON. It over-estimates English
+// and stays under the limit for code, where tokens are denser.
+const CHARS_PER_TOKEN = 3;
+
+function estimateTokens(text) {
+  return Math.ceil(String(text || "").length / CHARS_PER_TOKEN);
+}
+
+function fitState(sections) {
+  const budget = CLEF_STATE_TOKENS;
+  const prompt = String((sections && sections.prompt) || "");
+  let head = "New message:\n" + prompt;
+  let promptCut = false;
+  if (estimateTokens(head) > budget) {
+    const room = budget * CHARS_PER_TOKEN - "New message:\n".length - 24;
+    head = "New message:\n" + prompt.slice(0, Math.max(0, room)) + " ...(cut to fit)";
+    promptCut = true;
+  }
+  const parts = [head];
+  let used = estimateTokens(head);
+  const lines = [];
+  let dropped = 0;
+  const cards = ((sections && sections.told) || []).slice().reverse();
+  for (const card of cards) {
+    const line = "User: " + card.q + "\nAssistant: " + (card.a || card.r || "(no reply)");
+    const cost = estimateTokens(line);
+    if (used + cost > budget - 400) {
+      dropped += 1;
+      continue;
+    }
+    lines.push(line);
+    used += cost;
+  }
+  if (lines.length) parts.push("Conversation so far (newest first):\n" + lines.join("\n\n"));
+  const card = String((sections && sections.card) || "");
+  if (card && used + estimateTokens(card) <= budget) {
+    parts.push(card);
+    used += estimateTokens(card);
+  }
+  const learned = String((sections && sections.learned) || "");
+  if (learned && used + estimateTokens(learned) <= budget) {
+    parts.push(learned);
+    used += estimateTokens(learned);
+  }
+  return { state: parts.join("\n\n"), tokens: used, dropped, promptCut, trimmed: dropped > 0 || promptCut };
+}
+
 const OR_MODELS = ["openai/gpt-4o-mini"];
 
 // OpenRouter models the picker offers. With OPENROUTER_API_KEY these go
@@ -1396,6 +1450,7 @@ export default {
         ai_search_instance: env.AI_SEARCH_INSTANCE || AI_SEARCH_INSTANCE,
         index_writer: indexHandle(env) ? "binding" : env.CF_ACCOUNT_ID && env.AI_SEARCH_TOKEN ? "rest" : "none",
         text_models: CF_TEXT_MODELS,
+        clef_context: CLEF_CONTEXT_TOKENS,
         card_limit: CARD_LIMIT,
         card_ops: Object.keys(CARD_OPS),
         approved: !!arcStore(env),
@@ -3524,7 +3579,8 @@ async function handleChat(request, env, emit) {
   // this person's actual intent rather than another guess.
   const said = Array.isArray(body.clarify) ? body.clarify.filter((c) => c && c.q) : [];
   const told = said.length ? contextCards.concat(said.map((c) => ({ q: c.q, a: c.a }))) : contextCards;
-  const state = [buildState(prompt, told), learned, SHAPE_CARD].filter(Boolean).join("\n\n");
+  const fitted = fitState({ prompt, told, learned, card: SHAPE_CARD });
+  const state = fitted.state;
   const failures = [];
 
   // 1. Decide — clef-flash classifies the request.
@@ -3552,10 +3608,24 @@ async function handleChat(request, env, emit) {
   } catch (err) {
     decisionError = err.message;
     failures.push("clef-flash: " + err.message);
+    // 413 / 5021 is the window, not a broken model. Ask again with less rather
+    // than routing blind, and say so in the trail.
+    if (/context window|5021|too large|exceeded/i.test(err.message)) {
+      step("state", "clef refused the full state, retried with the question alone");
+      try {
+        decision = await decide(env, "New message:\n" + prompt, body.questions);
+        decisionError = null;
+      } catch (again) {
+        decisionError = again.message;
+        failures.push("clef-flash retry: " + again.message);
+      }
+    }
   }
   if (decision && learned) decision.preferences = learned;
   step("decide", decision
-    ? "domain " + decision.domain + " · intent " + decision.intent + " · depth " + decision.depth + (decision.needs_web != null ? " · web " + decision.needs_web : "")
+    ? "domain " + decision.domain + " · intent " + decision.intent + " · depth " + decision.depth + (decision.needs_web != null ? " · web " + decision.needs_web : "") +
+      (decision.shape ? " · shape " + decision.shape : "") +
+      (fitted.trimmed ? " · trimmed " + fitted.dropped + (fitted.dropped === 1 ? " card" : " cards") + (fitted.promptCut ? ", prompt cut" : "") : "")
     : "clef-flash failed: " + decisionError);
 
   // 2. Cache — answered before?
@@ -3957,6 +4027,7 @@ function slimDecision(decision) {
     tone: decision.tone,
     needs_web: decision.needs_web,
     sensitive: decision.sensitive,
+    shape: decision.shape || null,
   };
 }
 

@@ -1379,5 +1379,41 @@ function check(name, cond, extra) {
   check("the score is a ratio, not a raw count", row && row.ok / row.n <= 1, row);
 }
 
+// 32. clef has a 24,576-token window: the state is budgeted, the question is
+// first, and a refused state is retried rather than silently downgraded
+{
+  const long = "context sentence about position sizing. ".repeat(4000);
+  const env = makeEnv({});
+  aiInputs = [];
+  const d = await (await post("/chat", { prompt: long + " SENTINEL-TAIL", cards: [] }, env)).json();
+  check("an oversized prompt still gets an answer", !!d.answer, d.answer);
+  const clefCall = aiInputs.find((x) => x.model.indexOf("clef") >= 0);
+  const state = String(clefCall && clefCall.input ? clefCall.input.state : "");
+  check("the state handed to clef is capped", state.length > 0 && state.length <= 23000 * 3, state.length);
+  check("and the question leads the state", state.indexOf("New message:") === 0, state.slice(0, 40));
+  check("trimming is reported in the trail", JSON.stringify(d.thinking || []).indexOf("trimmed") > 0, (d.thinking || []).map((x) => x.step));
+
+  // a state clef refuses outright, then accepts when it is just the question
+  const strict = makeEnv({});
+  strict.AI = {
+    run: async (model, input) => {
+      aiInputs.push({ model: String(model), input });
+      const st = String((input && input.state) || "");
+      if (String(model).indexOf("clef") >= 0 && st.length > 4500) {
+        throw new Error("AiError: The estimated number of input and maximum output tokens exceeded this model context window limit (24576). code 5021");
+      }
+      if (String(model).indexOf("clef") >= 0) return clef();
+      return { response: "granite answer" };
+    },
+  };
+  aiInputs = [];
+  const r = await (await post("/chat", { prompt: "x".repeat(4000) + " QUESTION", cards: [] }, strict)).json();
+  check("a refused state is retried, not dropped", !!r.answer && (r.thinking || []).some((x) => x.step === "state"), (r.thinking || []).map((x) => x.step));
+  check("the retry still produces a decision", !!(r.decision && r.decision.domain), r.decision);
+  const retried = aiInputs.filter((x) => x.model.indexOf("clef") >= 0);
+  check("the retry carries the question alone", retried.length === 2 && String(retried[1].input.state).indexOf("New message:") === 0, retried.length);
+  check("the window is published in health", (await (await worker.fetch(new Request("https://x/health"), env)).json()).clef_context === 24576, "clef_context");
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

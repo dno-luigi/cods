@@ -120,3 +120,24 @@ So: if the decision model wants to answer a question, that is `chat` on either s
 wants to search its own truths by meaning, that is `embed`. To order candidate truths before
 the router sees them, `rerank`. To read a photo of a page, `responses` with `input_image`. To
 turn a card into audio, `tts`. The endpoint and body for each are in the two files above.
+
+## clef-flash's window, measured
+
+`clef-flash` has a **24,576-token** context window (Cloudflare's own model page). Probed against the live API on 2026-10-31:
+
+| state | result |
+| --- | --- |
+| 163 chars | 200, `input_tokens` 165 |
+| 96,043 chars | 200, `input_tokens` 19,341 |
+| 400,043 chars | **413**, code `5021`: "estimated number of input and maximum output tokens (100056) exceeded this model context window limit (24576)" |
+
+So the platform does **not** trim text state: the request fails. Cloudflare's docs describe truncation to the remaining space, which is true of media tokens and not of a long text state — the probe is the authority here.
+
+What the Worker now does about it:
+
+* `fitState()` budgets the state at **23,000 tokens**, estimated at 3 characters per token (conservative: the probe measured ~4–5). That caps it near 69,000 characters.
+* The question is written **first**, as `New message: …`. History follows newest-first, then the shape card, then the learned preferences. If anything is ever cut, it is old context, never the question.
+* A 413/`5021` is treated as a window problem, not a broken model: the decision is retried once with `"New message: <prompt>"` alone, and the trail records `state`.
+* `GET /health` publishes `clef_context: 24576`, and the decide step reports `trimmed N cards` so a decayed decision is visible rather than silent.
+
+Not covered yet: the *answering* model's own window. `granite-4.0-h-micro` and the rest of the ladder are sent the messages without a budget, and the catalogue does not record Cloudflare context windows yet, so nothing can pick a model that fits a very long input. OpenRouter entries do carry `context`.
