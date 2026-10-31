@@ -6,11 +6,11 @@ before touching anything, then ask him before changing code.
 ## Hard rules (non-negotiable)
 
 - **Never touch a live deployment.** Off limits: the existing front end at
-  `ai-n-spired.com`, `i.nspired.cc`, `orproxy`, and every worker currently
+  `ai-nspired.com`, `i.nspired.cc`, `orproxy`, and every worker currently
   serving traffic. Reading a worker's source through the Cloudflare API is fine.
   Deploying, uploading, deleting or pushing is not. He has said this repeatedly;
   treating a deploy as "just a test" is the failure mode.
-- **The brand and the domain are `ai-n-spired.com`.** No second "i" and no "inspired" in it. He has corrected this more than once: copy it from this line, never from memory.
+- **The brand and the domain are `ai-nspired.com`.** No second "i" and no "inspired" in it. He has corrected this more than once: copy it from this line, never from memory.
 - **Do not create new workers.** He has 58 already. Fix the ones that exist.
 - **Ask before changing code.** He gives decisions; he does not want the decision
   handed back to him as a menu of options, and he does not want an assumption made
