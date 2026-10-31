@@ -176,6 +176,22 @@ const DOMAINS = {
 
 // Typed questions handed to clef-flash. Answers come back keyed by these ids.
 const QUESTIONS = {
+  // The decision model cannot generate, and that is fine: what it can do is say
+  // what kind of call the request needs. Code then picks a model that can make
+  // that call. Shapes outlive model ids, so this list does not go stale.
+  shape: {
+    type: "choice",
+    instructions: "What kind of call answers this prompt?",
+    criteria: {
+      chat: "Text in, text out: an answer, explanation, judgement or steps",
+      embed: "Turning text into vectors, for finding things by meaning",
+      rerank: "Ordering a known set of passages by relevance",
+      image: "Producing a picture",
+      video: "Producing a moving clip",
+      stt: "Turning speech into text",
+      tts: "Turning text into speech",
+    },
+  },
   intent: {
     type: "choice",
     instructions: "What does the user want out of this prompt?",
@@ -1739,6 +1755,62 @@ async function cacheKeyFor(prompt, contextCards, body, env) {
   return "ans:" + (await hashKey(key));
 }
 
+// What actually answered, and whether it worked. Kept in CONTEXT with the other
+// learned preferences, so this needs no extra namespace: it is one more key.
+// The fallback ladder is the safety net; these numbers are what stop it
+// retrying a model that keeps failing and start preferring one that answers.
+const SCORES_KEY = "scores:v1";
+
+function emptyScores() {
+  return { models: {}, updated: null };
+}
+
+async function loadScores(env) {
+  const store = ctxStore(env);
+  if (!store) return emptyScores();
+  try {
+    const raw = await store.get(SCORES_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return parsed && parsed.models && typeof parsed.models === "object" ? parsed : emptyScores();
+  } catch (err) {
+    return emptyScores();
+  }
+}
+
+// Laplace-smoothed, so one lucky answer does not outrank a model with a record,
+// and a model that has never run sits at 0.5 rather than at the bottom.
+function scoreOf(scores, domain, model) {
+  const row = scores && scores.models ? scores.models[model] : null;
+  if (!row) return 0.5;
+  const key = "n:" + (domain || "general");
+  const dn = Number(row[key]) || 0;
+  const n = dn || Number(row.n) || 0;
+  const ok = dn ? Number(row["ok:" + (domain || "general")]) || 0 : Number(row.ok) || 0;
+  return (ok + 1) / (n + 2);
+}
+
+async function noteAttempt(env, domain, model, ok) {
+  const store = ctxStore(env);
+  if (!store || !model) return false;
+  const d = domain || "general";
+  const scores = await loadScores(env);
+  const row = scores.models[model] || { n: 0, ok: 0 };
+  row.n = (Number(row.n) || 0) + 1;
+  row.ok = (Number(row.ok) || 0) + (ok ? 1 : 0);
+  row["n:" + d] = (Number(row["n:" + d]) || 0) + 1;
+  row["ok:" + d] = (Number(row["ok:" + d]) || 0) + (ok ? 1 : 0);
+  row.last = new Date().toISOString();
+  scores.models[model] = row;
+  scores.updated = row.last;
+  const keys = Object.keys(scores.models);
+  if (keys.length > 40) {
+    keys.sort((a, b) => scoreOf(scores, d, a) - scoreOf(scores, d, b));
+    keys.slice(0, keys.length - 40).forEach((k) => delete scores.models[k]);
+  }
+  await store.put(SCORES_KEY, JSON.stringify(scores));
+  return true;
+}
+
 // ─── decision layer ───────────────────────────────────────────────────────────
 
 async function decide(env, state, questions) {
@@ -1752,6 +1824,7 @@ async function decide(env, state, questions) {
   const answers = (res && res.answers) || res || {};
   return {
     intent: readChoice(answers.intent),
+    shape: readChoice(answers.shape),
     domain: readChoice(answers.domain),
     tone: readChoice(answers.tone),
     depth: readScore(answers.depth),
@@ -3645,6 +3718,7 @@ async function handleChat(request, env, emit) {
   //    out with cards, so the send never lands as one flat blob.
   const respond = async ({ answer, provider, trace }) => {
     step("write", provider);
+    await noteAttempt(env, plan.domain, trace && trace[0] ? trace[0].model : null, true);
     let cards = [];
     try {
       cards = await synthesizeCards(env, prompt, answer, decision, wanted, body, failures);
@@ -3694,6 +3768,9 @@ async function handleChat(request, env, emit) {
       .map((m) => String(m || "").trim())
       .filter(Boolean)
   );
+  // Same models, ordered by what has actually answered in this domain before.
+  const scores = await loadScores(env);
+  cfModels.sort((a, b) => scoreOf(scores, plan.domain, b) - scoreOf(scores, plan.domain, a));
   // The proxy answers only when a request asks for it outright, with
   // { proxy: true } (or provider: "orproxy"), optionally naming a preset.
   // An explicit audit is its own thing, not a model answer.
@@ -3771,6 +3848,7 @@ async function handleChat(request, env, emit) {
         failures.push(cfModel + ": empty response");
       } catch (err) {
         failures.push(cfModel + ": " + err.message);
+        await noteAttempt(env, plan.domain, cfModel, false);
       }
     }
   }

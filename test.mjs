@@ -1351,5 +1351,33 @@ function check(name, cond, extra) {
   check("clef is handed the shape card", clefState.indexOf("Call shapes") > 0, clefState.slice(0, 60));
 }
 
+// 31. the chooser: clef says what kind of call, code picks who answers, and the
+// models that answer are the ones tried first next time
+{
+  const ctx = new Map();
+  const env = makeEnv({
+    CONTEXT: {
+      get: async (k) => (ctx.has(k) ? ctx.get(k) : null),
+      put: async (k, v) => { ctx.set(k, v); },
+    },
+  });
+  aiInputs = [];
+  const answered = await (await post("/chat", { prompt: "what is position sizing" }, env)).json();
+  check("a chat request still gets an answer", !!answered.answer, answered.answer);
+
+  const clefCall = aiInputs.find((x) => x.model.indexOf("clef") >= 0);
+  const asked = clefCall && clefCall.input ? clefCall.input.questions : null;
+  check("clef is asked which shape the request needs", !!(asked && asked.shape && asked.shape.criteria.chat), asked && asked.shape);
+
+  const raw = ctx.get("scores:v1");
+  const scores = raw ? JSON.parse(raw) : null;
+  const models = scores && scores.models ? Object.keys(scores.models) : [];
+  check("the model that answered is scored", models.length > 0, models);
+  const row = models.length ? scores.models[models[0]] : null;
+  check("a success is counted, not just an attempt", row && row.ok >= 1 && row.n >= 1, row);
+  check("and it is scored against the domain clef chose", row && row["n:news"] >= 1, row && Object.keys(row));
+  check("the score is a ratio, not a raw count", row && row.ok / row.n <= 1, row);
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
