@@ -1212,6 +1212,13 @@ function check(name, cond, extra) {
     const p = await (await post("/chat", { prompt: "explain funding", model: "preset:truth", use_cache: false }, withKey)).json();
     check("a preset is referenced the documented way", seen.length > 1 && seen[1].body.model === "@preset/truth", seen[1] && seen[1].body.model);
     check("and answers through the key too", p.answer === "openrouter answer", p.answer);
+
+    const tools = [{ type: "openrouter:web_search", parameters: { max_results: 3 } }];
+    await post("/chat", { prompt: "what changed today", model: "openrouter:openai/gpt-4o-mini", tools, max_tool_calls: 4, use_cache: false }, withKey);
+    const sent = seen[seen.length - 1].body;
+    check("server tools travel with the request", Array.isArray(sent.tools) && sent.tools[0].type === "openrouter:web_search", sent.tools);
+    check("and the loop budget too", sent.max_tool_calls === 4, sent.max_tool_calls);
+    check("but a plain request sends no tools", seen[0].body.tools === undefined, seen[0].body.tools);
   } finally {
     globalThis.fetch = real;
   }

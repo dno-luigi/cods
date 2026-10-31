@@ -1402,6 +1402,8 @@ export default {
       default: CF_TEXT_MODELS[0],
       workers: MODEL_CHOICES,
       proxy: { bound: !!env.ORPROXY, presets: proxyPresets(env), default_preset: env.ORPROXY_PRESET || OR_PROXY_PRESET },
+      server_tools: ["openrouter:web_search", "openrouter:datetime", "openrouter:web_fetch"],
+      server_tools_need_key: !env.OPENROUTER_API_KEY,
       openrouter: {
         bound: !!(env.OPENROUTER_API_KEY || env.ORPROXY),
         via: env.OPENROUTER_API_KEY ? "key" : env.ORPROXY ? "proxy" : "none",
@@ -3926,12 +3928,21 @@ async function callOpenRouter(env, model, messages, body) {
       Authorization: "Bearer " + env.OPENROUTER_API_KEY,
       "X-Title": "kards",
     },
-    body: JSON.stringify({
-      model,
-      messages,
-      max_tokens: body.max_tokens || 2000,
-      temperature: body.temperature ?? 0.7,
-    }),
+    body: JSON.stringify(
+      Object.assign(
+        {
+          model,
+          messages,
+          max_tokens: body.max_tokens || 2000,
+          temperature: body.temperature ?? 0.7,
+        },
+        // OpenRouter server tools ride in the request's own tools array
+        // (openrouter:web_search, openrouter:datetime, openrouter:web_fetch),
+        // with max_tool_calls bounding the agent loop. Passed through untouched.
+        Array.isArray(body.tools) && body.tools.length ? { tools: body.tools } : {},
+        body.max_tool_calls != null ? { max_tool_calls: body.max_tool_calls } : {}
+      )
+    ),
   });
 
   const text = await res.text();
