@@ -386,63 +386,34 @@ function check(name, cond, extra) {
 }
 
 
-// A Browser Run binding stand-in: a session is acquired, the CDP socket is
-// scripted, and the session is closed again. `pages` maps the URL that was
-// navigated to the rows that page would render.
-function fakeSocket(handler) {
-  const listeners = { message: [], close: [] };
-  return {
-    accept() {},
-    close() {
-      (listeners.close || []).slice().forEach((fn) => fn());
-    },
-    addEventListener(type, fn) {
-      if (!listeners[type]) listeners[type] = [];
-      listeners[type].push(fn);
-    },
-    removeEventListener(type, fn) {
-      const a = listeners[type] || [];
-      const i = a.indexOf(fn);
-      if (i >= 0) a.splice(i, 1);
-    },
-    send(payload) {
-      const msg = JSON.parse(String(payload));
-      const reply = handler(msg);
-      Promise.resolve().then(() => {
-        (listeners.message || []).slice().forEach((fn) => fn({ data: JSON.stringify(reply) }));
-      });
-    },
-  };
-}
-
+// A Browser Run stand-in: quickAction("scrape") answers in the shape the endpoint
+// really returns. pages(url) gives the rows that page shows, or { rows, title }
+// when the heading is what matters.
 function fakeBrowser(pages, opts) {
-  const state = { sessions: 0, closed: 0, navigated: [] };
+  const state = { calls: 0, navigated: [] };
   const binding = {
-    acquire: async () => {
+    quickAction: async (action, body) => {
+      if (action !== "scrape") throw new Error("unexpected action " + action);
+      state.calls++;
+      state.navigated.push(body && body.url);
       if (opts && opts.acquireError) throw new Error(opts.acquireError);
-      state.sessions++;
-      return { sessionId: "session-" + state.sessions };
-    },
-    connectSession: async () => {
-      const socket = fakeSocket((msg) => {
-        if (msg.method === "Page.navigate") {
-          state.navigated.push(msg.params && msg.params.url);
-          return { id: msg.id, result: {} };
-        }
-        if (msg.method === "Runtime.evaluate") {
-          const url = state.navigated[state.navigated.length - 1];
-          const spec = pages ? pages(url) : [];
-          const rows = Array.isArray(spec) ? spec : (spec && spec.rows) || [];
-          const title = Array.isArray(spec) ? "" : String((spec && spec.title) || "");
-          const body = Array.isArray(spec) ? "" : String((spec && spec.body) || "");
-          return { id: msg.id, result: { result: { value: { rows: rows, total: rows.length, title: title, body: body } } } };
-        }
-        return { id: msg.id, result: {} };
-      });
-      return { webSocket: { fetch: async () => ({ webSocket: socket }) } };
-    },
-    closeSession: async () => {
-      state.closed++;
+      if (opts && opts.httpStatus) {
+        return { status: opts.httpStatus, json: async () => ({ success: false, errors: [{ message: opts.httpError || "failed" }] }) };
+      }
+      const spec = (pages ? pages(body.url) : []) || [];
+      const rows = Array.isArray(spec) ? spec : spec.rows || [];
+      const heading = Array.isArray(spec) ? "" : String(spec.title || "");
+      return {
+        status: 200,
+        json: async () => ({
+          success: true,
+          result: [
+            { selector: "link", results: rows.map((r) => ({ text: r.title || "", attributes: [{ name: "href", value: r.url || "" }] })) },
+            { selector: "snippet", results: rows.map((r) => ({ text: r.description || "", attributes: [] })) },
+            { selector: "title, h1", results: heading ? [{ text: heading, attributes: [] }] : [] },
+          ],
+        }),
+      };
     },
   };
   return { binding: binding, state: state };
@@ -470,7 +441,7 @@ function fakeBrowser(pages, opts) {
     fake.state.navigated.length === 1 && /lite\.duckduckgo\.com\/lite\//.test(fake.state.navigated[0]),
     fake.state.navigated
   );
-  check("the session is opened and closed once", fake.state.sessions === 1 && fake.state.closed === 1, fake.state);
+  check("one scrape is enough for the engine that answers", fake.state.calls === 1, fake.state.calls);
 }
 
 // 12h. a browser that will not open falls through instead of failing the request
@@ -529,6 +500,26 @@ function fakeBrowser(pages, opts) {
   check("both family matches become cards", d.cards.length === 2, d.cards.length);
 }
 
+// 12h2. an http failure from the endpoint is named, not swallowed
+{
+  calls = []; aiInputs = [];
+  const fake = fakeBrowser(null, { httpStatus: 500, httpError: "scrape exploded" });
+  const env = makeEnv({ BROWSER: fake.binding });
+  const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
+  check("an http failure is reported with its status", /browser: bing answered http 500/.test(String(d.search_error)), d.search_error);
+  check("every engine was tried before giving up", fake.state.calls === 4, fake.state.calls);
+  check("and the cards still arrive", !!d.cards && d.cards.length === 3, d.cards && d.cards.length);
+}
+
+// 12l2. a binding too old for quickAction says so and the chain keeps going
+{
+  calls = []; aiInputs = [];
+  const env = makeEnv({ BROWSER: {} });
+  const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
+  check("an old binding is named in the error", /has no quickAction\(\)/.test(String(d.search_error)), d.search_error);
+  check("and the cards still arrive without it", !!d.cards && d.cards.length === 3, d.cards && d.cards.length);
+}
+
 // 12m. the engine's own redirect is not the source
 {
   calls = []; aiInputs = [];
@@ -554,7 +545,7 @@ function fakeBrowser(pages, opts) {
   calls = []; aiInputs = [];
   const fake = fakeBrowser((url) => {
     if (/lite\.duckduckgo\.com/.test(url)) {
-      return { rows: [], title: "", body: "Unfortunately, bots use DuckDuckGo too." };
+      return { rows: [], title: "Unfortunately, bots use DuckDuckGo too." };
     }
     return [
       { url: "https://example.org/one", title: "Cloudflare news one", description: "real" },

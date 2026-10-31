@@ -3,7 +3,7 @@
   "main": "worker.js",
   "workers_dev": true,
   "preview_urls": false,
-  "compatibility_date": "2025-07-01",
+  "compatibility_date": "2026-03-24",
   // @cloudflare/puppeteer reaches for node:buffer, which the Worker runtime
   // only provides with the nodejs_compat flag.
   "compatibility_flags": ["nodejs_compat"],
@@ -14,7 +14,11 @@
   // visitor would. Requires the Workers Paid plan; the search chain skips it
   // whenever this binding is absent, so removing it is always safe.
   "browser": {
-    "binding": "BROWSER"
+    "binding": "BROWSER",
+    // Quick Actions talk to the real Browser Run endpoint. Without this,
+    // `wrangler dev` answers "The RPC receiver does not implement the method
+    // quickAction", so local development drives the real thing.
+    "remote": true
   },
   // Cards are written back to AI Search as notes.
   //   namespace: ai-inspired   instance: NSM   on env.mainspace

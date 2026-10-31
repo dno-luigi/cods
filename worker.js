@@ -2915,164 +2915,97 @@ function relevanceOf(item, terms) {
   return hits;
 }
 
-// Real desktop Chrome on a real page: the JS-driven DuckDuckGo page first,
-// then its server-rendered fallbacks. Bing is last because its edge answers
-// with a did-you-mean page whatever the transport.
+// Sent as the userAgent of every scrape. Browser Run renders with a headless UA
+// by default and DuckDuckGo hands that a document with no results on it, so this
+// is what makes the pages answer.
 const BROWSER_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36";
 
-// Bing first: asked from a datacenter address DuckDuckGo answers html., lite. and
-// the js page with an "anomaly" challenge that contains no results at all, so
-// leading with it spent a session and six seconds per query before reaching a
-// page that had answers on it.
-// Measured through Browser Run with a real UA, two queries each: lite and the
-// DuckDuckGo app page returned ten on-topic rows both times, the html. page
-// returned ten, then one, then none, and Bing answered "latest cloudflare news"
-// with Fox News, CNN and AP homepages and "how to rotate an api token" with the
-// definition of rotate and a rotate-my-PDF tool. Bing drops the query terms, so
-// it is a last resort and the two steady DuckDuckGo pages come first.
+// Measured through Browser Run: lite and the app page returned ten on-topic
+// rows on both test queries, html. returned ten, then one, then none, and Bing
+// answered "latest cloudflare news" with Fox News, CNN and AP homepages and
+// "how to rotate an api token" with the definition of rotate and a rotate-my-PDF
+// tool. Bing drops the query terms, so it is a last resort.
 const BROWSER_ENGINES = [
   {
     name: "ddg-lite",
     url: (q) => "https://lite.duckduckgo.com/lite/?q=" + q,
-    selector: "a.result-link",
+    link: "a.result-link",
+    snippet: ".result-snippet",
+    waitUntil: "domcontentloaded",
   },
   {
     name: "ddg",
     url: (q) => "https://duckduckgo.com/?q=" + q,
-    selector: 'article[data-testid="result"]',
+    link: 'article[data-testid="result"] a[data-testid="result-title-a"]',
+    snippet: '[data-result="snippet"]',
+    // the app page paints its results after the document has loaded
+    waitUntil: "networkidle2",
   },
   {
     name: "ddg-html",
     url: (q) => "https://html.duckduckgo.com/html/?q=" + q,
-    selector: "article.result, div.result",
+    link: "a.result__a",
+    snippet: ".result__snippet",
+    waitUntil: "domcontentloaded",
   },
   {
     name: "bing",
     url: (q) => "https://www.bing.com/search?count=20&q=" + q,
-    selector: "li.b_algo",
+    link: "li.b_algo h2 a",
+    snippet: "li.b_algo p",
+    waitUntil: "domcontentloaded",
   },
 ];
 
-// Browser Run is a typed binding. Acquire a session, connect a CDP socket to
-// it, drive the page over Chrome DevTools Protocol, close the session. There
-// is no puppeteer here and no HTTP endpoint to call: the binding hands back the
-// socket, and the socket is the only way in.
-let cdpSeq = 0;
-
-function cdpCommand(socket, method, params, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    const id = ++cdpSeq;
-    const limit = Number(timeoutMs) || 20000;
-    let finished = false;
-    const done = () => {
-      if (finished) return false;
-      finished = true;
-      clearTimeout(timer);
-      try { socket.removeEventListener("message", onMessage); } catch (err) {}
-      try { socket.removeEventListener("close", onClose); } catch (err) {}
-      return true;
-    };
-    const timer = setTimeout(() => {
-      if (done()) reject(new Error(method + " timed out after " + limit + "ms"));
-    }, limit);
-    function onClose() {
-      if (done()) reject(new Error("browser session closed before " + method));
-    }
-    function onMessage(event) {
-      let msg = null;
-      try { msg = JSON.parse(String((event && event.data) || "")); } catch (err) { return; }
-      if (!msg || msg.id !== id) return;
-      if (!done()) return;
-      if (msg.error) reject(new Error(msg.error.message || method + " failed"));
-      else resolve(msg.result);
-    }
-    socket.addEventListener("message", onMessage);
-    socket.addEventListener("close", onClose);
-    try {
-      socket.send(JSON.stringify({ id: id, method: method, params: params || {} }));
-    } catch (err) {
-      if (done()) reject(err);
-    }
-  });
-}
-
-async function browserSession(env) {
-  if (!env.BROWSER) throw new Error("no BROWSER binding");
-  if (typeof env.BROWSER.acquire !== "function") {
-    throw new Error("BROWSER binding has no acquire(); check the browser binding");
-  }
-  const session = await env.BROWSER.acquire({ keepAlive: 60000 });
-  const sessionId = session && session.sessionId;
-  if (!sessionId) throw new Error("the browser binding returned no session id");
-  const shut = async () => {
-    try { await env.BROWSER.closeSession(sessionId); } catch (err) {}
-  };
-  try {
-    const connection = await env.BROWSER.connectSession(sessionId);
-    if (!connection || !connection.webSocket) throw new Error("the browser binding returned no CDP socket");
-    const upgraded = await connection.webSocket.fetch("https://browser-binding.invalid", {
-      headers: { Upgrade: "websocket" },
-    });
-    if (!upgraded || !upgraded.webSocket) throw new Error("Browser Run did not return a WebSocket");
-    const socket = upgraded.webSocket;
-    socket.accept();
-    return {
-      sessionId: sessionId,
-      socket: socket,
-      close: async () => {
-        try { socket.close(); } catch (err) {}
-        await shut();
-      },
-    };
-  } catch (err) {
-    await shut();
-    throw err;
-  }
-}
-
+// Quick Actions does the driving: one scrape per engine says which element is a
+// result link, which one is its snippet, and what the page heading is. No
+// session to acquire and no CDP socket to close. quickAction() needs
+// compatibility_date 2026-03-24 or later, which wrangler.jsonc carries.
 async function browserPage(env, engine, q) {
-  const session = await browserSession(env);
-  try {
-    await cdpCommand(session.socket, "Page.enable");
-    await cdpCommand(session.socket, "Runtime.enable");
-    await cdpCommand(session.socket, "Emulation.setUserAgentOverride", { userAgent: BROWSER_UA });
-    const nav = await cdpCommand(session.socket, "Page.navigate", { url: engine.url(q) }, 30000);
-    if (nav && nav.errorText) throw new Error("the page did not load: " + nav.errorText);
-    const expression =
-      "(() => {" +
-      " var sel = " + JSON.stringify(engine.selector) + ";" +
-      " var rows = Array.prototype.map.call(document.querySelectorAll(sel), function (row) {" +
-      " var a = row.matches && row.matches('a') ? row : (row.querySelector('h2 a') || row.querySelector('a'));" +
-      " var p = row.querySelector('p');" +
-      " return { url: a ? a.href : '', title: a ? a.textContent.trim() : '', description: p ? p.textContent.trim() : '' };" +
-      " });" +
-      " return { rows: rows, total: rows.length, title: String(document.title || '')," +
-      " body: document.body ? String(document.body.innerText || '').slice(0, 600) : '' };" +
-      "})()";
-    let out = { rows: [], total: 0, title: "", body: "" };
-    // A results page paints after the load event. Poll the document instead of
-    // reading once and deciding the page was empty.
-    for (let attempt = 0; attempt < 16; attempt++) {
-      const res = await cdpCommand(session.socket, "Runtime.evaluate", {
-        expression: expression,
-        returnByValue: true,
-      });
-      const value = res && res.result ? res.result.value : null;
-      if (value && Array.isArray(value.rows)) out = value;
-      if (out.rows.length) break;
-      // A challenge page never fills in, so say what it was instead of polling
-      // an empty document sixteen times.
-      const probe = String(out.title || "") + " " + String(out.body || "");
-      if (/anomaly|just a moment|attention required|unusual traffic|are you a robot|verify you are human|bots use duckduckgo/i.test(probe)) {
-        throw new Error(engine.name + " served a challenge page instead of results");
-      }
-      await new Promise((r) => setTimeout(r, 400));
-    }
-    return out;
-  } finally {
-    await session.close();
+  if (!env.BROWSER) throw new Error("no BROWSER binding");
+  if (typeof env.BROWSER.quickAction !== "function") {
+    throw new Error("BROWSER binding has no quickAction(); the compatibility date is older than 2026-03-24");
   }
+  const res = await env.BROWSER.quickAction("scrape", {
+    url: engine.url(q),
+    elements: [{ selector: engine.link }, { selector: engine.snippet }, { selector: "title, h1" }],
+    userAgent: BROWSER_UA,
+    gotoOptions: { waitUntil: engine.waitUntil || "domcontentloaded" },
+  });
+  const status = res && typeof res.status === "number" ? res.status : 0;
+  if (status >= 400) throw new Error(engine.name + " answered http " + status);
+  let payload = null;
+  try {
+    payload = await res.json();
+  } catch (err) {
+    throw new Error(engine.name + " returned no scrape payload");
+  }
+  if (payload && payload.success === false) {
+    throw new Error(engine.name + " failed the scrape: " + JSON.stringify(payload.errors || {}).slice(0, 160));
+  }
+  // The endpoint answers { success, result: [ { selector, results: [...] } ] }.
+  // A bare array is accepted too, because which of the two comes back through
+  // quickAction() cannot be confirmed without a deploy.
+  const blocks = Array.isArray(payload) ? payload : (payload && Array.isArray(payload.result) ? payload.result : []);
+  const block = (i) => ((blocks[i] && blocks[i].results) || []);
+  const links = block(0);
+  const snippets = block(1);
+  const heading = block(2).map((el) => String(el.text || "")).join(" ").slice(0, 300);
+  const rows = links.map((el, i) => {
+    const href = ((el.attributes || []).filter((a) => a && a.name === "href")[0] || {}).value || "";
+    return {
+      url: href,
+      title: String(el.text || "").trim(),
+      description: String((snippets[i] || {}).text || "").trim(),
+    };
+  });
+  // An empty page that says it is a challenge is worth naming rather than
+  // silently falling through.
+  if (!rows.length && /anomaly|just a moment|attention required|unusual traffic|are you a robot|verify you are human|bots use duckduckgo/i.test(heading)) {
+    throw new Error(engine.name + " served a challenge page instead of results");
+  }
+  return { rows: rows, total: rows.length };
 }
 
 // No results page links straight at its source: Bing wraps every hit in
