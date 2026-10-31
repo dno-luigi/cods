@@ -2925,11 +2925,17 @@ const BROWSER_UA =
 // the js page with an "anomaly" challenge that contains no results at all, so
 // leading with it spent a session and six seconds per query before reaching a
 // page that had answers on it.
+// Measured through Browser Run with a real UA, two queries each: lite and the
+// DuckDuckGo app page returned ten on-topic rows both times, the html. page
+// returned ten, then one, then none, and Bing answered "latest cloudflare news"
+// with Fox News, CNN and AP homepages and "how to rotate an api token" with the
+// definition of rotate and a rotate-my-PDF tool. Bing drops the query terms, so
+// it is a last resort and the two steady DuckDuckGo pages come first.
 const BROWSER_ENGINES = [
   {
-    name: "bing",
-    url: (q) => "https://www.bing.com/search?count=20&q=" + q,
-    selector: "li.b_algo",
+    name: "ddg-lite",
+    url: (q) => "https://lite.duckduckgo.com/lite/?q=" + q,
+    selector: "a.result-link",
   },
   {
     name: "ddg",
@@ -2942,9 +2948,9 @@ const BROWSER_ENGINES = [
     selector: "article.result, div.result",
   },
   {
-    name: "ddg-lite",
-    url: (q) => "https://lite.duckduckgo.com/lite/?q=" + q,
-    selector: "a.result-link",
+    name: "bing",
+    url: (q) => "https://www.bing.com/search?count=20&q=" + q,
+    selector: "li.b_algo",
   },
 ];
 

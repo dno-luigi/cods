@@ -466,8 +466,8 @@ function fakeBrowser(pages, opts) {
     d.cards.map((c) => c.source && c.source.url)
   );
   check(
-    "the page was navigated inside the session, bing first",
-    fake.state.navigated.length === 1 && /bing\.com\/search/.test(fake.state.navigated[0]),
+    "the page was navigated inside the session, duckduckgo lite first",
+    fake.state.navigated.length === 1 && /lite\.duckduckgo\.com\/lite\//.test(fake.state.navigated[0]),
     fake.state.navigated
   );
   check("the session is opened and closed once", fake.state.sessions === 1 && fake.state.closed === 1, fake.state);
@@ -512,7 +512,7 @@ function fakeBrowser(pages, opts) {
   ]);
   const env = makeEnv({ BROWSER: fake.binding });
   const d = await (await post("/chat", { prompt: "what makes a good trading journal", cards: [] }, env)).json();
-  check("the engine that answered is named", /browser\(bing\): dropped 2 of 2 off-topic/.test(String(d.search_error)), d.search_error);
+  check("the engine that answered is named", /browser\(ddg-lite\): dropped 2 of 2 off-topic/.test(String(d.search_error)), d.search_error);
   check("the offending title is quoted back", /first was "Make vs\. Makes"/.test(String(d.search_error)), d.search_error);
 }
 
@@ -553,7 +553,7 @@ function fakeBrowser(pages, opts) {
 {
   calls = []; aiInputs = [];
   const fake = fakeBrowser((url) => {
-    if (/bing\.com/.test(url)) {
+    if (/lite\.duckduckgo\.com/.test(url)) {
       return { rows: [], title: "", body: "Unfortunately, bots use DuckDuckGo too." };
     }
     return [
@@ -563,7 +563,7 @@ function fakeBrowser(pages, opts) {
   });
   const env = makeEnv({ BROWSER: fake.binding });
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
-  check("a challenge page sends it on to the next engine", fake.state.navigated.length === 2 && /duckduckgo/.test(fake.state.navigated[1]), fake.state.navigated);
+  check("a challenge page sends it on to the next engine", fake.state.navigated.length === 2 && /^https:\/\/duckduckgo\.com\//.test(fake.state.navigated[1]), fake.state.navigated);
   check("the next engine's rows are used", d.search_via === "browser" && d.cards.length === 2, d.search_via + "/" + (d.cards || []).length);
 }
 
