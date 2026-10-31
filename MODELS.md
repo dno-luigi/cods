@@ -23,8 +23,8 @@ and `openrouter.ai/api/v1/models` (456 models).
 | **Router fallback (big context)** | `@cf/deepseek-ai/deepseek-v4-pro-0813` (1M), `@cf/moonshotai/kimi-k2.6` (262k), `@cf/zai-org/glm-5.3` (1M) | `particle-ai/particle-1` (1.05M), `openai/gpt-6.1-terra` (1.05M), `minimax/minimax-m3.1-flash` (1.05M) | Whatever clef-flash cannot fit goes here and the card says the router changed. |
 | **Answer / generation** | `@cf/ibm-granite/granite-4.0-h-micro` (**current default, unchanged**), `llama-3.3-70b-instruct-fp8-fast`, `gpt-oss-120b`, `glm-5.3` | whatever the picker names: `openai/gpt-4o-mini`, `deepseek/deepseek-v3.1`, `google/gemini-flash`, `anthropic/claude-haiku`, `meta-llama/llama-70b`, plus `@preset/truth` | Cloudflare stays the default; OpenRouter answers when chosen. |
 | **Summarisation** | `@cf/meta/llama-3.2-3b-instruct` (default), `llama-3.2-1b-instruct` (cheapest) | `z-ai/glm-5.2` ($0.006/M prompt), `openai/gpt-oss-20b`, `inclusionai/ling-3.0-flash` | Cheap and separate from the answerer, so card copy never costs an answer-model call. |
-| **Embeddings** | `@cf/baai/bge-m3` (multilingual, best default), `bge-large-en-v1.5` (1024d), `bge-small-en-v1.5` (384d), `qwen3-embedding-0.6b`, `embeddinggemma-300m` (beta), `plamo-embedding-1b` (Japanese) | an embeddings **router** with `generate` and `listModels` (SDK) — the docs page I read for it carries no path, so confirm the endpoint on the first call | Cloudflare for this one: explicit ids, dimensions and per-token billing, all documented. OpenRouter's router is the alternative if one key must cover everything. |
-| **Reranking** | `@cf/baai/bge-reranker-base` (query + passage → relevance) | not offered — no rerank endpoint in the catalogue or the SDK | Cloudflare, and it is the cheap way to order retrieved truths before they hit the router. |
+| **Embeddings** | `@cf/baai/bge-m3` (multilingual, best default), `bge-large-en-v1.5` (1024d), `bge-small-en-v1.5` (384d), `qwen3-embedding-0.6b`, `embeddinggemma-300m` (beta), `plamo-embedding-1b` (Japanese) | `POST /api/v1/embeddings` — `{model, input, dimensions?}` (e.g. `openai/text-embedding-3-small`, 1536d, `dimensions` lets you shorten it) | Cloudflare for this one: explicit ids, dimensions and per-token billing, all documented, and it runs next to the truth store. |
+| **Reranking** | `@cf/baai/bge-reranker-base` (query + passage → relevance) | `POST /api/v1/rerank` — `{model:"voyageai/rerank-3", query, documents:[...], top_n}` → `results[]` of `{index, relevance_score, document.text}` | Either side. OpenRouter's rerank scores come back with the source text attached, which is handy when the card cites what it ranked. |
 | **Tone / feeling** | `@cf/huggingface/distilbert-sst-2-int8` (POSITIVE/NEGATIVE + score), `llama-guard-3-8b` (safety categories) | any cheap chat model prompted for JSON (`z-ai/glm-5.2`, `openai/gpt-oss-20b`) | distilbert on every request as the free-ish signal; a chat model only when the router asks for nuance (frustration, urgency). |
 | **Intent / domain** | clef itself (typed questions with probabilities), plus embeddings for nearest-known-intent | cheap chat model with a JSON schema | clef first: it already returns the distribution, so intent is a question in the schema rather than another call. |
 | **Image generation** | `@cf/black-forest-labs/flux-1-schnell`, `flux-2-klein-4b`, `flux-2-klein-9b`, `flux-2-dev`, `lucid-origin`, `phoenix-1.0`, `dreamshaper-8-lcm`, `stable-diffusion-xl-base-1.0`, `stable-diffusion-v1-5-inpainting` | `POST /api/v1/images` with `google/gemini-3.1-flash-image`, `google/gemini-3-pro-image`, `google/gemini-nano-banana-2.1`, `openai/gpt-5.4-image-2` | Cloudflare for cheap/fast; OpenRouter's `/images` when quality matters and it is a card worth paying for. |
@@ -53,7 +53,8 @@ So the work per role is genuinely different:
 - summarisation, tone, intent — chat shape, so the existing OpenRouter call works with a cheaper
   model; Cloudflare runs through one model id swap;
 - embeddings — a different shape on both sides (Cloudflare: `{ text: [...] }` in, `{ data: [[...]] }`
-  out; OpenRouter: its embeddings router), and reranking is Cloudflare-only;
+  out; OpenRouter: `{ model, input, dimensions? }` in, OpenAI-style `data[].embedding` out), and
+  reranking is `@cf/baai/bge-reranker-base` in the Worker versus `POST /api/v1/rerank` outside it;
 - ASR and TTS — different endpoints on each side, not a model swap: `POST /api/v1/audio/transcriptions`
   and `POST /api/v1/audio/speech` on OpenRouter (base64 audio in, raw audio bytes out), `env.AI.run`
   on Cloudflare;
@@ -74,3 +75,13 @@ That table is the answer to "are the truths saving properly": `cods` cannot see 
 `AUDITS` today, so nothing in `cods` can confirm, count, or curate a truth. Binding those two ids
 into `cods` (read first, write later) is what turns "I think it stores them" into something we can
 inspect — one binding each, no rewrite of the engine.
+
+## How these paths were checked
+
+Every endpoint above was read from OpenRouter's own docs (`/docs/llms.txt` index, then the
+`multimodal/*` pages and the API reference), not from memory. Where a page did not give the
+path, the route was probed with an unauthenticated `POST`: `/api/v1/rerank`, `/api/v1/embeddings`,
+`/api/v1/audio/speech` and `/api/v1/audio/transcriptions` answer `401` (exists, needs a key),
+while a deliberately wrong path answers `404`. An earlier version of this file called OpenRouter
+"chat-only" because a scan of `GET /api/v1/models` found no audio or image models — that list is
+the **chat** catalogue, so the comparison was blind to the routes that do the other work.
