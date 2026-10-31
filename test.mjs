@@ -938,7 +938,7 @@ function check(name, cond, extra) {
 }
 
 
-// 23. the OpenRouter proxy answers first, on the route it actually serves
+// 23. the OpenRouter proxy is one option, not the default
 {
   const seen = [];
   const env = makeEnv({
@@ -949,28 +949,34 @@ function check(name, cond, extra) {
       },
     },
   });
-  const d = await (await post("/chat", { prompt: "what is a limit order" }, env)).json();
-  check("the proxy answers instead of Workers AI", d.answer === "proxy answer", d.answer);
-  check("and the payload says where it came from", String(d.provider).indexOf("orproxy") > 0, d.provider);
+  const plain = await (await post("/chat", { prompt: "what is a limit order" }, env)).json();
+  check("Workers AI still answers by default", plain.answer === "granite answer", plain.answer);
+  check("and the proxy was never called", seen.length === 0, seen.length);
+
+  const asked = await (await post("/chat", { prompt: "what is a limit order", proxy: true }, env)).json();
+  check("asking for the proxy gets the proxy", asked.answer === "proxy answer", asked.answer);
+  check("and the payload says so", String(asked.provider).indexOf("orproxy") > 0, asked.provider);
   check("it is asked on /api/generate", seen.every((c) => c.url === "https://orproxy/api/generate"), seen.map((c) => c.url));
   check("with the conversation", seen.length && seen[0].body.messages.length >= 2, seen[0] && seen[0].body.messages.length);
-  check("with a preset, because the proxy prefixes @preset/", seen[0].body.model === "truth", seen[0].body.model);
+  check("with the default preset", seen[0].body.model === "truth", seen[0].body.model);
   check("and asked not to stream", seen[0].body.stream === false, seen[0].body.stream);
+
+  const named = await (await post("/chat", { prompt: "what is a limit order", proxy: true, preset: "cheap" }, env)).json();
+  check("a preset can be chosen per request", named.answer === "proxy answer" && seen.some((c) => c.body.model === "cheap"), seen.map((c) => c.body.model));
+
   const health = await (await worker.fetch(new Request("https://cods.example/health"), env)).json();
-  check("health names the proxy and its route", health.orproxy === true && health.orproxy_mode === "/api/generate", health.orproxy_mode);
+  check("health names the proxy, its route and its default preset", health.orproxy === true && health.orproxy_mode === "/api/generate" && health.orproxy_preset === "truth", health.orproxy_mode + "/" + health.orproxy_preset);
 }
 
-// 23b. an empty or broken proxy does not take the answer with it
+// 23b. a broken proxy leaves the normal answer alone
 {
-  const env = makeEnv({
-    ORPROXY: { fetch: async () => new Response(JSON.stringify({ choices: [{ message: { content: "" } }] }), { status: 200 }) },
-  });
-  const d = await (await post("/chat", { prompt: "what is slippage" }, env)).json();
-  check("an empty reply falls through", d.answer === "granite answer", d.answer);
-  const down = makeEnv({ ORPROXY: { fetch: async () => new Response("upstream exploded", { status: 500 }) } });
-  const e = await (await post("/chat", { prompt: "what is a stop order" }, down)).json();
-  check("a 500 falls through too", e.answer === "granite answer", e.answer);
-  check("and nothing blames the proxy in the payload", String(e.provider).indexOf("orproxy") === -1, e.provider);
+  const env = makeEnv({ ORPROXY: { fetch: async () => new Response("upstream exploded", { status: 500 }) } });
+  const d = await (await post("/chat", { prompt: "what is slippage", proxy: true }, env)).json();
+  check("Workers AI covers a failed proxy request", d.answer === "granite answer", d.answer);
+  check("and nothing claims the proxy answered", String(d.provider).indexOf("orproxy") === -1, d.provider);
+  const empty = makeEnv({ ORPROXY: { fetch: async () => new Response(JSON.stringify({ choices: [{ message: { content: "" } }] }), { status: 200 }) } });
+  const e = await (await post("/chat", { prompt: "what is a stop order", proxy: true }, empty)).json();
+  check("an empty envelope is not shown as JSON", e.answer === "granite answer", e.answer);
 }
 
 // 23c. the proxy can be checked from a phone browser
@@ -979,7 +985,7 @@ function check(name, cond, extra) {
   check("a binding with no handler is reported", dead.ok === false && dead.notes.join(" ").indexOf("fetch") >= 0, dead.notes);
   const failed = await (await worker.fetch(new Request("https://cods.example/orproxy"), makeEnv({ ORPROXY: { fetch: async () => new Response("OpenRouter error: 404", { status: 500 }) } }))).json();
   check("the proxy's own error is passed through", failed.ok === false && failed.notes.join(" ").indexOf("OpenRouter error: 404") > 0, failed.notes);
-  const good = await (await worker.fetch(new Request("https://cods.example/orproxy"), makeEnv({
+  const good = await (await worker.fetch(new Request("https://cods.example/orproxy?preset=cheap"), makeEnv({
     ORPROXY: { fetch: async () => new Response(JSON.stringify({ choices: [{ message: { content: "ready" } }] }), { status: 200 }) },
   }))).json();
   check("a working proxy reports the route and reply", good.ok === true && good.via === "fetch /api/generate" && good.reply === "ready", good);

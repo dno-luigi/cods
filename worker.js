@@ -1154,6 +1154,7 @@ export default {
         ocode: !!env.OCODE,
         orproxy: !!env.ORPROXY,
         orproxy_mode: orProxyMode,
+        orproxy_preset: env.ORPROXY_PRESET || OR_PROXY_PRESET,
         search_chain: (env.OCODE ? ["harness"] : [])
           .concat(env.SEARCH_URL ? ["search-url"] : [])
           .concat(env.BROWSER ? ["browser"] : [])
@@ -1187,10 +1188,11 @@ export default {
   if (url.pathname === "/orproxy") {
     if (!env.ORPROXY) return json({ ok: false, error: "ORPROXY is not bound on this Worker" }, 400);
     try {
+      const wanted = url.searchParams.get("preset") || url.searchParams.get("model") || "";
       const hit = await orProxyCall(
         env,
         [{ role: "user", content: "Reply with exactly: ready" }],
-        { max_tokens: 16, temperature: 0 }
+        { max_tokens: 16, temperature: 0, proxy: true, preset: wanted || undefined }
       );
       return json({ ok: true, via: hit.via, model: hit.model, reply: hit.text.slice(0, 200) });
     } catch (err) {
@@ -1361,6 +1363,11 @@ function normalized(s) {
 }
 
 async function cacheKeyFor(prompt, contextCards, body, env) {
+  // A request that asks for the proxy gets its own cache line: an answer from
+  // Workers AI is not an answer to "use this other model".
+  const which = body.proxy === true || String(body.provider || "") === "orproxy"
+    ? "|orproxy:" + String(body.preset || body.model || "")
+    : "";
   const key =
     normalized(prompt) +
     "|" +
@@ -1368,7 +1375,8 @@ async function cacheKeyFor(prompt, contextCards, body, env) {
     "|" +
     (body.model || "") +
     "|" +
-    (env.CF_CHAT_MODEL || "");
+    (env.CF_CHAT_MODEL || "") +
+    which;
   return "ans:" + (await hashKey(key));
 }
 
@@ -2771,6 +2779,10 @@ async function handleChat(request, env, emit) {
   };
 
   const prompt = String(body.prompt || "").trim();
+
+  // Asking for the proxy asks for a fresh answer from that model, so it is
+  // not served from what an earlier Workers AI answer remembered.
+  const proxyWanted = body.proxy === true || String(body.provider || "") === "orproxy";
   if (!prompt) return json({ error: "No prompt" }, 400);
 
   // 0. Approved — a question this person has signed off on answers itself.
@@ -2796,7 +2808,7 @@ async function handleChat(request, env, emit) {
   }
 
   // 0b. Long term — the same question, however long ago it was asked.
-  if (env.LTM && body.use_cache !== false) {
+  if (env.LTM && body.use_cache !== false && !proxyWanted) {
     const remembered = await ltmGet(env, prompt);
     if (remembered) {
       step("memory", "answered before, kept in long-term memory");
@@ -3014,6 +3026,7 @@ async function handleChat(request, env, emit) {
     step("cards", (shaped.length || 1) + " card" + ((shaped.length || 1) === 1 ? "" : "s") + " written");
     return finish(env, key, plan, {
       prompt,
+      longTerm: !proxyWanted,
       related,
       theme,
       thinking,
@@ -3040,9 +3053,9 @@ async function handleChat(request, env, emit) {
       .map((m) => String(m || "").trim())
       .filter(Boolean)
   );
-  // The OpenRouter proxy first: it is the strongest model wired to this Worker,
-  // and Workers AI becomes the fallback rather than the other way round.
-  if (env.ORPROXY) {
+  // The proxy answers only when a request asks for it outright, with
+  // { proxy: true } (or provider: "orproxy"), optionally naming a preset.
+  if (env.ORPROXY && proxyWanted) {
     try {
       const via = await orProxyCall(env, messages, body);
       return respond({
@@ -3270,9 +3283,7 @@ async function askText(env, messages, body) {
       .filter(Boolean)
   );
 
-  // The OpenRouter proxy first: it is the strongest model wired to this Worker,
-  // and Workers AI becomes the fallback rather than the other way round.
-  if (env.ORPROXY) {
+  if (env.ORPROXY && (body.proxy === true || String(body.provider || "") === "orproxy")) {
     try {
       const via = await orProxyCall(env, messages, settings);
       return { text: via.text, provider: "clef-flash → orproxy", trace: [{ source: "orproxy", via: via.via, model: via.model }] };
@@ -3333,7 +3344,7 @@ async function finish(
   env,
   key,
   plan,
-  { prompt, answer, provider, route, decision, sources, trace, searchError, searchVia, related, relatedError, cards, theme, thinking }
+  { prompt, answer, provider, route, decision, sources, trace, searchError, searchVia, related, relatedError, cards, theme, thinking, longTerm }
 ) {
   const payload = {
     answer,
@@ -3387,7 +3398,7 @@ async function finish(
     } catch (err) {}
   }
 
-  if (answer) {
+  if (answer && longTerm !== false) {
     try {
       payload.long_term = await ltmPut(env, prompt, payload);
     } catch (err) {
@@ -3442,7 +3453,11 @@ async function orProxyCall(env, messages, body) {
     throw err;
   }
 
-  const preset = body.preset || env.ORPROXY_PRESET || OR_PROXY_PRESET;
+  // The proxy always asks OpenRouter for "@preset/<name>", so this is a preset
+  // on the proxy's account, not a model slug. An explicit proxy request may
+  // name one (body.preset, or body.model), and ORPROXY_PRESET sets the default.
+  const preset =
+    body.preset || body.orproxy_preset || (body.proxy === true && body.model) || env.ORPROXY_PRESET || OR_PROXY_PRESET;
   const settings = {
     messages,
     model: preset,
