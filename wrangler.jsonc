@@ -66,10 +66,10 @@
       "environment": "production",
       "entrypoint": "OpenCodeAgent"
     },
-    // The OpenRouter proxy: the key, the model choice and any provider pins
-    // stay in that Worker, and cods only asks it for text. Its calling shape
-    // is discovered on first use (see orProxyCall), so an RPC entrypoint and
-    // an OpenAI-style fetch route both work without further config.
+    // The OpenRouter proxy: the key and the model stay in that Worker, and
+    // cods asks it for text at POST /api/generate. It prefixes the model with
+    // "@preset/", so it is sent a preset name ("truth" unless ORPROXY_PRESET
+    // says otherwise), and stream:false so the reply is one normal envelope.
     {
       "binding": "ORPROXY",
       "service": "orproxy",

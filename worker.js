@@ -1189,7 +1189,6 @@ export default {
     try {
       const hit = await orProxyCall(
         env,
-        env.ORPROXY_MODEL || OR_MODELS[0],
         [{ role: "user", content: "Reply with exactly: ready" }],
         { max_tokens: 16, temperature: 0 }
       );
@@ -3045,12 +3044,7 @@ async function handleChat(request, env, emit) {
   // and Workers AI becomes the fallback rather than the other way round.
   if (env.ORPROXY) {
     try {
-      const via = await orProxyCall(
-        env,
-        body.model || env.ORPROXY_MODEL || env.OPENROUTER_MODEL || OR_MODELS[0],
-        messages,
-        body
-      );
+      const via = await orProxyCall(env, messages, body);
       return respond({
         answer: via.text,
         provider: "clef-flash → orproxy",
@@ -3280,12 +3274,7 @@ async function askText(env, messages, body) {
   // and Workers AI becomes the fallback rather than the other way round.
   if (env.ORPROXY) {
     try {
-      const via = await orProxyCall(
-        env,
-        body.model || env.ORPROXY_MODEL || env.OPENROUTER_MODEL || OR_MODELS[0],
-        messages,
-        settings
-      );
+      const via = await orProxyCall(env, messages, settings);
       return { text: via.text, provider: "clef-flash → orproxy", trace: [{ source: "orproxy", via: via.via, model: via.model }] };
     } catch (err) {
       failures.push("orproxy: " + err.message);
@@ -3415,94 +3404,79 @@ async function finish(
   return json(payload);
 }
 
-// The OpenRouter proxy (binding ORPROXY) sits in front of openrouter.ai so the
-// key, the model choice and any provider pins live in one Worker instead of
-// every caller. It publishes no route table, so this tries the two shapes such
-// a proxy takes — an RPC entrypoint's methods, then an OpenAI-style POST — and
-// remembers whichever answered, so the search is paid once per isolate.
+// The OpenRouter proxy (binding ORPROXY) is a fetch Worker: one POST to
+// /api/generate with {messages, model, stream:false}. It prefixes whatever
+// model it is given with "@preset/", so what it wants is a preset name on its
+// own OpenRouter account, not a model slug — "truth" is the one that answers.
+// Anything else 404s at OpenRouter, which is why the preset is the default.
 let orProxyMode = null;
-const OR_PROXY_RPC = [
-  "chat", "chatCompletion", "chatCompletions", "complete", "completion", "completions",
-  "ask", "askModel", "generate", "generateText", "run", "proxy", "proxyChat", "orChat",
-  "openrouter", "openRouter", "callOpenRouter", "callModel", "invoke", "query", "prompt",
-  "answer", "respond", "messages", "text", "llm", "model", "models", "getAnswer",
-];
-const OR_PROXY_PATHS = ["/v1/chat/completions", "/chat/completions", "/"];
+const OR_PROXY_PRESET = "truth";
+const OR_PROXY_PATHS = ["/api/generate"];
 
-// A proxy can hand back plain text, an OpenAI envelope, or either one as a
-// JSON string; all three should reach the card as words.
+// The proxy answers with an OpenAI envelope, but a different proxy (or a
+// preset that streams anyway) could hand back plain text; take either.
 function orProxyText(out) {
   if (typeof out === "string") {
     const raw = out.trim();
     if (!raw) return "";
-    try {
-      const parsed = JSON.parse(raw);
-      const fromJson = textFrom(parsed);
-      if (fromJson) return fromJson;
-    } catch (err) {}
+    // A JSON body that carries no text is an empty answer, not an answer that
+    // happens to look like JSON: the next provider should get its turn.
+    if (raw.charAt(0) === "{" || raw.charAt(0) === "[") {
+      try {
+        return textFrom(JSON.parse(raw));
+      } catch (err) {
+        return "";
+      }
+    }
     return raw;
   }
   return textFrom(out);
 }
 
-async function orProxyCall(env, model, messages, body) {
+async function orProxyCall(env, messages, body) {
   const binder = env.ORPROXY;
   if (!binder) throw new Error("ORPROXY is not bound");
+  if (typeof binder.fetch !== "function") {
+    const err = new Error("ORPROXY has no fetch handler");
+    err.notes = ["fetch: not a method on the binding"];
+    throw err;
+  }
+
+  const preset = body.preset || env.ORPROXY_PRESET || OR_PROXY_PRESET;
   const settings = {
-    model,
     messages,
+    model: preset,
+    stream: false,
     max_tokens: body.max_tokens || 2000,
     temperature: body.temperature ?? 0.7,
   };
+
   const notes = [];
-
-  const attempt = async (mode, run) => {
+  const paths = unique([orProxyMode || "", ...OR_PROXY_PATHS].filter(Boolean));
+  for (const path of paths) {
     try {
-      const text = orProxyText(await run());
-      if (text) return { text, via: mode, model };
-      notes.push(mode + ": empty reply");
-    } catch (err) {
-      notes.push(mode + ": " + ((err && err.message) || String(err)));
-    }
-    return null;
-  };
-
-  const rpc = unique([orProxyMode || "", ...OR_PROXY_RPC].filter(Boolean));
-  for (const name of rpc) {
-    if (typeof binder[name] !== "function") continue;
-    const hit = await attempt(name, () => binder[name](settings));
-    if (hit) {
-      orProxyMode = name;
-      return hit;
-    }
-  }
-
-  if (typeof binder.fetch === "function") {
-    const headers = { "Content-Type": "application/json" };
-    if (env.OPENROUTER_API_KEY) headers.Authorization = "Bearer " + env.OPENROUTER_API_KEY;
-    const cached = orProxyMode && orProxyMode.indexOf("fetch ") === 0 ? orProxyMode.slice(6) : "";
-    const paths = unique([cached, ...OR_PROXY_PATHS].filter(Boolean));
-    for (const path of paths) {
-      const hit = await attempt("fetch " + path, async () => {
-        const res = await binder.fetch("https://orproxy" + path, {
-          method: "POST",
-          headers,
-          body: JSON.stringify(settings),
-        });
-        const text = await res.text();
-        if (!res.ok) throw new Error("HTTP " + res.status + " " + text.slice(0, 160));
-        return text;
+      const res = await binder.fetch("https://orproxy" + path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(settings),
       });
-      if (hit) {
-        orProxyMode = "fetch " + path;
-        return hit;
+      const raw = await res.text();
+      if (!res.ok) {
+        notes.push(path + ": HTTP " + res.status + " " + raw.slice(0, 200));
+        continue;
       }
+      const text = orProxyText(raw);
+      if (text) {
+        orProxyMode = path;
+        return { text, via: "fetch " + path, model: preset };
+      }
+      notes.push(path + ": empty reply");
+    } catch (err) {
+      notes.push(path + ": " + ((err && err.message) || String(err)));
     }
-  } else {
-    notes.push("fetch: not a method");
   }
 
-  const err = new Error(notes.join(" | ") || "no callable way into ORPROXY");
+  const err = new Error(notes.join(" | ") || "no route answered");
   err.notes = notes;
   throw err;
 }
