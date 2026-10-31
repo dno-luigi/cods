@@ -1863,16 +1863,13 @@ function fakeBrowser(pages, opts) {
   const env = makeEnv();
   env.AI.run = async (model, input) => {
     seen.push({ model: String(model), input });
-    if (String(model).indexOf("nova-3") >= 0) {
-      // Whisper's own error, word for word: only a byte array or a binary blob
-      // is accepted. A refusal on the number form must still leave a way through.
-      const audio = input && input.audio;
-      if (!(audio instanceof Uint8Array) && !(audio instanceof ArrayBuffer)) {
-        throw new Error("AiError: 5006: Type mismatch of '/audio', 'string' not in 'array','binary'");
-      }
-      return { results: { channels: [{ alternatives: [{ transcript: "what is a tort" }] }] } };
+    // Measured against the live API: an array of bytes is refused with this
+    // exact error, and a base64 string returns the transcript.
+    const audio = input && input.audio;
+    if (typeof audio !== "string") {
+      throw new Error("AiError: 5006: Type mismatch of '/audio', 'string' not in 'array','binary'");
     }
-    throw new Error("no such model: " + model);
+    return { text: "what is a tort", transcription_info: { language: "en" }, word_count: 3 };
   };
 
   const clip = new Uint8Array([1, 2, 3, 4]);
@@ -1887,14 +1884,13 @@ function fakeBrowser(pages, opts) {
   const d = await r.json();
   check("a spoken question comes back as text", r.status === 200 && d.text === "what is a tort", d);
   check("it is free, with no key or plan asked for", d.free === true, d);
-  check("the dictation model answers it", d.model === "@cf/deepgram/nova-3", d.model);
+  check("the dictation model answers it", d.model === "@cf/openai/whisper-large-v3-turbo", d.model);
   check(
-    "the clip is tried as numbers, then as a binary blob",
-    seen.length === 2 &&
-      Array.isArray(seen[0].input.audio) &&
-      seen[1].input.audio instanceof Uint8Array,
-    seen.map((x) => (x.input.audio instanceof Uint8Array ? "binary" : Array.isArray(x.input.audio) ? "numbers" : typeof x.input.audio))
+    "the clip is sent as base64, the one shape the API accepts",
+    seen.length === 1 && seen[0].input.audio === "AQIDBA==",
+    seen.map((x) => (typeof x.input.audio) + ":" + String(x.input.audio).slice(0, 12))
   );
+  check("nothing is sent to nova-3, which the binding cannot reach", seen.every((x) => x.model.indexOf("nova") < 0), seen.map((x) => x.model));
 
   const get = await worker.fetch(new Request("https://cods.ai-n.workers.dev/stt"), env);
   check("GET is refused", get.status === 405, get.status);

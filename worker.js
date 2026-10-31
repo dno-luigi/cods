@@ -5154,14 +5154,20 @@ function sseText(raw) {
 // returns the citations as message.annotations. A caller that wants the
 // receipts asks for this shape; everything else goes through callOpenRouter.
 // ─── speech in ───────────────────────────────────────────────────────────────
-// Two models, and two input shapes for them: Deepgram's route takes the bytes as
-// a body with a content type, Whisper's takes a plain byte array. The shapes are
-// tried in order and the first that returns text wins, so one model changing its
-// input shape never takes dictation down. Both are on the AI binding, so this
-// needs no key of its own.
+// Whisper-large-v3-turbo is the one that works through the AI binding, and its
+// input is a base64 string. Measured against the live API, not the docs: an
+// array of bytes is refused with "Type mismatch of '/audio', 'string' not in
+// 'array','binary'", and base64 returns the transcript.
+//
+// nova-3 cannot be used from here. Its batch endpoint refuses every JSON shape,
+// the documented {audio:{body,contentType}} included, with "required properties
+// at '/audio' are 'body,contentType'"; the only input it accepts is the raw
+// audio bytes with an audio content type on the request, and the AI binding
+// always sends JSON. Reaching it would need the REST API and an account key,
+// and dictation does not get a key.
 const STT_MAX_BYTES = 8388608;
 const STT_DAILY_CLIPS = 120;
-const STT_MODELS = ["@cf/deepgram/nova-3", "@cf/openai/whisper-large-v3-turbo"];
+const STT_MODELS = ["@cf/openai/whisper-large-v3-turbo"];
 
 function sttText(res) {
   if (!res) return "";
@@ -5177,21 +5183,19 @@ function sttText(res) {
   return String(out || "").trim();
 }
 
-// Whisper rejects anything that is not a byte array or a binary blob — "Type
-// mismatch of '/audio', 'string' not in 'array','binary'" — while Deepgram takes
-// the bytes as a body with a content type. All three are offered, cheapest first,
-// so a model changing its mind costs one validation error and never dictation.
-function sttShapes(clip, format) {
-  const view = new Uint8Array(clip);
-  return [
-    { audio: Array.from(view) },
-    { audio: view },
-    { audio: { body: clip, contentType: format } },
-  ];
+// The clip arrives as bytes and the model wants them base64. Chunked so a
+// multi-megabyte clip cannot blow the argument limit of fromCharCode.
+function sttShapes(clip) {
+  const bytes = new Uint8Array(clip);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  }
+  return [{ audio: btoa(bin) }];
 }
 
 async function transcribe(env, clip, format) {
-  const shapes = sttShapes(clip, format);
+  const shapes = sttShapes(clip);
   let last = null;
   for (const model of STT_MODELS) {
     for (const input of shapes) {
