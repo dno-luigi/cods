@@ -1514,10 +1514,6 @@ $('fsFlip').onclick = function () {
 // Speak your question: recorded here, transcribed by the Worker, dropped into
 // the prompt so it can be corrected before it is sent. Free and always on.
 var MR = null, RCH = [], MBUSY = false;
-// Real-time dictation rides nova-3's socket in linear16 PCM. The clip keeps
-// recording beside it: if the socket cannot carry the words, the batch route
-// still does, so nothing is lost on a browser that will not stream.
-var STT_WS = null, STT_AC = null, STT_SP = null, STT_GAIN = null, STT_TEXT = '';
 function micDone(text) {
   var box = $('prompt');
   if (!text) return;
@@ -1529,72 +1525,6 @@ function micStop() {
   var b = $('mic');
   if (b) { b.classList.remove('on'); b.textContent = 'mic'; }
   if (MR && MR.state !== 'inactive') { try { MR.stop(); } catch (e) {} }
-  micStreamStop();
-}
-
-function micStreamStart(stream) {
-  STT_TEXT = '';
-  try {
-    var Ctx = window.AudioContext || window.webkitAudioContext;
-    if (!Ctx || !window.WebSocket) return;
-    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    var ws = new WebSocket(proto + '//' + location.host + '/stt/ws');
-    STT_WS = ws;
-    ws.binaryType = 'arraybuffer';
-    ws.onmessage = function (e) {
-      if (typeof e.data !== 'string') return;
-      var m = null;
-      try { m = JSON.parse(e.data); } catch (err) { return; }
-      var alt = m.channel && m.channel.alternatives && m.channel.alternatives[0];
-      var said = m.transcript || (alt && alt.transcript) || '';
-      if (!said) return;
-      var last = m.event === 'EndOfTurn' || m.is_final === true || m.speech_final === true;
-      if (last) STT_TEXT = (STT_TEXT + ' ' + said).trim();
-      else toast('Hearing: ' + said.slice(0, 40));
-    };
-    ws.onopen = function () {
-      try {
-        STT_AC = new Ctx();
-        var rate = STT_AC.sampleRate || 48000;
-        var src = STT_AC.createMediaStreamSource(stream);
-        var sp = STT_AC.createScriptProcessor(1024, 1, 1);
-        var gain = STT_AC.createGain();
-        gain.gain.value = 0;
-        sp.onaudioprocess = function (ev) {
-          if (!STT_WS || STT_WS.readyState !== 1) return;
-          var input = ev.inputBuffer.getChannelData(0);
-          var step = rate / 16000;
-          var n = Math.floor(input.length / step);
-          if (n < 1) return;
-          var pcm = new Int16Array(n);
-          for (var i = 0; i < n; i++) {
-            var s = input[Math.min(input.length - 1, Math.floor(i * step))] || 0;
-            s = s < -1 ? -1 : s > 1 ? 1 : s;
-            pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-          }
-          try { STT_WS.send(pcm.buffer); } catch (err) {}
-        };
-        src.connect(sp);
-        sp.connect(gain);
-        gain.connect(STT_AC.destination);
-        STT_SP = sp; STT_GAIN = gain;
-      } catch (err) {}
-    };
-  } catch (err) {
-    STT_WS = null;
-  }
-}
-
-function micStreamStop() {
-  try { if (STT_AC && STT_AC.close) STT_AC.close(); } catch (e) {}
-  try { if (STT_SP) STT_SP.disconnect(); } catch (e) {}
-  try { if (STT_GAIN) STT_GAIN.disconnect(); } catch (e) {}
-  STT_AC = null; STT_SP = null; STT_GAIN = null;
-  var ws = STT_WS;
-  STT_WS = null;
-  if (!ws) return;
-  try { ws.send(JSON.stringify({ type: 'Close' })); } catch (e) {}
-  setTimeout(function () { try { ws.close(); } catch (e) {} }, 400);
 }
 function micStart() {
   if (MBUSY) return;
@@ -1613,23 +1543,17 @@ function micStart() {
       stream.getTracks().forEach(function (t) { t.stop(); });
       MBUSY = false;
       var blob = new Blob(RCH, { type: (mime || 'audio/webm').split(';')[0] });
+      if (!blob.size) { b.textContent = 'mic'; return toast('Nothing recorded'); }
       b.textContent = '...';
-      // nova-3 finishes the turn after the audio stops, so the final transcript
-      // gets a moment before the recorded clip is sent instead.
-      setTimeout(function () {
-        if (STT_TEXT) { b.textContent = 'mic'; return micDone(STT_TEXT); }
-        if (!blob.size) { b.textContent = 'mic'; return toast('Nothing recorded'); }
-        fetch('/stt', { method: 'POST', headers: { 'Content-Type': blob.type }, body: blob })
-          .then(function (r) { return r.json(); })
-          .then(function (d) {
-            b.textContent = 'mic';
-            if (d && d.text) return micDone(d.text);
-            toast((d && d.error) || 'Could not hear that');
-          })
-          .catch(function () { b.textContent = 'mic'; toast('Could not hear that'); });
-      }, 900);
+      fetch('/stt', { method: 'POST', headers: { 'Content-Type': blob.type }, body: blob })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          b.textContent = 'mic';
+          if (d && d.text) return micDone(d.text);
+          toast((d && d.error) || 'Could not hear that');
+        })
+        .catch(function () { b.textContent = 'mic'; toast('Could not hear that'); });
     };
-    micStreamStart(stream);
     MR.start();
     b.classList.add('on');
     b.textContent = 'stop';
@@ -1884,22 +1808,6 @@ export default {
   // long question should never meet a paywall, so this route has no key and no
   // plan check. It is bounded by clip size and by a per-address daily count, so
   // one script cannot spend the account's whole allowance.
-  // Real-time dictation: the binding opens nova-3's own socket, so the page can
-  // stream PCM and get words back as they are spoken. Free like the rest.
-  if (url.pathname === "/stt/ws") {
-    if (String(request.headers.get("upgrade") || "").toLowerCase() !== "websocket") {
-      return json({ error: "Connect with a WebSocket" }, 426);
-    }
-    if (!env.AI) return json({ error: "The AI binding is not available here" }, 503);
-    const socketOver = await sttBudget(env, request);
-    if (socketOver) return json({ error: socketOver }, 429);
-    return env.AI.run(
-      STT_STREAM_MODEL,
-      { encoding: "linear16", sample_rate: "16000", eot_threshold: "0.7", eot_timeout_ms: "2000" },
-      { websocket: true }
-    );
-  }
-
   if (url.pathname === "/stt") {
     if (request.method !== "POST") {
       return json({ error: "Use POST with the audio as the body" }, 405);
@@ -5260,11 +5168,6 @@ function sseText(raw) {
 const STT_MAX_BYTES = 8388608;
 const STT_DAILY_CLIPS = 120;
 const STT_MODELS = ["@cf/openai/whisper-large-v3-turbo"];
-
-// nova-3 takes no clip: its batch endpoint refuses JSON and only accepts a raw
-// body the binding cannot send. Its streaming endpoint is reachable through the
-// binding, and asks for raw signed little-endian 16-bit PCM at a stated rate.
-const STT_STREAM_MODEL = "@cf/deepgram/nova-3";
 
 function sttText(res) {
   if (!res) return "";
