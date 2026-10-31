@@ -952,6 +952,7 @@ function askBody(p, ctx) {
   var b = { prompt: p, cards: ctx, stream: true };
   var m = S.model;
   if (!m) return b;
+  if (m.audit) { b.audit = true; return b; }
   if (m.proxy) { b.proxy = true; if (m.preset) b.preset = m.preset; }
   else if (m.cf) { b.model = m.cf; b.cf_models = [m.cf]; }
   return b;
@@ -1036,6 +1037,10 @@ function openModels() {
   fetch('/models').then(function (r) { return r.json(); }).then(function (d) {
     MODELS = d;
     var out = '<div class="row"><button data-pick="0">auto — decision model</button></div>';
+    if (d.audit && d.audit.bound) {
+      out += '<div class="sect"><h4>Truth Engine</h4><div class="row"><button data-pick="a">audit this</button></div>' +
+        '<p style="font-size:11px;color:var(--dim);margin:6px 0 0;line-height:1.5">Runs the structural audit on the question and returns it as a card.</p></div>';
+    }
     out += '<div class="sect"><h4>Cloudflare</h4><div class="row">';
     (d.workers || []).forEach(function (m, i) { out += '<button data-pick="' + (i + 1) + '">' + esc(m.label) + '</button>'; });
     out += '</div></div>';
@@ -1058,6 +1063,7 @@ document.addEventListener('click', function (e) {
   var v = b.getAttribute('data-pick') || '';
   e.preventDefault();
   if (v === '0') return keepModel(null);
+  if (v === 'a') return keepModel({ label: 'audit', store: 'audit', audit: true });
   if (v === 'x') {
     var slug = (window.prompt('OpenRouter model or preset name', '') || '').trim();
     if (!slug) return;
@@ -1378,6 +1384,7 @@ export default {
       workers: MODEL_CHOICES,
       proxy: { bound: !!env.ORPROXY, presets: proxyPresets(env), default_preset: env.ORPROXY_PRESET || OR_PROXY_PRESET },
       openrouter: { bound: !!env.ORPROXY, models: proxyPresets(env) },
+      audit: { bound: !!env.ORPROXY, route: "/v1/audit", preset: env.ORPROXY_PRESET || OR_PROXY_PRESET },
       chosen: prefs.model || null,
     });
   }
@@ -1548,24 +1555,29 @@ function normalized(s) {
 // What this question should run on: an explicit pick, the model this person
 // chose last time, or nothing so the usual order applies.
 async function pickModel(env, body) {
+  if (body.audit === true || String(body.model || "").trim() === "audit") return { audit: true };
   if (body.proxy === true || String(body.provider || "") === "orproxy") {
     return { proxy: true, preset: String(body.preset || "").trim() };
   }
   const wanted = String(body.model || "").trim();
   if (wanted.indexOf("@cf/") === 0) return { cf: wanted };
   if (wanted.indexOf("proxy:") === 0) return { proxy: true, preset: wanted.slice(6) };
+  if (wanted === "audit") return { audit: true };
   const saved = String((await loadPrefs(env)).model || "").trim();
   if (saved.indexOf("@cf/") === 0) return { cf: saved, learned: true };
   if (saved.indexOf("proxy:") === 0) return { proxy: true, preset: saved.slice(6), learned: true };
+  if (saved === "audit") return { audit: true, learned: true };
   return {};
 }
 
 async function cacheKeyFor(prompt, contextCards, body, env) {
   // A request that asks for the proxy gets its own cache line: an answer from
   // Workers AI is not an answer to "use this other model".
-  const which = body.proxy === true || String(body.provider || "") === "orproxy"
-    ? "|orproxy:" + String(body.preset || body.model || "")
-    : "";
+  const which = body.audit === true
+    ? "|audit"
+    : body.proxy === true || String(body.provider || "") === "orproxy"
+      ? "|orproxy:" + String(body.preset || body.model || "")
+      : "";
   const key =
     normalized(prompt) +
     "|" +
@@ -3068,7 +3080,7 @@ async function handleChat(request, env, emit) {
   }
 
   // 0b. Long term — the same question, however long ago it was asked.
-  if (env.LTM && body.use_cache !== false && !proxyWanted) {
+  if (env.LTM && body.use_cache !== false && !proxyWanted && body.audit !== true) {
     const remembered = await ltmGet(env, prompt);
     if (remembered) {
       step("memory", "answered before, kept in long-term memory");
@@ -3336,6 +3348,20 @@ async function handleChat(request, env, emit) {
   );
   // The proxy answers only when a request asks for it outright, with
   // { proxy: true } (or provider: "orproxy"), optionally naming a preset.
+  // An explicit audit is its own thing, not a model answer.
+  if (pick.audit && env.ORPROXY) {
+    try {
+      const audited = await auditCall(env, prompt, body);
+      return respond({
+        answer: audited.text,
+        provider: "clef-flash → audit · truth",
+        trace: [{ source: "orproxy", via: "/v1/audit", model: "truth" }],
+      });
+    } catch (err) {
+      failures.push("audit: " + err.message);
+    }
+  }
+
   if (pick.cf) cfModels.unshift(pick.cf);
 
   if (env.ORPROXY && proxyWanted) {
@@ -3777,6 +3803,55 @@ async function orProxyCall(env, messages, body) {
   const err = new Error(notes.join(" | ") || "no route answered");
   err.notes = notes;
   throw err;
+}
+
+// The Truth Engine audit lives on the proxy: POST /v1/audit takes the subject
+// as {content} and answers with the audit, either as one envelope or as a
+// stream of server-sent events. Both are reduced to the text of the card.
+async function auditCall(env, content, body) {
+  const binder = env.ORPROXY;
+  if (!binder || typeof binder.fetch !== "function") throw new Error("ORPROXY is not bound");
+  const res = await binder.fetch("https://orproxy/v1/audit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      content,
+      type: String(body.audit_type || "docket"),
+      stream: false,
+      audit_id: body.audit_id || undefined,
+    }),
+  });
+  const raw = await res.text();
+  if (!res.ok) throw new Error("HTTP " + res.status + " " + raw.slice(0, 200));
+  const text = sseText(raw);
+  if (!text) throw new Error("the audit came back empty");
+  return { text };
+}
+
+// An audit can arrive as an OpenAI envelope or as "data: {...}" lines; both
+// carry the words in choices[0].message.content or choices[0].delta.content.
+function sseText(raw) {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) return "";
+  if (trimmed.charAt(0) === "{") {
+    try {
+      const fromJson = textFrom(JSON.parse(trimmed));
+      if (fromJson) return fromJson;
+    } catch (err) {}
+  }
+  let out = "";
+  for (const line of trimmed.split("\n")) {
+    if (line.indexOf("data:") !== 0) continue;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === "[DONE]") continue;
+    try {
+      const parsed = JSON.parse(payload);
+      const choice = parsed.choices && parsed.choices[0];
+      const piece = choice && (choice.delta ? choice.delta.content : choice.message ? choice.message.content : "");
+      if (typeof piece === "string") out += piece;
+    } catch (err) {}
+  }
+  return out.trim();
 }
 
 async function callOpenRouter(env, model, messages, body) {

@@ -1185,5 +1185,41 @@ function check(name, cond, extra) {
   check("and health says CACHE is absent", health.memory.cache === false, health.memory.cache);
 }
 
+
+// 27. the Truth Engine audit is a card you can pick
+{
+  const seen = [];
+  const env = makeEnv({
+    ORPROXY: { fetch: async (url, init) => {
+      seen.push({ url: String(url), body: JSON.parse(init.body) });
+      return new Response(JSON.stringify({ choices: [{ message: { content: "# Audit\n\nStructural findings: the docket is missing a proof of service." } }] }), { status: 200 });
+    } },
+  });
+  const list = await (await worker.fetch(new Request("https://cods.example/models"), env)).json();
+  check("the picker offers the audit", list.audit && list.audit.bound === true && list.audit.route === "/v1/audit", list.audit);
+  const d = await (await post("/chat", { prompt: "review this docket", audit: true }, env)).json();
+  check("the audit route is the one called", seen.length > 0 && seen[0].url === "https://orproxy/v1/audit", seen.map((s) => s.url));
+  check("it gets the question as its content", seen[0].body.content === "review this docket", seen[0].body);
+  check("and is asked not to stream", seen[0].body.stream === false, seen[0].body.stream);
+  check("the audit comes back as the answer", String(d.answer).indexOf("Structural findings") > 0, d.answer);
+  check("and the card says it is an audit", String(d.provider).indexOf("audit") > 0, d.provider);
+}
+
+// 27b. an audit that streams as events is still read into one card
+{
+  const sse = 'data: {"choices":[{"delta":{"content":"# Audit"}}]}\n\ndata: {"choices":[{"delta":{"content":" body"}}]}\n\ndata: [DONE]\n';
+  const env = makeEnv({ ORPROXY: { fetch: async () => new Response(sse, { status: 200 }) } });
+  const d = await (await post("/chat", { prompt: "audit this", audit: true }, env)).json();
+  check("a streamed audit becomes one answer", d.answer === "# Audit body", d.answer);
+}
+
+// 27c. the audit appears in the picker on the page
+{
+  const html = await (await worker.fetch(new Request("https://cods.example/"), makeEnv({}))).text();
+  ['data-pick="a"', "audit this", "Runs the structural audit"].forEach(function (n) {
+    check("page has " + n, html.indexOf(n) >= 0, n);
+  });
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
