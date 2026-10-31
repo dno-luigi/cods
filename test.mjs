@@ -347,7 +347,7 @@ function check(name, cond, extra) {
 }
 
 
-// 12e. searchno longer waits for clef's permission, and cards never echo the prompt
+// 12e. clef decides whether the internet is touched, and cards never echo the prompt
 {
   calls = []; aiInputs = [];
   const env = makeEnv();
@@ -366,9 +366,11 @@ function check(name, cond, extra) {
     '<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fa.example%2F2">Two</a><a class="result__snippet">second</a></div>',
   ].join("");
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
-  check("search runs even when clef says no web", d.search_via === "duckduckgo", d.search_via);
-  check("those sources become cards", d.cards && d.cards.length === 2, d.cards && d.cards.length);
+  check("clef says no web, so nothing goes out", d.search_via == null, d.search_via);
+  check("the answer still arrives without sources", d.answer === "deepseek answer", d.answer);
   check("no card echoes the instruction", d.cards.every((c) => !/never open with/i.test(String(c.a))), d.cards.map((c) => c.a));
+  const forced = await (await post("/chat", { prompt: "latest cloudflare news", cards: [], search: "yes", use_cache: false }, env)).json();
+  check("search:yes still forces the web for one request", forced.search_via === "duckduckgo", forced.search_via);
   ddgBody = null;
 }
 

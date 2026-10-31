@@ -3,7 +3,8 @@
 // Pipeline per card:
 //   1. cache      — has this already been answered?
 //   2. decide     — clef-flash classifies intent / domain / need-for-web / care / depth / tone
-//   3. search     — OpenRouter's web plugin, then a real page through BROWSER
+//   3. search     — only when decide() asks for the web: OpenRouter's web plugin,
+//                    then a real page through BROWSER
 //   4. answer     — OpenRouter or a Workers AI chat model, grounded in the sources
 //
 // Bindings: AI (clef + Workers AI), BROWSER (real pages), KV (answer cache)
@@ -4202,10 +4203,12 @@ async function handleChat(request, env, emit) {
   let sources = [];
   let searchError = null;
   let searchVia = null;
-  // The decision layer no longer gates search: a hit from the cache was
-  // already served above, so everything else looks for sources before the
-  // model speaks. use_web:false still turns it off for one request.
-  if (body.use_web !== false) {
+  // The decision model decides whether the internet is needed: plan.search is
+  // its answer (intent, domain and needs_web). Only then does anything go out.
+  // use_web:false forces it off for one request; search:"yes"/"no" overrides
+  // the model for that request, via decision.needs_web above.
+  const wantsWeb = !!plan.search && body.use_web !== false;
+  if (wantsWeb) {
     try {
       const found = await webSearch(env, prompt);
       sources = found.sources || [];
@@ -4394,9 +4397,10 @@ async function handleChat(request, env, emit) {
     const target = pick.preset ? "@preset/" + pick.preset : pick.model;
     if (env.OPENROUTER_API_KEY) {
       try {
-        // The answer path is grounded: the plugin searches before the model
-        // speaks, and the citation annotations come back out as sources.
-        const grounded = body.use_web !== false && body.web !== false;
+        // The answer path is grounded only when the decision asked for the
+        // web: the plugin searches before the model speaks and its citation
+        // annotations come back out as sources.
+        const grounded = wantsWeb && body.web !== false;
         const via = await openRouterCall(
           env,
           target,
