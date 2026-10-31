@@ -904,5 +904,38 @@ function check(name, cond, extra) {
   check("nothing still clips the card body", !/\.card-a\{[^}]*max-height/.test(css) && !/\.card-a\{[^}]*line-clamp/.test(css), "ok");
 }
 
+
+// 22. answers render as markdown, with no loose asterisks
+{
+  const html = await (await worker.fetch(new Request("https://cods.example/"), makeEnv({}))).text();
+  const a = html.indexOf("function stripDangling(");
+  const b = html.indexOf("/* end-md */");
+  check("the renderer ships in the page", a > -1 && b > a, a + ":" + b);
+  const esc = (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const lib = new Function("esc", html.slice(a, b) + "; return { md: md, stripDangling: stripDangling }; ")(esc);
+  const bold = lib.md("**bold** and *soft* and `x = 1`");
+  check("bold becomes bold", bold.includes("<strong>bold</strong>"), bold);
+  check("italics become italics", bold.includes("<em>soft</em>"), bold);
+  check("inline code stays code", bold.includes("<code>x = 1</code>"), bold);
+  check("no asterisks survive", !bold.includes("*"), bold);
+  const lists = lib.md("## Why\n\n- first\n- second\n\n1. one\n2. two");
+  check("headings render", lists.includes("<h3>Why</h3>"), lists);
+  check("bullets render", lists.includes("<ul><li>first</li>") && lists.includes("</ul>"), lists);
+  check("numbered lists render", lists.includes("<ol><li>one</li>"), lists);
+  const code = lib.md("```js\nlet a = 1 * 2;\n```");
+  check("a code block keeps its own asterisk", code.includes("<pre><code>let a = 1 * 2;</code></pre>"), code);
+  const table = lib.md("| a | b |\n| --- | --- |\n| 1 | 2 |");
+  check("tables render", table.includes("<table") && table.includes("<th>a</th>") && table.includes("<td>1</td>"), table);
+  const link = lib.md("see [docs](https://example.com/x)");
+  check("links render", link.includes('<a href="https://example.com/x"'), link);
+  const messy = lib.md("5 * 3 and **unfinished plus ***more");
+  check("stray markers are dropped", !messy.includes("*"), messy);
+  check("half-typed markers do not flash", lib.stripDangling("hello **bo") === "hello **bo" && lib.stripDangling("hello **") === "hello ", lib.stripDangling("hello **"));
+  const quote = lib.md("> quoted\n\n---\n\nafter");
+  check("quotes and rules render", quote.includes("<blockquote>quoted</blockquote>") && quote.includes("<hr>"), quote);
+  check("typing renders as it goes", html.includes("md(stripDangling(text.slice(0, i)))"), "ok");
+  check("markdown has real styling", html.includes(":is(.card-a,.fs-body) strong{font-weight:700}") && html.includes("list-style:disc"), "ok");
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
