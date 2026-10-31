@@ -1136,7 +1136,7 @@ export default {
       }
       const store = ctxStore(env);
       if (!store) return json({ cards: [], saved: false });
-      const raw = await store.get(key);
+      const raw = await readMoved(env, store, key);
       let cards = [];
       let theme = null;
       try {
@@ -2046,7 +2046,7 @@ async function loadPrefs(env) {
   const store = ctxStore(env);
   if (!store) return empty;
   try {
-    const raw = await store.get(PREFS_KEY);
+    const raw = await readMoved(env, store, PREFS_KEY);
     if (!raw) return empty;
     const parsed = JSON.parse(raw) || {};
     return {
@@ -2248,6 +2248,19 @@ function arcStore(env) {
   return env.ARCHIVE || env.KV || null;
 }
 
+// Anything saved before the stores were split still sits in KV under the same
+// key. Reads fall back to it so a phone that was already in use keeps its
+// deck, its learned preferences and its approvals; the next write moves them.
+async function readMoved(env, store, key) {
+  try {
+    const raw = await store.get(key);
+    if (raw || !env.KV || env.KV === store) return raw;
+    return await env.KV.get(key);
+  } catch (err) {
+    return null;
+  }
+}
+
 const THEMES = {
   default: { name: "default", primary: "#c41e3a", bg: "#101014", card: "#1c1c25", text: "#f2f2f6", line: "#2c2c38" },
   light: { name: "light", primary: "#c41e3a", bg: "#f3f3f7", card: "#ffffff", text: "#15151b", line: "#dcdce6" },
@@ -2316,7 +2329,7 @@ async function loadApproved(env) {
   const store = arcStore(env);
   if (!store) return empty;
   try {
-    const raw = await store.get(APPROVED_KEY);
+    const raw = await readMoved(env, store, APPROVED_KEY);
     if (!raw) return empty;
     const parsed = JSON.parse(raw) || {};
     return { items: parsed.items && typeof parsed.items === "object" ? parsed.items : {} };

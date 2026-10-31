@@ -870,5 +870,26 @@ function check(name, cond, extra) {
   check("health sees the bucket", health.memory.ltm === true, health.memory);
 }
 
+
+// 20c. what was saved before the split is still readable
+{
+  const ctx = new Map();
+  const kv = new Map();
+  kv.set("prefs:v1", JSON.stringify({ actions: { wrong: 2 }, domains: { finance: 1 }, events: [], updated: "2026-01-01T00:00:00.000Z" }));
+  kv.set("approved:v1", JSON.stringify({ items: { hABC: { q: "old approval", cards: [{ q: "old approval", a: "kept" }], rank: 5 } } }));
+  kv.set("deck:olddeck1", JSON.stringify({ cards: [{ q: "old card", a: "old answer" }], theme: { name: "ocean", primary: "#3d8bd4", bg: "#0b1017", card: "#121a24", text: "#e8f1fa", line: "#22303d" } }));
+  const env = makeEnv({
+    CONTEXT: { get: async (k) => ctx.get(k) || null, put: async (k, v) => ctx.set(k, v) },
+    KV: { get: async (k) => kv.get(k) || null, put: async (k, v) => kv.set(k, v) },
+  });
+  const prefs = await (await worker.fetch(new Request("https://cods.example/prefs"), env)).json();
+  check("old preferences still show", prefs.actions.wrong === 2, prefs.actions);
+  const deck = await (await worker.fetch(new Request("https://cods.example/deck?id=olddeck1"), env)).json();
+  check("an old deck still loads", deck.cards.length === 1 && deck.theme.name === "ocean", deck.theme);
+  const list = await (await worker.fetch(new Request("https://cods.example/approved"), env)).json();
+  check("old approvals still answer", list.count === 1 && list.items[0].q === "old approval", list.items);
+  check("nothing was rewritten behind the scenes", ctx.size === 0, [...ctx.keys()]);
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
