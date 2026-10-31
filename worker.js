@@ -2224,6 +2224,11 @@ function normalized(s) {
 // What this question should run on: an explicit pick, the model this person
 // chose last time, or nothing so the usual order applies.
 async function pickModel(env, body) {
+  // An audit is not a model answer: it asks the proxy to audit. The flag has to
+  // survive the pick, and the proxy branch below returned before it ever did.
+  if (body.audit === true) {
+    return { proxy: true, preset: String(body.preset || "").trim(), audit: true };
+  }
   if (body.proxy === true || String(body.provider || "") === "orproxy") {
     return { proxy: true, preset: String(body.preset || "").trim() };
   }
