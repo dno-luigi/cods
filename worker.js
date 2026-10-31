@@ -1181,7 +1181,25 @@ export default {
       });
     }
 
-    if (url.pathname === "/prefs") {
+    // POST nothing: this asks the proxy one tiny question and reports which way
+  // in it accepted, or every error it gave, so the binding can be checked from
+  // a phone browser instead of a terminal.
+  if (url.pathname === "/orproxy") {
+    if (!env.ORPROXY) return json({ ok: false, error: "ORPROXY is not bound on this Worker" }, 400);
+    try {
+      const hit = await orProxyCall(
+        env,
+        env.ORPROXY_MODEL || OR_MODELS[0],
+        [{ role: "user", content: "Reply with exactly: ready" }],
+        { max_tokens: 16, temperature: 0 }
+      );
+      return json({ ok: true, via: hit.via, model: hit.model, reply: hit.text.slice(0, 200) });
+    } catch (err) {
+      return json({ ok: false, mode: orProxyMode, notes: err.notes || [err.message] }, 502);
+    }
+  }
+
+  if (url.pathname === "/prefs") {
       // POST { reset: true } forgets everything learned, so drift can be undone.
       if (request.method === "POST") {
         const { body, error } = await readBody(request);
@@ -3479,7 +3497,9 @@ async function orProxyCall(env, model, messages, body) {
     notes.push("fetch: not a method");
   }
 
-  throw new Error(notes.join(" | ") || "no callable way into ORPROXY");
+  const err = new Error(notes.join(" | ") || "no callable way into ORPROXY");
+  err.notes = notes;
+  throw err;
 }
 
 async function callOpenRouter(env, model, messages, body) {

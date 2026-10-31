@@ -992,5 +992,24 @@ function check(name, cond, extra) {
   check("and it does not blame the proxy in the payload", String(d.provider).indexOf("orproxy") === -1, d.provider);
 }
 
+
+// 23d. the proxy can be checked from a phone browser
+{
+  const env = makeEnv({ ORPROXY: {} });
+  const res = await worker.fetch(new Request("https://cods.example/orproxy"), env);
+  const body = await res.json();
+  check("a dead proxy is reported, not hidden", res.status === 502 && body.ok === false, body.ok);
+  check("with every way it tried", Array.isArray(body.notes) && body.notes.some((n) => n.indexOf("fetch") === 0), body.notes);
+}
+{
+  const env = makeEnv({ ORPROXY: { chat: async () => { throw new Error("401 no key"); } } });
+  const body = await (await worker.fetch(new Request("https://cods.example/orproxy"), env)).json();
+  check("the proxy's own error is passed through", body.ok === false && body.notes.join(" ").indexOf("401 no key") > 0, body.notes);
+  const ok = await (await worker.fetch(new Request("https://cods.example/orproxy"), makeEnv({ ORPROXY: { chat: async () => "ready" } }))).json();
+  check("a working proxy reports how it answered", ok.ok === true && ok.via === "chat" && ok.reply === "ready", ok);
+  const none = await worker.fetch(new Request("https://cods.example/orproxy"), makeEnv({}));
+  check("an unbound proxy says so", none.status === 400, none.status);
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
