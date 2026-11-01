@@ -1749,7 +1749,8 @@ function openSheet() {
         }).join('') + '</div>' +
       '<div class="row" style="margin-top:8px"><button data-set="prefs">Refresh</button><button data-set="forget">Forget it all</button></div></div>' +
     '<div class="sect"><h4>Approved answers</h4><p id="apprText" style="font-size:12px;color:var(--dim);line-height:1.5">loading...</p>' +
-      '<div class="row" style="margin-top:8px"><button data-set="approved">Refresh</button></div></div>' +
+      '<div id="apprList"></div>' +
+      '<div class="row" style="margin-top:8px"><button data-set="approved">Refresh</button><button data-appr-clear="1">Remove all</button></div></div>' +
     '<div class="sect"><h4>API</h4><p style="font-size:11px;color:var(--dim);line-height:1.6">' + esc(location.origin) + '/chat · /card · /deck · /prefs</p></div>';
   $('sheet').classList.add('show');
   loadPrinciples();
@@ -1878,11 +1879,43 @@ document.addEventListener('click', function (e) {
 function loadApprovedList() {
   fetch('/approved').then(function (r) { return r.json(); }).then(function (d) {
     var p = document.getElementById('apprText');
+    var box = document.getElementById('apprList');
     if (!p) return;
-    if (!d || !d.count) { p.textContent = 'Nothing approved yet. Approve a card and that question always returns it.'; return; }
-    p.textContent = d.count + ' approved: ' + d.items.slice(0, 3).map(function (i) { return i.q + ' (rank ' + i.rank + ')'; }).join(' · ');
+    if (!d || !d.count) {
+      p.textContent = 'Nothing approved yet. Approve a card and that question always returns it.';
+      if (box) box.innerHTML = '';
+      return;
+    }
+    p.textContent = d.count + ' approved. Remove one and that question goes back to the models.';
+    if (!box) return;
+    box.innerHTML = d.items.map(function (i) {
+      var n = i.cards || 0;
+      return '<div class="row" style="align-items:center;margin:4px 0">' +
+        '<div style="flex:1;min-width:0;font-size:11px;color:var(--text);line-height:1.45">' + esc(i.q || '') +
+        ' <span style="color:var(--dim)">· rank ' + esc(String(i.rank)) + ' · ' + n + ' card' + (n === 1 ? '' : 's') + '</span></div>' +
+        '<button class="icon" data-appr-del="' + esc(i.key || '') + '">Remove</button></div>';
+    }).join('');
   }).catch(function () {});
 }
+
+// Removing an approved answer posts the key it was listed under, so the question
+// never has to be retyped and a card that was signed off stays accepted.
+function removeApproved(payload) {
+  fetch('/approve', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+  }).then(function (r) { return r.json(); }).then(function (d) {
+    if (d && d.error) { toast(d.error); return; }
+    toast(d && d.cleared ? 'Removed ' + (d.deleted || 0) : (d && d.deleted ? 'Removed' : 'Not there any more'));
+    loadApprovedList();
+  }).catch(function (e) { toast('Could not remove: ' + ((e && e.message) || e)); });
+}
+document.addEventListener('click', function (e) {
+  var b = e.target && e.target.closest ? e.target.closest('[data-appr-del],[data-appr-clear]') : null;
+  if (!b) return;
+  e.preventDefault();
+  if (b.hasAttribute('data-appr-clear')) return removeApproved({ action: 'clear' });
+  return removeApproved({ action: 'delete', key: b.getAttribute('data-appr-del') });
+});
 
 function exportCards() {
   var blob = new Blob([JSON.stringify({ cards: S.cards }, null, 2)], { type: 'application/json' });
@@ -5285,6 +5318,30 @@ async function adminProxy(env, request, path, raw) {
 async function handleApprove(request, env) {
   const { body, error } = await readBody(request);
   if (error) return error;
+
+  // Taking an approval back is his to do whenever, and it is the same route: one
+  // item by the key /approved handed out, or the whole list. No question has to
+  // be typed again to remove what he already signed off on.
+  const action = String(body.action || "").trim();
+  if (action === "delete" || action === "clear") {
+    const proxied = await adminProxy(env, request, "/approve", JSON.stringify(body));
+    if (proxied) return proxied;
+    if (!arcStore(env)) return json({ error: "No KV or ARCHIVE bound on this Worker" }, 503);
+    const store = await loadApproved(env);
+    if (action === "clear") {
+      const before = Object.keys(store.items || {}).length;
+      store.items = {};
+      await saveApproved(env, store);
+      return json({ ok: true, cleared: true, deleted: before, count: 0 });
+    }
+    const key = String(body.key || "").trim();
+    if (!/^h[0-9a-f]{8,64}$/.test(key)) return json({ error: "Need a key from /approved" }, 400);
+    const had = Object.prototype.hasOwnProperty.call(store.items, key);
+    delete store.items[key];
+    await saveApproved(env, store);
+    return json({ ok: true, deleted: had ? 1 : 0, count: Object.keys(store.items).length });
+  }
+
   const q = String(body.q || "").trim();
   if (!q) return json({ error: "Need the question" }, 400);
   const proxied = await adminProxy(env, request, "/approve", JSON.stringify(body));

@@ -811,6 +811,24 @@ function fakeBrowser(pages, opts) {
   check("rank outside 0..5 is refused", bad.status === 400, bad.status);
   const none = await post("/approve", { q: "x", cards: [], rank: 3 }, env);
   check("nothing to approve is refused", none.status === 400, none.status);
+
+  // Removal is his, whenever: one by its key, or the list at once.
+  await post("/approve", { q: "delete me", cards: [{ q: "delete me", a: "A" }], rank: 3 }, env);
+  const before = await (await worker.fetch(new Request("https://cods.example/approved"), env)).json();
+  const delKey = ((before.items || []).find((i) => i.q === "delete me") || {}).key;
+  check("the list hands out the key it will delete by", /^h[0-9a-f]{8,}$/.test(String(delKey)), delKey);
+  const del = await (await post("/approve", { action: "delete", key: delKey }, env)).json();
+  check("an approved answer is removed by its key", del.ok === true && del.deleted === 1 && del.count === 0, del);
+  const cleared0 = await (await worker.fetch(new Request("https://cods.example/approved"), env)).json();
+  check("a removed answer is gone from the list", cleared0.count === 0, cleared0);
+  const noKey = await post("/approve", { action: "delete", key: "nope" }, env);
+  check("a key that is not one is refused", noKey.status === 400, noKey.status);
+  await post("/approve", { q: "one", cards: [{ q: "one", a: "a" }], rank: 2 }, env);
+  await post("/approve", { q: "two", cards: [{ q: "two", a: "b" }], rank: 2 }, env);
+  const cleared = await (await post("/approve", { action: "clear" }, env)).json();
+  check("the whole list can be emptied at once", cleared.cleared === true && cleared.count === 0 && cleared.deleted === 2, cleared);
+  const afterClear = await post("/chat", { prompt: "one", questions: {} }, env);
+  check("an emptied approval no longer answers for the model", afterClear.status === 200, afterClear.status);
 }
 
 // 18b. a theme request recolours the page and travels with the deck
@@ -838,7 +856,7 @@ function fakeBrowser(pages, opts) {
   check("and the edit is kept as a preference the models read",
     html.indexOf("Card he corrected") >= 0 && html.indexOf("saved as a preference") >= 0,
     "edit as preference");
-  ['data-op="approve"', "applyTheme", "PRESETS", "/approve", "loadApprovedList"].forEach(function (needle) {
+  ['data-op="approve"', "applyTheme", "PRESETS", "/approve", "loadApprovedList", "data-appr-del", "data-appr-clear", "action: 'clear'", "removeApproved"].forEach(function (needle) {
     check("page has " + needle, html.indexOf(needle) >= 0, needle);
   });
 }
