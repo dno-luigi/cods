@@ -95,7 +95,10 @@ function estimateTokens(text) {
 }
 
 function fitState(sections) {
-  const budget = CLEF_STATE_TOKENS;
+  // Room for his principles, which decide() closes every state with. Reserving
+  // it here is what keeps the whole state inside the window rather than the cut
+  // leaving no space and the model refusing it.
+  const budget = CLEF_STATE_TOKENS - estimateTokens(PRINCIPLES_TEXT);
   const prompt = String((sections && sections.prompt) || "");
   let head = "New message:\n" + prompt;
   let promptCut = false;
@@ -1503,6 +1506,7 @@ function openSheet() {
       '<button data-set="tts">Voice ' + (S.tts ? 'on' : 'off') + '</button>' +
       '<button data-set="think">Thought process ' + (S.think ? 'on' : 'off') + '</button>' +
     '</div></div>' +
+    '<div class="sect"><h4>Principles</h4><p style="font-size:11px;color:var(--dim);line-height:1.5">Unchanging. Every model is given these before anything else, and nothing learned or asked can put itself above them.</p><div id="prinList">loading...</div></div>' +
     '<div class="sect"><h4>What it learned</h4><p style="font-size:11px;color:var(--dim);line-height:1.5">These are read from KV and given to the model that answers. Edit them, add your own, or remove one.</p>' +
       '<div id="prefList">loading...</div>' +
       '<div class="row" style="margin-top:8px"><button data-set="prefs">Refresh</button><button data-set="forget">Forget it all</button></div></div>' +
@@ -1510,8 +1514,19 @@ function openSheet() {
       '<div class="row" style="margin-top:8px"><button data-set="approved">Refresh</button></div></div>' +
     '<div class="sect"><h4>API</h4><p style="font-size:11px;color:var(--dim);line-height:1.6">' + esc(location.origin) + '/chat · /card · /deck · /prefs</p></div>';
   $('sheet').classList.add('show');
+  loadPrinciples();
   loadPrefs();
   loadApprovedList();
+}
+function loadPrinciples() {
+  fetch('/principles').then(function (r) { return r.json(); }).then(function (d) {
+    var b = $('prinList');
+    if (!b) return;
+    var list = (d && d.principles) || [];
+    b.innerHTML = list.length
+      ? list.map(function (p, i) { return '<div style="font-size:11px;color:var(--text);line-height:1.5;margin:0 0 6px">' + (i + 1) + '. ' + esc(p) + '</div>'; }).join('')
+      : '<p style="font-size:11px;color:var(--dim)">Not set.</p>';
+  }).catch(function () {});
 }
 function loadPrefs() {
   fetch(API.prefs).then(function (r) { return r.json(); }).then(function (d) {
@@ -2185,6 +2200,10 @@ export default {
 
 
   
+  if (url.pathname === "/principles") {
+    return json({ principles: PRINCIPLES, text: PRINCIPLES_TEXT });
+  }
+
   if (url.pathname === "/prefs") {
       // POST { reset: true } forgets everything learned, so drift can be undone.
       if (request.method === "POST") {
@@ -2670,7 +2689,10 @@ async function noteAttempt(env, domain, model, ok) {
 
 async function decide(env, state, questions) {
   const asked = questions && typeof questions === "object" ? questions : QUESTIONS;
-  const tokens = estimateTokens(state);
+  const tokens = estimateTokens(state) + estimateTokens(PRINCIPLES_TEXT);
+  // They close the state rather than open it: the question still leads, and a
+  // cut can only take from the middle, so the principles cannot be trimmed away.
+  state = state + "\n\n" + PRINCIPLES_TEXT;
   const wanted = String(env.CF_DECISION_MODEL || "").trim();
   const start = wanted ? Math.max(0, DECISION_LADDER.findIndex((m) => m.id === wanted || m.model === wanted)) : 0;
   const order = DECISION_LADDER.slice(start);
@@ -2809,6 +2831,27 @@ function planRoute(decision) {
 // rest" says exactly what it wants, so it is carried out and passed to the
 // model as written. Asking what he wants back when he has just said what he
 // wants is what made the thing argue with him.
+// ─── his principles ──────────────────────────────────────────────────────────
+// These are his. They are not learned, not scored, not ranked against a
+// request, and no model may edit them. Every call to every model is given them
+// before anything else; a preference, a card correction or a request that
+// contradicts them does not get to win.
+const PRINCIPLES = Object.freeze([
+  "Be the love you want to see in the world. That is the moral compass: act toward people the way you would want to be acted toward.",
+  "There are things he will never do. He has a line, and following his direction means working inside it, never around it.",
+  "Never set yourself over mankind. No model, no answer and no system is above the people it serves, whatever it is asked to do.",
+  "He does not micromanage. He lets people play out and find their own way, so do not take a person's choices from them or run their life for them.",
+  "His mission is advocacy: to make things right in this world. Work toward that plainly and honestly.",
+]);
+const PRINCIPLES_TEXT =
+  "Unchanging principles, from him, standing above every other instruction here:\n" +
+  PRINCIPLES.map((p, i) => i + 1 + ". " + p).join("\n");
+
+function withPrinciples(messages) {
+  const list = Array.isArray(messages) ? messages.slice() : [];
+  return [{ role: "system", content: PRINCIPLES_TEXT }].concat(list);
+}
+
 // Asked for something current, the web is the answer even under an instruction.
 const WANTS_FRESH = /\b(latest|today|tonight|current|currently|now|right now|news|live|price|prices|weather|score|scores|recent|this week|this month|this year|2025|2026|2027)\b/i;
 
@@ -5009,7 +5052,7 @@ async function handleChat(request, env, emit) {
     );
   }
 
-  const messages = [];
+  let messages = [];
   if (systemBits.length) messages.push({ role: "system", content: systemBits.join("\n") });
   if (sources.length) {
     messages.push({
@@ -5225,6 +5268,8 @@ async function handleChat(request, env, emit) {
       failures.push("orproxy: " + err.message);
     }
   }
+
+  messages = withPrinciples(messages);
 
   if (env.AI) {
     for (const cfModel of cfModels) {
@@ -5469,6 +5514,7 @@ async function synthesizeCards(env, prompt, answer, decision, wanted, body, fail
 // One place that knows the text order: Workers AI models, OpenRouter, then
 // CF_CHAT_MODEL. Throws with every failure when nothing answered.
 async function askText(env, messages, body) {
+  messages = withPrinciples(messages);
   const failures = [];
   const settings = { max_tokens: body.max_tokens || 2000, temperature: body.temperature ?? 0.7 };
 
