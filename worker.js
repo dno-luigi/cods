@@ -1522,7 +1522,7 @@ function loadPrefs() {
       var held = x.status === 'candidate';
       var tag = held ? 'candidate' : (x.kept ? 'long term' : 'in use');
       return '<div class="row" style="align-items:center;margin:8px 0 2px">' +
-        '<span style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim)">' + tag + '</span>' +
+        '<span style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim)">' + tag + (x.fit !== undefined ? ' · fit ' + x.fit : '') + (x.merged ? ' · merged x' + x.merged : '') + (x.hits ? ' · used ' + x.hits : '') + '</span>' +
         '<input data-pref-q="' + q + '" value="' + esc(x.q || '') + '" placeholder="what it should know about you" style="flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);color:var(--dim);border-radius:8px;padding:5px;font-size:11px">' +
         '</div>' +
         (x.why ? '<div style="font-size:10px;color:var(--dim);margin:0 0 2px">' + esc(x.why) + '</div>' : '') +
@@ -2100,7 +2100,18 @@ export default {
       prefs.learned = prefs.learned.filter((x) => x && x.q !== q);
 
       if (from && from !== q) prefs.learned = prefs.learned.filter((x) => x && x.q !== from);
-      prefs.learned.push({ q, a, prompt: from && from !== q ? "renamed by him" : "set by him", at: new Date().toISOString() });    } else if (act === "promote" || act === "demote") {
+      const twin = prefs.learned.find((x) => x && x.q !== q && textAlike(String(x.a || ""), a) >= 0.8);
+      if (twin) {
+        twin.prompts = (Array.isArray(twin.prompts) ? twin.prompts : [String(twin.prompt || "")]).filter(Boolean);
+        twin.prompts.push(String(from || q).slice(0, 60));
+        twin.prompts = twin.prompts.slice(-4);
+        twin.before = String(twin.a || "").slice(0, 300);
+        twin.a = a;
+        twin.merged = (twin.merged || 0) + 1;
+        twin.at = new Date().toISOString();
+      } else {
+        prefs.learned.push({ q, a, prompt: from && from !== q ? "renamed by him" : "set by him", at: new Date().toISOString() });
+      }    } else if (act === "promote" || act === "demote") {
       if (!q) return json({ error: "Send q" }, 400);
       const row = prefs.learned.find((x) => x && x.q === q);
       if (!row) return json({ error: "Nothing stored under that" }, 404);
@@ -2128,11 +2139,14 @@ export default {
             {
               role: "system",
               content:
-                "Rewrite one remembered instruction as a single plain sentence that can be reused. Keep every command in it exactly, drop the story of where it came from, and add nothing that was not said. Reply with the sentence only.",
+                "Compress one remembered instruction. Keep every command in it, and keep every name and number that identifies it. Keep where it came from in a short bracket at the end, because the card it came from is the evidence for it. One plain sentence, no preamble, nothing added that was not said. Reply with the sentence only.",
             },
             {
               role: "user",
-              content: "Where it came from: " + String(row.q || "") + "\nWhat he wants: " + String(row.a || ""),
+              content:
+                "The card it came from: " + String(row.q || "") +
+                "\nThe request on that card: " + String(row.prompt || "") +
+                "\nWhat he wants: " + String(row.a || ""),
             },
           ],
           { max_tokens: 120 }
@@ -3842,48 +3856,74 @@ async function savePrefs(env, prefs) {
 // memory sits a candidate tier: still his, still editable, held back until it
 // fits what is being asked. The same shape as a candidate truth waiting to
 // become a master, and nothing here is deleted by the system.
-const PREF_STOP = new Set(["about", "after", "again", "answer", "answers", "before", "being", "could", "every", "first", "found", "given", "going", "here", "there", "these", "those", "which", "while", "would", "should", "still", "where", "thing", "things", "using", "wants", "write", "wrote"]);
+const PREF_STOP = new Set(["about", "after", "again", "answer", "answers", "before", "being", "could", "every", "first", "found", "given", "going", "here", "there", "these", "those", "which", "while", "would", "should", "still", "where", "thing", "things", "using", "wants", "write", "wrote", "this", "that", "from", "with", "have", "what", "want", "your", "they", "them", "when", "then", "just", "like", "card", "cards", "know", "must", "will", "been", "into", "over", "only", "also", "than", "more", "most", "each", "some", "such", "very", "does", "done", "give", "make", "made", "take", "same", "both", "doesn"]);
+
+// A stored note and a request are compared on their content words, so "tax
+// questions" meets "tax question". What comes back is a number, the words that
+// are shared and the words that only one side has: the similarity, and the
+// difference, rather than a yes or no.
+const PREF_USE = 0.2;
+const PREF_CANDIDATE = 0.5;
+const PREF_EARN = 3;
 
 function prefWords(text) {
-  const out = new Set();
+  const out = [];
   String(text || "")
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
     .forEach((wd) => {
-      if (wd.length >= 5 && !PREF_STOP.has(wd)) out.add(wd);
+      if (wd.length < 4 || PREF_STOP.has(wd)) return;
+      const stem = wd.replace(/s$/, "");
+      if (out.indexOf(stem) < 0) out.push(stem);
     });
   return out;
 }
 function isCardPref(x) {
   return /^card he corrected:/i.test(String((x && x.q) || ""));
 }
-function prefFits(x, prompt) {
+function prefMatch(x, prompt) {
   const want = prefWords(prompt);
-  if (!want.size) return false;
   const has = prefWords(String((x && x.q) || "") + " " + String((x && x.a) || ""));
-  for (const wd of want) if (has.has(wd)) return true;
-  return false;
+  if (!want.length || !has.length) return { score: 0, same: [], differ: has.slice(0, 5) };
+  const same = want.filter((wd) => has.indexOf(wd) >= 0);
+  const differ = has.filter((wd) => want.indexOf(wd) < 0).slice(0, 5);
+  const score = same.length / Math.max(1, Math.min(want.length, has.length));
+  return { score: Math.min(1, score), same, differ };
+}
+function textAlike(x, y) {
+  const A = prefWords(x);
+  const B = prefWords(y);
+  if (!A.length || !B.length) return 0;
+  const same = A.filter((wd) => B.indexOf(wd) >= 0).length;
+  return same / (A.length + B.length - same);
 }
 // Moving them is the system's half. It holds a correction that does not fit and
 // lifts it back when one does. A held one is not deleted, and one he kept is
 // never held again.
-async function holdStalePrefs(env, prefs, prompt) {
+async function tendPrefs(env, prefs, prompt) {
   const list = (prefs && prefs.learned) || [];
   let moved = 0;
   for (const x of list) {
-    if (!x || !isCardPref(x)) continue;
-    const fits = prefFits(x, prompt);
-    if (x.kept) continue;
-    if (x.status !== "candidate" && !fits) {
+    if (!x) continue;
+    const m = prefMatch(x, prompt);
+    const fits = m.score >= PREF_USE;
+    x.fit = Number(m.score.toFixed(2));
+    if (fits && x.status === "candidate" && x.auto) {
+      // A held one that keeps being the right answer is earning its place. Three
+      // times is enough to call it known, and it is written down as earned.
+      x.hits = (x.hits || 0) + 1;
+      if (x.hits >= PREF_EARN) {
+        x.status = "active";
+        x.earned = new Date().toISOString();
+        delete x.why;
+      }
+      moved += 1;
+    } else if (!fits && x.status !== "candidate" && !x.kept && isCardPref(x)) {
       x.status = "candidate";
       x.auto = true;
+      x.hits = x.hits || 0;
       x.why = "not relevant to " + String(prompt || "").slice(0, 60);
-      x.moved = new Date().toISOString();
-      moved += 1;
-    } else if (x.status === "candidate" && x.auto && fits) {
-      x.status = "active";
-      delete x.why;
       x.moved = new Date().toISOString();
       moved += 1;
     }
@@ -3903,15 +3943,24 @@ function prefsHint(prefs, prompt) {
   // sent: it waits. A correction about something else is not sent either, which
   // is what stopped the same note repeating on every card.
   const learned = prefs && prefs.learned;
-  const use = (learned || []).filter(
-    (x) => x && x.status !== "candidate" && (!prompt || !isCardPref(x) || prefFits(x, prompt))
-  );
+  const scored = (learned || []).map((x) => ({ x, m: prompt ? prefMatch(x, prompt) : { score: 1, same: [] } }));
+  const use = scored
+    .filter(({ x, m }) =>
+      x && (prompt
+        ? !isCardPref(x) || (m.score >= PREF_USE && (x.status !== "candidate" || m.score >= PREF_CANDIDATE))
+        : x.status !== "candidate")
+    )
+    .slice(-4);
   if (use.length) {
     parts.push(
       "he told you: " +
         use
-          .slice(-4)
-          .map((x) => String((x && x.q) || "").slice(0, 90) + " -> " + String((x && x.a) || "").slice(0, 400))
+          .map(({ x, m }) =>
+            String((x && x.q) || "").slice(0, 90) +
+            " -> " +
+            String((x && x.a) || "").slice(0, 400) +
+            (prompt ? " [fits " + m.score.toFixed(2) + (x.status === "candidate" ? ", candidate" : "") + (m.same.length ? ", shared: " + m.same.slice(0, 4).join(", ") : "") + "]" : "")
+          )
           .join("; ")
     );
   }
@@ -4752,7 +4801,7 @@ async function handleChat(request, env, emit) {
 
   const contextCards = Array.isArray(body.cards) ? body.cards.filter((c) => c && c.q) : [];
   const prefs = await loadPrefs(env);
-  const heldBack = await holdStalePrefs(env, prefs, prompt);
+  const heldBack = await tendPrefs(env, prefs, prompt);
   const learned = prefsHint(prefs, prompt);
   step("memory", learned || (heldBack ? heldBack + " held as candidates" : "nothing learned yet"));
   const theme = themeIntent(prompt) ? await themeFor(env, prompt) : null;

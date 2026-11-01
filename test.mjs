@@ -2142,7 +2142,7 @@ function fakeBrowser(pages, opts) {
   const inner = base.AI.run;
   const env = makeEnv({
     AI: { run: async (m, i) => {
-      if (JSON.stringify(i).indexOf("Rewrite one remembered instruction") >= 0) {
+      if (JSON.stringify(i).indexOf("Compress one remembered instruction") >= 0) {
         return { response: "Extract the names, one per line." };
       }
       if (String(m).startsWith("@cf/cloudflare/clef")) {
@@ -2191,6 +2191,60 @@ function fakeBrowser(pages, opts) {
   ["data-pref-keep", "data-pref-hold", "data-pref-rephrase", "candidates — held until they fit", "x.why ?"].forEach(function (n) {
     check("the sheet has " + n, html.indexOf(n) >= 0, n);
   });
+}
+
+// 29. the notes are compared, not just filtered, and they earn their tier
+{
+  const base = makeEnv();
+  const inner = base.AI.run;
+  const seen = [];
+  const env = makeEnv({
+    AI: { run: async (m, i) => {
+      if (JSON.stringify(i).indexOf("Compress one remembered instruction") >= 0) {
+        seen.push(JSON.stringify(i));
+        return { response: "Extract the names, one per line. (from: names on the card)" };
+      }
+      if (String(m).startsWith("@cf/cloudflare/clef")) {
+        return { answers: {
+          intent: { probabilities: { answer: 0.9 } },
+          domain: { probabilities: { general: 0.9 } },
+          depth: { score: 2 },
+          needs_web: { probability: 0.1 },
+          clarify: { probability: 0.02 },
+          sensitive: { probability: 0.02 },
+        } };
+      }
+      return inner(m, i);
+    } },
+  });
+
+  await post("/prefs", { action: "add", q: "Card he corrected: names list", a: "Extract the names, one per line." }, env);
+  await post("/prefs", { action: "add", q: "Card he corrected: names on a page", a: "Extract the names, one per line." }, env);
+  const merged = await (await worker.fetch(new Request("https://cods.example/prefs"), env)).json();
+  check("the same note said twice is one row, not two in KV", merged.learned.length === 1, merged.learned.length);
+  check("and the row records what it absorbed", (merged.learned[0] || {}).merged === 1, merged.learned[0]);
+
+  await post("/chat", { prompt: "sort out the company tax question for this quarter", use_cache: false }, env);
+  const held = await (await worker.fetch(new Request("https://cods.example/prefs"), env)).json();
+  check("a note that is not about this is held", (held.learned[0] || {}).status === "candidate", held.learned[0]);
+  check("and it carries how little it fits", Number((held.learned[0] || {}).fit) === 0, (held.learned[0] || {}).fit);
+
+  const q = "extract the names from this page for me";
+  await post("/chat", { prompt: q, use_cache: false }, env);
+  const once = await (await worker.fetch(new Request("https://cods.example/prefs"), env)).json();
+  check("a candidate that fits is used, not thrown away", Number((once.learned[0] || {}).fit) >= 0.5, (once.learned[0] || {}).fit);
+  check("and it counts the use", (once.learned[0] || {}).hits === 1, (once.learned[0] || {}).hits);
+  check("but stays a candidate until it has earned more", (once.learned[0] || {}).status === "candidate", once.learned[0]);
+
+  await post("/chat", { prompt: q, use_cache: false }, env);
+  await post("/chat", { prompt: q, use_cache: false }, env);
+  const earned = await (await worker.fetch(new Request("https://cods.example/prefs"), env)).json();
+  check("three matches make it known", (earned.learned[0] || {}).status === "active", earned.learned[0]);
+  check("and the moment it earned is written down", !!((earned.learned[0] || {}).earned), earned.learned[0]);
+
+  const re = await (await post("/prefs", { action: "rephrase", q: "Card he corrected: names list" }, env)).json();
+  check("the rewrite keeps where it came from", String(re.rephrased || "").indexOf("(from:") >= 0, re.rephrased);
+  check("the card travels into the rewrite", seen.length > 0 && seen[0].indexOf("The request on that card") >= 0 && seen[0].indexOf("Keep where it came from") >= 0, seen[0] && seen[0].slice(0, 200));
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");
