@@ -4560,7 +4560,15 @@ async function handleChat(request, env, emit) {
     : "no fresh sources" + (searchError ? ": " + String(searchError).slice(0, 90) : ""));
 
   // 4. Answer — grounded in whatever we have.
-  const systemBits = [styleHint(decision), plan.pack.guidance, plan.care ? plan.pack.safety : "", learned]
+  // What he has told it before, and what he just told it to do, go to the model
+  // that answers — not only to the one that decides. An instruction is an order.
+  const instructionLine = explicit
+    ? "He gave an explicit instruction. Carry it out exactly as written: do not ask what he wants, do not reinterpret it, do not add advice he did not ask for."
+    : "";
+  const preferenceLine = learnedNow || learned
+    ? "What he has told you before, and what he wants: " + (learnedNow || learned)
+    : "";
+  const systemBits = [styleHint(decision), plan.pack.guidance, plan.care ? plan.pack.safety : "", preferenceLine, instructionLine]
     .filter(Boolean);
   if (plan.pack.principles && plan.pack.principles.length) {
     systemBits.push(plan.pack.principles.join(" "));

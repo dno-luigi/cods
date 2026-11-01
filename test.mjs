@@ -1510,6 +1510,13 @@ function fakeBrowser(pages, opts) {
   const d = await (await post("/chat", { prompt: said, use_cache: false }, env)).json();
   check("an explicit instruction is not turned into a question", !d.clarify, d.clarify && d.clarify.questions);
   check("it is passed to the model word for word", aiInputs.some((a) => JSON.stringify(a).indexOf("just leave all the other information") >= 0), aiInputs.length);
+  const withPrefs = await (await post("/chat", { prompt: "who is this summary of contract law for", clarify: [{ id: "target", q: "Who is this for?", a: "A first-year law student" }], use_cache: false }, env)).json();
+  check("what he tells it reaches the answering model",
+    aiInputs.some((a) => JSON.stringify(a).indexOf("A first-year law student") >= 0) && !!withPrefs.answer,
+    aiInputs.length);
+  check("the answering model is told to obey it, not to interpret it",
+    aiInputs.some((a) => JSON.stringify(a).indexOf("Carry it out exactly as written") >= 0),
+    aiInputs.length);
   check("and it comes back as a card, named by the decision, not by an invented label",
     !!(d.cards && d.cards[0] && d.cards[0].a) && !/instruction/.test(String(d.cards[0].kind || "")),
     d.cards && d.cards.map((c) => c.kind));
