@@ -3933,7 +3933,7 @@ async function browserSearch(env, query, limit) {
   if (lastError) throw lastError;
   return [];
 }
-async function openRouterSearch(env, query, limit) {
+async function openRouterSearch(env, query, limit, hint) {
   if (!env.OPENROUTER_API_KEY) throw new Error("no OpenRouter key on this Worker");
   const model = env.OPENROUTER_SEARCH_MODEL || env.OPENROUTER_MODEL || OR_MODELS[0];
   const { citations } = await openRouterCall(
@@ -3943,7 +3943,8 @@ async function openRouterSearch(env, query, limit) {
       {
         role: "system",
         content:
-          "Search the web for the question. Answer in one sentence, then let the citations carry the sources. Never cite a page you were not given.",
+          "Search the web for the question. Answer in one sentence, then let the citations carry the sources. Never cite a page you were not given." +
+          (hint ? "\n\n" + hint : ""),
       },
       { role: "user", content: String(query).slice(0, 1024) },
     ],
@@ -3956,7 +3957,7 @@ async function openRouterSearch(env, query, limit) {
 
 // Providers in order of quality. The first that returns two or more pages
 // wins; a single page is kept as a fallback so one source still grounds.
-async function webSearch(env, query) {
+async function webSearch(env, query, hint) {
   const limit = Number(env.SEARCH_LIMIT || 5);
   const terms = queryTerms(query);
   // Short queries are matched loosely, longer ones have to land three of
@@ -3972,7 +3973,7 @@ async function webSearch(env, query) {
   // Paid for, and the only one that actually returns pages: OpenRouter's web
   // plugin searches before the model speaks and hands back url_citation
   // annotations. $1 per 1,000 requests, on the key this Worker already holds.
-  if (env.OPENROUTER_API_KEY) providers.push(["openrouter:web", () => openRouterSearch(env, query, limit)]);
+  if (env.OPENROUTER_API_KEY) providers.push(["openrouter:web", () => openRouterSearch(env, query, limit, hint)]);
   if (env.OCODE) providers.push(["harness", () => harnessSearch(env, query, limit)]);
   if (env.SEARCH_URL) providers.push(["search-url", () => externalSearch(env, query, limit)]);
   if (env.BROWSER) providers.push(["browser", () => browserSearch(env, query, limit)]);
@@ -5722,7 +5723,7 @@ async function handleChat(request, env, emit) {
   const wantsWeb = !!plan.search && body.use_web !== false;
   if (wantsWeb) {
     try {
-      const found = await webSearch(env, prompt);
+      const found = await webSearch(env, prompt, stageHint(await loadPrefs(env), "search"));
       sources = found.sources || [];
       searchVia = found.via || null;
       if (found.errors && found.errors.length) {
@@ -5789,7 +5790,8 @@ async function handleChat(request, env, emit) {
       role: "system",
       content:
         "Notes this system saved from earlier cards. Background only: write your own answer, and say when a note is what you are relying on.\n" +
-        related.map((n, i) => "[" + (i + 1) + "] " + n.title + "\n" + n.text).join("\n\n"),
+        related.map((n, i) => "[" + (i + 1) + "] " + n.title + "\n" + n.text).join("\n\n") +
+        (stageHint(prefs, "notes") ? "\n\n" + stageHint(prefs, "notes") : ""),
     });
   }
   messages.push({ role: "user", content: prompt });

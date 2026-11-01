@@ -2450,6 +2450,10 @@ function fakeBrowser(pages, opts) {
   // The buttons are built in the browser from this list, so the served page carries
   // the list and the attribute rather than six rendered buttons.
   check("the page builds a button per part", html.indexOf("data-stage=") > -1 && html.indexOf("['decide', 'notes', 'search', 'cards', 'cloudflare', 'openrouter']") > -1, "parts on the page");
+  const src = fsMod.readFileSync(new URL("./worker.js", import.meta.url), "utf8");
+  check("the search part carries its rules to the search", src.indexOf('webSearch(env, prompt, stageHint(await loadPrefs(env), "search"))') > -1 && src.indexOf("openRouterSearch(env, query, limit, hint)") > -1, "search");
+  check("the notes part carries its rules to the notes", src.indexOf('stageHint(prefs, "notes")') > -1, "notes");
+  check("the providers each read their own", src.indexOf("const forCf =") > -1 && src.indexOf("const forOr =") > -1 && src.indexOf("messages: forCf") > -1 && src.indexOf("callOpenRouter(env, model, forOr, body)") > -1, "providers");
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");
