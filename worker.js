@@ -1517,17 +1517,28 @@ function loadPrefs() {
   fetch(API.prefs).then(function (r) { return r.json(); }).then(function (d) {
     var box = $('prefList');
     if (!box) return;
-    var rows = ((d && d.learned) || []).map(function (x) {
+    function prefRow(x) {
       var q = esc(x.q || '');
+      var held = x.status === 'candidate';
+      var tag = held ? 'candidate' : (x.kept ? 'long term' : 'in use');
       return '<div class="row" style="align-items:center;margin:8px 0 2px">' +
+        '<span style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim)">' + tag + '</span>' +
         '<input data-pref-q="' + q + '" value="' + esc(x.q || '') + '" placeholder="what it should know about you" style="flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);color:var(--dim);border-radius:8px;padding:5px;font-size:11px">' +
         '</div>' +
+        (x.why ? '<div style="font-size:10px;color:var(--dim);margin:0 0 2px">' + esc(x.why) + '</div>' : '') +
         (x.prompt && x.prompt !== x.q ? '<div style="font-size:10px;color:var(--dim);margin:0 0 2px">' + esc(x.prompt) + '</div>' : '') +
         '<div class="row" style="align-items:center">' +
         '<input data-pref-a="' + q + '" value="' + esc(x.a || '') + '" style="flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px;font-size:12px">' +
         '<button class="icon" data-pref-save="' + q + '">Save</button>' +
+        '<button class="icon" data-pref-' + (held ? 'keep' : 'hold') + '="' + q + '">' + (held ? 'Keep' : 'Hold') + '</button>' +
+        '<button class="icon" data-pref-rephrase="' + q + '">Rephrase</button>' +
         '<button class="icon" data-pref-del="' + q + '">Remove</button></div>';
-    }).join('');
+    }
+    var all = (d && d.learned) || [];
+    var inUse = all.filter(function (x) { return x.status !== 'candidate'; });
+    var waiting = all.filter(function (x) { return x.status === 'candidate'; });
+    var rows = (inUse.length ? '<div style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);margin:6px 0 2px">in use</div>' + inUse.map(prefRow).join('') : '') +
+      (waiting.length ? '<div style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);margin:14px 0 2px">candidates — held until they fit</div>' + waiting.map(prefRow).join('') : '');
     box.innerHTML = (rows || '<p style="font-size:11px;color:var(--dim);margin:0 0 8px">Nothing yet. Add one below, or press a card button and it starts learning.</p>') +
       '<div class="row" style="margin-top:10px;align-items:center">' +
       '<input id="prefNewQ" placeholder="what it should know about you" style="flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px;font-size:12px">' +
@@ -1547,7 +1558,7 @@ function prefsWrite(b) {
 }
 
 document.addEventListener('click', function (e) {
-  var b = e.target && e.target.closest ? e.target.closest('[data-pref-save],[data-pref-del],[data-pref-add]') : null;
+  var b = e.target && e.target.closest ? e.target.closest('[data-pref-save],[data-pref-del],[data-pref-add],[data-pref-hold],[data-pref-keep],[data-pref-rephrase]') : null;
   if (!b) return;
   e.preventDefault();
   if (b.hasAttribute('data-pref-add')) {
@@ -1558,6 +1569,12 @@ document.addEventListener('click', function (e) {
   }
   var delQ = b.getAttribute('data-pref-del');
   if (delQ) return prefsWrite({ action: 'delete', q: delQ });
+  var holdQ = b.getAttribute('data-pref-hold');
+  if (holdQ) return prefsWrite({ action: 'demote', q: holdQ });
+  var keepQ = b.getAttribute('data-pref-keep');
+  if (keepQ) return prefsWrite({ action: 'promote', q: keepQ });
+  var repQ = b.getAttribute('data-pref-rephrase');
+  if (repQ) { toast('Rewriting it'); return prefsWrite({ action: 'rephrase', q: repQ }); }
   var box = b.parentNode || b.closest('.row');
   var input = box && box.querySelector('[data-pref-a]');
   var label = box && box.querySelector('[data-pref-q]');
@@ -2083,7 +2100,52 @@ export default {
       prefs.learned = prefs.learned.filter((x) => x && x.q !== q);
 
       if (from && from !== q) prefs.learned = prefs.learned.filter((x) => x && x.q !== from);
-      prefs.learned.push({ q, a, prompt: from && from !== q ? "renamed by him" : "set by him", at: new Date().toISOString() });    } else if (act === "delete") {
+      prefs.learned.push({ q, a, prompt: from && from !== q ? "renamed by him" : "set by him", at: new Date().toISOString() });    } else if (act === "promote" || act === "demote") {
+      if (!q) return json({ error: "Send q" }, 400);
+      const row = prefs.learned.find((x) => x && x.q === q);
+      if (!row) return json({ error: "Nothing stored under that" }, 404);
+      if (act === "promote") {
+        row.status = "active";
+        row.kept = true;
+        row.auto = false;
+        row.why = null;
+      } else {
+        row.status = "candidate";
+        row.kept = false;
+        row.auto = false;
+        row.why = "held by him";
+      }
+      row.moved = new Date().toISOString();
+    } else if (act === "rephrase") {
+      if (!q) return json({ error: "Send q" }, 400);
+      const row = prefs.learned.find((x) => x && x.q === q);
+      if (!row) return json({ error: "Nothing stored under that" }, 404);
+      let text = "";
+      try {
+        const r = await askText(
+          env,
+          [
+            {
+              role: "system",
+              content:
+                "Rewrite one remembered instruction as a single plain sentence that can be reused. Keep every command in it exactly, drop the story of where it came from, and add nothing that was not said. Reply with the sentence only.",
+            },
+            {
+              role: "user",
+              content: "Where it came from: " + String(row.q || "") + "\nWhat he wants: " + String(row.a || ""),
+            },
+          ],
+          { max_tokens: 120 }
+        );
+        text = String(r.text || "").trim().split("\n")[0].replace(/^["'\u201c]|["'\u201d]$/g, "");
+      } catch (err) {
+        return json({ error: "Could not rewrite it: " + err.message }, 502);
+      }
+      if (!text) return json({ error: "It came back empty; nothing changed" }, 502);
+      row.before = String(row.a || "").slice(0, 300);
+      row.a = text.slice(0, 300);
+      row.rephrased = new Date().toISOString();
+    } else if (act === "delete") {
       if (!q) return json({ error: "Send q" }, 400);
       prefs.learned = prefs.learned.filter((x) => x && x.q !== q);
     } else if (act === "reset" || body.reset === true) {
@@ -2103,7 +2165,7 @@ export default {
 
     await store.put(PREFS_KEY, JSON.stringify(prefs));
 
-    return json({ ok: true, action: act, hint: prefsHint(prefs), learned: prefs.learned });
+    return json({ ok: true, action: act, rephrased: act === "rephrase" ? (prefs.learned.find((x) => x && x.q === q) || {}).a : undefined, hint: prefsHint(prefs), learned: prefs.learned });
 
   }
 
@@ -2122,7 +2184,7 @@ export default {
       return json({
         kv: !!env.KV,
         actions: prefs.actions,
-        learned: (prefs.learned || []).slice(-10),
+        learned: (prefs.learned || []).slice(-30),
         domains: prefs.domains,
         events: (prefs.events || []).slice(-10),
         hint: prefsHint(prefs),
@@ -3774,16 +3836,80 @@ async function savePrefs(env, prefs) {
   return true;
 }
 
-function prefsHint(prefs) {
+// ─── middle memory ───────────────────────────────────────────────────────────
+// A correction is worth keeping, but a correction about names is not an
+// instruction for a tax question. Between the card it came from and long-term
+// memory sits a candidate tier: still his, still editable, held back until it
+// fits what is being asked. The same shape as a candidate truth waiting to
+// become a master, and nothing here is deleted by the system.
+const PREF_STOP = new Set(["about", "after", "again", "answer", "answers", "before", "being", "could", "every", "first", "found", "given", "going", "here", "there", "these", "those", "which", "while", "would", "should", "still", "where", "thing", "things", "using", "wants", "write", "wrote"]);
+
+function prefWords(text) {
+  const out = new Set();
+  String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .forEach((wd) => {
+      if (wd.length >= 5 && !PREF_STOP.has(wd)) out.add(wd);
+    });
+  return out;
+}
+function isCardPref(x) {
+  return /^card he corrected:/i.test(String((x && x.q) || ""));
+}
+function prefFits(x, prompt) {
+  const want = prefWords(prompt);
+  if (!want.size) return false;
+  const has = prefWords(String((x && x.q) || "") + " " + String((x && x.a) || ""));
+  for (const wd of want) if (has.has(wd)) return true;
+  return false;
+}
+// Moving them is the system's half. It holds a correction that does not fit and
+// lifts it back when one does. A held one is not deleted, and one he kept is
+// never held again.
+async function holdStalePrefs(env, prefs, prompt) {
+  const list = (prefs && prefs.learned) || [];
+  let moved = 0;
+  for (const x of list) {
+    if (!x || !isCardPref(x)) continue;
+    const fits = prefFits(x, prompt);
+    if (x.kept) continue;
+    if (x.status !== "candidate" && !fits) {
+      x.status = "candidate";
+      x.auto = true;
+      x.why = "not relevant to " + String(prompt || "").slice(0, 60);
+      x.moved = new Date().toISOString();
+      moved += 1;
+    } else if (x.status === "candidate" && x.auto && fits) {
+      x.status = "active";
+      delete x.why;
+      x.moved = new Date().toISOString();
+      moved += 1;
+    }
+  }
+  if (moved) {
+    try {
+      await savePrefs(env, prefs);
+    } catch (err) {}
+  }
+  return moved;
+}
+
+function prefsHint(prefs, prompt) {
   const a = (prefs && prefs.actions) || {};
   const parts = [];
-  // What he answered when it asked. This is the part that makes it learn
-  // instead of asking the same three questions forever.
-  const learned = (prefs && prefs.learned) || [];
-  if (learned.length) {
+  // What he answered when it asked, and what he corrected. A candidate is not
+  // sent: it waits. A correction about something else is not sent either, which
+  // is what stopped the same note repeating on every card.
+  const learned = prefs && prefs.learned;
+  const use = (learned || []).filter(
+    (x) => x && x.status !== "candidate" && (!prompt || !isCardPref(x) || prefFits(x, prompt))
+  );
+  if (use.length) {
     parts.push(
       "he told you: " +
-        learned
+        use
           .slice(-4)
           .map((x) => String((x && x.q) || "").slice(0, 90) + " -> " + String((x && x.a) || "").slice(0, 400))
           .join("; ")
@@ -3892,7 +4018,7 @@ async function handleCard(request, env) {
     failures.push("clef-flash: " + err.message);
   }
   const plan = planRoute(decision);
-  const learned = prefsHint(await loadPrefs(env));
+  const learned = prefsHint(await loadPrefs(env), material);
 
   const systemBits = [
     CARD_OPS[op],
@@ -4626,8 +4752,9 @@ async function handleChat(request, env, emit) {
 
   const contextCards = Array.isArray(body.cards) ? body.cards.filter((c) => c && c.q) : [];
   const prefs = await loadPrefs(env);
-  const learned = prefsHint(prefs);
-  step("memory", learned ? learned : "nothing learned yet");
+  const heldBack = await holdStalePrefs(env, prefs, prompt);
+  const learned = prefsHint(prefs, prompt);
+  step("memory", learned || (heldBack ? heldBack + " held as candidates" : "nothing learned yet"));
   const theme = themeIntent(prompt) ? await themeFor(env, prompt) : null;
   if (theme) step("theme", theme.name + " " + theme.primary);
   // Answers from earlier rounds ride along, so the next decision is made with
@@ -4637,7 +4764,7 @@ async function handleChat(request, env, emit) {
   const explicit = isDirective(prompt);
   const told = said.length ? contextCards.concat(said.map((c) => ({ q: c.q, a: c.a }))) : contextCards;
   // Keep what he just told it before anything reads the preferences again.
-  const learnedNow = said.length ? prefsHint(await rememberAnswers(env, prompt, said, prefs)) : learned;
+  const learnedNow = said.length ? prefsHint(await rememberAnswers(env, prompt, said, prefs), prompt) : learned;
   // The decision model is chosen by window, so the state is only shrunk when no
   // decision model can hold it. Order: raw state -> a model rewrites it ->
   // budgeted cut as the last resort.

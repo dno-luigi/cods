@@ -2136,6 +2136,63 @@ function fakeBrowser(pages, opts) {
   check("and a number is not turned into text", html.indexOf("typeof was === 'number'") >= 0, html.length);
 }
 
+// 28. middle memory: a correction that does not fit is held, not repeated
+{
+  const base = makeEnv();
+  const inner = base.AI.run;
+  const env = makeEnv({
+    AI: { run: async (m, i) => {
+      if (JSON.stringify(i).indexOf("Rewrite one remembered instruction") >= 0) {
+        return { response: "Extract the names, one per line." };
+      }
+      if (String(m).startsWith("@cf/cloudflare/clef")) {
+        return { answers: {
+          intent: { probabilities: { answer: 0.9 } },
+          domain: { probabilities: { general: 0.9 } },
+          depth: { score: 2 },
+          needs_web: { probability: 0.1 },
+          clarify: { probability: 0.02 },
+          sensitive: { probability: 0.02 },
+        } };
+      }
+      return inner(m, i);
+    } },
+  });
+  await post("/prefs", { action: "add", q: "Card he corrected: names list", a: "Extract the names, one per line." }, env);
+  await post("/prefs", { action: "add", q: "Card he corrected: tax question", a: "Answer tax questions in plain numbered steps." }, env);
+
+  await post("/chat", { prompt: "sort out the company tax question for this quarter", use_cache: false }, env);
+  const after = await (await worker.fetch(new Request("https://cods.example/prefs"), env)).json();
+  const names = after.learned.find((x) => /names list/.test(String(x.q)));
+  const tax = after.learned.find((x) => /tax question/.test(String(x.q)));
+  check("a correction that does not fit is held as a candidate", names && names.status === "candidate", names);
+  check("one that fits stays in use", tax && tax.status !== "candidate", tax);
+  check("and the held one is not sent to the models", String(after.hint).indexOf("one per line") < 0, after.hint);
+  check("the one that fits is sent", String(after.hint).indexOf("numbered steps") >= 0, after.hint);
+
+  const kept = await (await post("/prefs", { action: "promote", q: "Card he corrected: names list" }, env)).json();
+  check("he can keep one for good", (kept.learned.find((x) => /names list/.test(String(x.q))) || {}).status === "active", kept.learned);
+  const dropped = await (await post("/prefs", { action: "demote", q: "Card he corrected: names list" }, env)).json();
+  check("and hold it again", (dropped.learned.find((x) => /names list/.test(String(x.q))) || {}).status === "candidate", dropped.learned);
+
+  await post("/chat", { prompt: "what does rule 11 require on the tax question", use_cache: false }, env);
+  const after2 = await (await worker.fetch(new Request("https://cods.example/prefs"), env)).json();
+  check("a held one is still there, still his, after another question",
+    (after2.learned.find((x) => /names list/.test(String(x.q))) || {}).status === "candidate", after2.hint);
+
+  const re = await (await post("/prefs", { action: "rephrase", q: "Card he corrected: names list" }, env)).json();
+  check("the system can rewrite one in plain words", String(re.rephrased || "") === "Extract the names, one per line.", re.rephrased);
+  check("and keeps what it said before", (re.learned.find((x) => /names list/.test(String(x.q))) || {}).before === "Extract the names, one per line.", re.learned);
+}
+
+// 28b. the sheet shows both tiers, with the buttons for each
+{
+  const html = await (await worker.fetch(new Request("https://x/"), makeEnv())).text();
+  ["data-pref-keep", "data-pref-hold", "data-pref-rephrase", "candidates — held until they fit", "x.why ?"].forEach(function (n) {
+    check("the sheet has " + n, html.indexOf(n) >= 0, n);
+  });
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
 
