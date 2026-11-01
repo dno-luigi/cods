@@ -1248,7 +1248,27 @@ function paintModel() {
   if (b) b.textContent = S.model && S.model.label ? S.model.label : 'auto';
 }
 
+function pickFromStore(store, label) {
+  store = String(store || '');
+  if (store.indexOf('openrouter:') === 0) return { label: label || store.slice(11), store: store, openrouter: true, model: store.slice(11) };
+  if (store.indexOf('preset:') === 0) return { label: label || ('preset · ' + store.slice(7)), store: store, openrouter: true, preset: store.slice(7) };
+  if (store.indexOf('proxy:') === 0) return { label: label || ('proxy · ' + store.slice(6)), store: store, proxy: true, preset: store.slice(6) };
+  return { label: label || store, store: store, cf: store };
+}
+
 function keepModel(m) {
+  // Typed in: let the server read the id, name it, and keep it.
+  if (m && m.typed && m.store) {
+    fetch(API.feedback, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'model', model: m.store, resolve: true, q: 'model picker' })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      var p = d && d.resolved;
+      if (!p) { toast('Could not read that model id'); return; }
+      keepModel(pickFromStore(p.store, p.label + (p.known === false ? ' · not in the catalogue' : '')));
+    }).catch(function (e) { toast('Could not save that: ' + ((e && e.message) || e)); });
+    return;
+  }
   S.model = m;
   try { localStorage.setItem(MK, JSON.stringify(m)); } catch (e) {}
   try { if (window.speechSynthesis) stopVoice(); } catch (e) {}
@@ -1278,6 +1298,11 @@ function openModels() {
       (d.openrouter.presets || []).forEach(function (p) { out += '<button data-pick="p:' + esc(p) + '">preset · ' + esc(p) + '</button>'; });
       out += '<button data-pick="x">type a model or preset…</button></div></div>';
     }
+    if (d.custom && d.custom.length) {
+      out += '<div class="sect"><h4>Yours</h4><div class="row">';
+      d.custom.forEach(function (m, i) { out += '<button data-pick="c:' + i + '">' + esc(m.label || m.store) + '</button>'; });
+      out += '</div></div>';
+    }
     if (d.proxy && d.proxy.bound) {
       out += '<div class="sect"><h4>Presets</h4><div class="row">';
       (d.proxy.presets || []).forEach(function (p, i) { out += '<button data-pick="y:' + i + '">preset · ' + esc(p) + '</button>'; });
@@ -1300,12 +1325,14 @@ document.addEventListener('click', function (e) {
   e.preventDefault();
   if (v === '0') return keepModel(null);
   if (v === 'x') {
-    var typed = (window.prompt('Model id, or a preset name', 'openai/gpt-4o-mini') || '').trim();
+    var typed = (window.prompt('Any OpenRouter model id, @cf model, or preset name', 'openai/gpt-4o-mini') || '').trim();
     if (!typed) return;
-    if (typed.charAt(0) === '@' || typed.indexOf('/') > 0) {
-      return keepModel({ label: typed, store: 'openrouter:' + typed, openrouter: true, model: typed });
-    }
-    return keepModel({ label: 'preset · ' + typed, store: 'preset:' + typed, openrouter: true, preset: typed });
+    return keepModel({ label: typed, store: typed, typed: true });
+  }
+  if (v.indexOf('c:') === 0) {
+    var cm = ((MODELS && MODELS.custom) || [])[Number(v.slice(2))];
+    if (!cm) return;
+    return keepModel(pickFromStore(cm.store, cm.label));
   }
   if (v.indexOf('o:') === 0) {
     var om = ((MODELS && MODELS.openrouter && MODELS.openrouter.models) || [])[Number(v.slice(2))];
@@ -1701,6 +1728,7 @@ export default {
         models: OR_CHOICES,
         presets: proxyPresets(env),
       },
+      custom: await loadPicks(env),
       chosen: prefs.model || null,
     });
   }
@@ -3387,6 +3415,58 @@ async function handleCards(request, env) {
 // reads those counters back as a sentence, so the decision layer and the card
 // writer both lean towards what this person has actually rewarded.
 const PREFS_KEY = "prefs:v1";
+// What he typed in himself, so it becomes a button instead of being typed twice.
+const PICKS_KEY = "picks:v1";
+
+async function loadPicks(env) {
+  const store = ctxStore(env);
+  if (!store) return [];
+  try {
+    const raw = await readMoved(env, store, PICKS_KEY);
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list.filter((p) => p && p.store).slice(0, 12) : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+async function savePicks(env, list) {
+  const store = ctxStore(env);
+  if (!store) return false;
+  await store.put(PICKS_KEY, JSON.stringify((list || []).filter((p) => p && p.store).slice(0, 12)));
+  return true;
+}
+
+// He types any id he likes. It is read back as what it actually is: an
+// OpenRouter slug, a Cloudflare model, or one of his presets. The catalogue in
+// LTM says whether it is a real id, so the label can be its proper name.
+async function resolvePick(env, typed) {
+  const raw = String(typed || "").trim();
+  if (!raw) return null;
+  const lower = raw.toLowerCase();
+  const quick = MODEL_CHOICES.concat(OR_CHOICES).find((m) => String(m.id).toLowerCase() === lower);
+  let catalogue = null;
+  if (env.LTM) {
+    try {
+      const obj = await env.LTM.get(SHAPES_KEY);
+      if (obj) {
+        const cat = JSON.parse(await obj.text());
+        catalogue = (cat.models || []).find((m) => m && String(m.id || "").toLowerCase() === lower) || null;
+      }
+    } catch (err) {
+      catalogue = null;
+    }
+  }
+  const label = (quick && quick.label) || (catalogue && (catalogue.label || catalogue.name)) || raw;
+  const known = !!(quick || catalogue);
+  if (raw.indexOf("@cf/") === 0) return { store: raw, label, kind: "cf", known };
+  if (/^@preset\//i.test(raw)) {
+    const p = raw.slice(8);
+    return { store: "preset:" + p, label: "preset · " + p, kind: "preset", known: true };
+  }
+  if (raw.indexOf("/") > 0) return { store: "openrouter:" + raw, label, kind: "model", known };
+  return { store: "preset:" + raw, label: "preset · " + raw, kind: "preset", known: known || proxyPresets(env).indexOf(raw) >= 0 };
+}
 
 async function loadPrefs(env) {
   const empty = { actions: {}, domains: {}, events: [], updated: null };
@@ -4079,9 +4159,19 @@ async function handleFeedback(request, env) {
   slot.n = (slot.n || 0) + 1;
   slot[action] = (slot[action] || 0) + 1;
   prefs.domains[domain] = slot;
+  let resolved = null;
   if (action === "model") {
     const chosenModel = String(body.model || "").trim();
-    if (chosenModel) prefs.model = chosenModel;
+    if (body.resolve === true || body.typed === true) {
+      // Typed in by hand: keep it, and keep it as a button for next time.
+      resolved = await resolvePick(env, chosenModel);
+      if (resolved) {
+        prefs.model = resolved.store;
+        const picks = await loadPicks(env);
+        await savePicks(env, [{ store: resolved.store, label: resolved.label, known: resolved.known !== false }]
+          .concat(picks.filter((p) => p.store !== resolved.store)));
+      }
+    } else if (chosenModel) prefs.model = chosenModel;
     else delete prefs.model;
   }
   prefs.events.push({ at: new Date().toISOString(), action, domain, q: q.slice(0, 120) });
@@ -4094,9 +4184,9 @@ async function handleFeedback(request, env) {
       decision,
       sources: null,
     });
-    return json({ action, ok: true, indexed, learned: prefsHint(prefs), remembered });
+    return json({ action, ok: true, indexed, learned: prefsHint(prefs), remembered, resolved, picks: await loadPicks(env) });
   } catch (err) {
-    return json({ action, ok: true, indexed: "not indexed: " + err.message, learned: prefsHint(prefs), remembered });
+    return json({ action, ok: true, indexed: "not indexed: " + err.message, learned: prefsHint(prefs), remembered, resolved, picks: await loadPicks(env) });
   }
 }
 

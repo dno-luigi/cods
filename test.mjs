@@ -1062,6 +1062,19 @@ function fakeBrowser(pages, opts) {
   check("and keeps granite micro on the list", list.workers.some((m) => m.id === "@cf/ibm-granite/granite-4.0-h-micro"), list.workers.map((m) => m.id));
   check("and offers no llama at all", JSON.stringify(list).toLowerCase().indexOf("llama") === -1, JSON.stringify(list.workers.map((m) => m.id)));
   check("nothing is chosen to begin with", list.chosen === null, list.chosen);
+  check("nothing typed in to begin with", Array.isArray(list.custom) && list.custom.length === 0, list.custom);
+
+  // He types an OpenRouter id: it is recognised, saved, and offered as a button.
+  const typedIn = await (await post("/feedback", { action: "model", model: "openai/gpt-4o-mini", resolve: true, q: "model picker" }, env)).json();
+  check("a typed model id is resolved", typedIn.resolved && typedIn.resolved.store === "openrouter:openai/gpt-4o-mini", typedIn.resolved);
+  const afterTyped = await (await worker.fetch(new Request("https://cods.example/models"), env)).json();
+  check("it is kept as a pick", afterTyped.custom.some((p) => p.store === "openrouter:openai/gpt-4o-mini"), afterTyped.custom);
+  check("and is the chosen model", afterTyped.chosen === "openrouter:openai/gpt-4o-mini", afterTyped.chosen);
+
+  const presetTyped = await (await post("/feedback", { action: "model", model: "truth", resolve: true, q: "model picker" }, env)).json();
+  check("a bare name is taken as a preset", presetTyped.resolved && presetTyped.resolved.store === "preset:truth", presetTyped.resolved);
+  const cfTyped = await (await post("/feedback", { action: "model", model: "@cf/deepseek-ai/deepseek-v4-flash-0731", resolve: true, q: "model picker" }, env)).json();
+  check("a Cloudflare id keeps its name", cfTyped.resolved && cfTyped.resolved.store === "@cf/deepseek-ai/deepseek-v4-flash-0731" && cfTyped.resolved.label.indexOf("DeepSeek") >= 0, cfTyped.resolved);
 
   const pick = "@cf/mistralai/mistral-small-3.1-24b-instruct";
   await post("/feedback", { action: "model", model: pick, q: "model picker" }, env);
