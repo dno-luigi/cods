@@ -1743,6 +1743,10 @@ function openSheet() {
       '<input id="domNewD" placeholder="domain" style="width:90px;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px;font-size:12px">' +
       '<input id="domNewT" placeholder="principles for that domain" style="flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px;font-size:12px">' +
       '<button class="icon" data-dom-add="1">Add rule</button></div>' +
+      '<div style="font-size:10px;color:var(--dim);margin-top:8px;line-height:1.9">Every part reads rules under its own name. Press one to fill the domain box: ' +
+        ['decide', 'notes', 'search', 'cards', 'cloudflare', 'openrouter'].map(function (p) {
+          return '<button class="icon" data-stage="' + p + '" style="margin:2px 4px 2px 0">' + p + '</button>';
+        }).join('') + '</div>' +
       '<div class="row" style="margin-top:8px"><button data-set="prefs">Refresh</button><button data-set="forget">Forget it all</button></div></div>' +
     '<div class="sect"><h4>Approved answers</h4><p id="apprText" style="font-size:12px;color:var(--dim);line-height:1.5">loading...</p>' +
       '<div class="row" style="margin-top:8px"><button data-set="approved">Refresh</button></div></div>' +
@@ -1850,6 +1854,12 @@ document.addEventListener('click', function (e) {
   });
 });
 document.addEventListener('click', function (e) {
+  var stage = e.target && e.target.closest ? e.target.closest('[data-stage]') : null;
+  if (stage) {
+    var dbx = $('domNewD');
+    if (dbx) { dbx.value = stage.getAttribute('data-stage'); dbx.focus(); }
+    return;
+  }
   var add = e.target && e.target.closest ? e.target.closest('[data-dom-add]') : null;
   if (add) {
     var dEl = $('domNewD');
@@ -3040,8 +3050,12 @@ async function noteAttempt(env, domain, model, ok) {
 
 // ─── decision layer ───────────────────────────────────────────────────────────
 
-async function decide(env, state, questions) {
+async function decide(env, state, questions, prefs) {
   const asked = questions && typeof questions === "object" ? questions : QUESTIONS;
+  // A rule he wrote for the decide step is read here and nowhere else: it can
+  // change how the decision is made without touching how an answer is written.
+  const decideRules = [stageHint(prefs, "decide"), lengthLine(lengthLimit(prefs, "decide"))].filter(Boolean);
+  if (decideRules.length) state = state + "\n\n" + decideRules.join("\n");
   const tokens = estimateTokens(state) + estimateTokens(PRINCIPLES_TEXT);
   // They close the state rather than open it: the question still leads, and a
   // cut can only take from the middle, so the principles cannot be trimmed away.
@@ -4343,6 +4357,89 @@ async function tendPrefs(env, prefs, prompt) {
   return moved;
 }
 
+// ─── the parts, as domains ───────────────────────────────────────────────────
+// Every stage of a run is a name he can write a rule for. A rule written for a
+// part is read by that part and by nothing else, so a rule about searching cannot
+// change how an answer is worded, and a rule about length cannot change a search.
+const STAGES = ["decide", "notes", "search", "cards", "cloudflare", "openrouter"];
+
+function stageRules(prefs, stage) {
+  const dom = prefs && prefs.domainRules;
+  if (!dom || typeof dom !== "object") return [];
+  const hit = dom[String(stage || "").trim().toLowerCase()];
+  return Array.isArray(hit)
+    ? hit.map((r) => String((r && r.text) || "").trim()).filter(Boolean)
+    : [];
+}
+
+function stageHint(prefs, stage) {
+  const rules = stageRules(prefs, stage);
+  if (!rules.length) return "";
+  return (
+    "Rules he wrote for the " + stage + " step itself, not for the subject. They apply here and nowhere else:\n" +
+    rules.map((r) => "- " + r.slice(0, 300)).join("\n")
+  );
+}
+
+// How long he wants it, in his own words: "under 200 words", "three sentences",
+// "one paragraph". A length is a limit, not a wish — the answer is cut when it
+// runs past the number he wrote.
+const LEN_WORDS = /\b(?:under|below|max(?:imum)?|at most|no more than|fewer than|less than|up to)\s+(\d{1,4})\s+words?\b/i;
+const LEN_SENT = /\b(?:(?:at most|no more than|max(?:imum)?|under|up to)\s+)?(\d{1,2}|one|two|three|four|five)\s+sentences?\b/i;
+const LEN_PARA = /\b(?:(?:at most|no more than|max(?:imum)?|under|up to)\s+)?(\d{1,2}|one|two|three)\s+paragraphs?\b/i;
+const NUM_WORD_VAL = { one: 1, two: 2, three: 3, four: 4, five: 5 };
+
+function numOf(v, cap) {
+  const n = NUM_WORD_VAL[String(v || "").toLowerCase()] || Number(v) || 0;
+  return n > 0 ? Math.min(cap, n) : 0;
+}
+
+function lengthLimit(prefs, stage) {
+  const rules = stageRules(prefs, stage).join(" \n ");
+  if (!rules) return null;
+  const w = rules.match(LEN_WORDS);
+  const s = rules.match(LEN_SENT);
+  const p = rules.match(LEN_PARA);
+  const lim = {};
+  if (w) lim.words = Math.min(4000, Math.max(20, Number(w[1])));
+  if (s) lim.sentences = numOf(s[1], 40);
+  if (p) lim.paragraphs = numOf(p[1], 9);
+  return lim.words || lim.sentences || lim.paragraphs ? lim : null;
+}
+
+function lengthLine(lim) {
+  if (!lim) return "";
+  const bits = [];
+  if (lim.words) bits.push("at most " + lim.words + " words");
+  if (lim.sentences) bits.push("at most " + lim.sentences + " sentences");
+  if (lim.paragraphs) bits.push("at most " + lim.paragraphs + " paragraphs");
+  return "The length he set for this step: " + bits.join(", ") + ". Stay inside it; longer than that is wrong here.";
+}
+
+function clipTo(text, lim) {
+  let out = String(text || "").trim();
+  if (!out || !lim) return out;
+  if (lim.paragraphs) {
+    const paras = out.split(/\n{2,}/).filter((x) => x.trim());
+    if (paras.length > lim.paragraphs) out = paras.slice(0, lim.paragraphs).join("\n\n");
+  }
+  if (lim.sentences) {
+    const parts = out.match(/[^.!?\u2026]+[.!?\u2026]+["')\]]*\s*/g);
+    if (parts && parts.length > lim.sentences) out = parts.slice(0, lim.sentences).join("").trim();
+  }
+  if (lim.words) {
+    const words = out.split(/\s+/).filter(Boolean);
+    if (words.length > lim.words) {
+      const cut = words.slice(0, lim.words).join(" ");
+      // End on a full stop rather than mid-clause: the limit is his, the sense
+      // still has to survive it.
+      const stop = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "));
+      out = (stop > cut.length * 0.5 ? cut.slice(0, stop + 1) : cut.replace(/[,;:\u2014-]\s*\S*$/, "") + "\u2026").trim();
+    }
+  }
+  return out;
+}
+
 function prefsHint(prefs, prompt, domain) {
   const a = (prefs && prefs.actions) || {};
   const parts = [];
@@ -4716,7 +4813,7 @@ async function handleCard(request, env) {
 
   let decision = null;
   try {
-    decision = await decide(env, [instruction, material].filter(Boolean).join("\n\n"));
+    decision = await decide(env, [instruction, material].filter(Boolean).join("\n\n"), null, await loadPrefs(env));
   } catch (err) {
     failures.push("clef-flash: " + err.message);
   }
@@ -5305,7 +5402,7 @@ async function handleRoute(request, env) {
   let decision = null;
   let decisionError = null;
   try {
-    decision = await decide(env, buildState(prompt, contextCards), body.questions);
+    decision = await decide(env, buildState(prompt, contextCards), body.questions, await loadPrefs(env));
   } catch (err) {
     decisionError = err.message;
   }
@@ -5492,7 +5589,7 @@ async function handleChat(request, env, emit) {
   let decision = null;
   let decisionError = null;
   try {
-    decision = await decide(env, state, body.questions);
+    decision = await decide(env, state, body.questions, await loadPrefs(env));
     const wantDepth = askedDepth(prompt);
     if (wantDepth != null) decision.depth = wantDepth;
     if (String(body.search || "").toLowerCase() === "yes") decision.needs_web = 0.95;
@@ -5543,7 +5640,7 @@ async function handleChat(request, env, emit) {
       }
       state = fitted.state;
       try {
-        decision = await decide(env, state, body.questions);
+        decision = await decide(env, state, body.questions, await loadPrefs(env));
         decisionError = null;
       } catch (again) {
         // Last resort: the question alone still needs a decision. A refused
@@ -5552,7 +5649,7 @@ async function handleChat(request, env, emit) {
         try {
           fitted = fitState({ prompt, told: [], learned, card: SHAPE_CARD });
           state = fitted.state;
-          decision = await decide(env, state, body.questions);
+          decision = await decide(env, state, body.questions, await loadPrefs(env));
           decisionError = null;
         } catch (third) {
           decisionError = third.message;
@@ -5646,13 +5743,17 @@ async function handleChat(request, env, emit) {
   const instructionLine = explicit
     ? "He gave an explicit instruction. Carry it out exactly as written: do not ask what he wants, do not reinterpret it, do not add advice he did not ask for."
     : "";
+  const cardsLimit = lengthLimit(prefs, "cards");
+  // The answer call hands each provider the rules written under its own name, so
+  // cloudflare reads cloudflare and openrouter reads openrouter, whichever runs.
+  Object.assign(body, { hints: { cloudflare: stageHint(prefs, "cloudflare"), openrouter: stageHint(prefs, "openrouter") } });
   const ordered = prefsHint(prefs, prompt, plan.domain);
   const orderedText = ordered || learnedNow || learned;
   const preferenceLine = orderedText
     ? "What he has told you, in his order. His principles stand above his own preferences, which stand above the principles for this domain, which stand above what chat has learned; where two of these disagree, the higher one wins.\n" +
       orderedText
     : "";
-  const systemBits = [styleHint(decision), plan.pack.guidance, plan.care ? plan.pack.safety : "", preferenceLine, instructionLine]
+  const systemBits = [styleHint(decision), plan.pack.guidance, plan.care ? plan.pack.safety : "", preferenceLine, instructionLine, stageHint(prefs, "cards"), lengthLine(cardsLimit)]
     .filter(Boolean);
   if (plan.pack.principles && plan.pack.principles.length) {
     systemBits.push(plan.pack.principles.join(" "));
@@ -5750,6 +5851,7 @@ async function handleChat(request, env, emit) {
   // 5. Text: Workers AI models in order, then OpenRouter. Every answer walks
   //    out with cards, so the send never lands as one flat blob.
   const respond = async ({ answer, provider, trace }) => {
+    answer = clipTo(answer, cardsLimit);
     step("write", provider);
     await noteAttempt(env, plan.domain, trace && trace[0] ? trace[0].model : null, true);
     let cards = [];
@@ -6128,6 +6230,11 @@ async function askText(env, messages, body) {
   messages = withPrinciples(messages);
   const failures = [];
   const settings = { max_tokens: body.max_tokens || 2000, temperature: body.temperature ?? 0.7 };
+  // A rule written for cloudflare is read by the Workers AI call; a rule written
+  // for openrouter by the OpenRouter call. Each attempt sees only its own.
+  const hints = body && body.hints && typeof body.hints === "object" ? body.hints : {};
+  const forCf = hints.cloudflare ? messages.concat([{ role: "system", content: String(hints.cloudflare) }]) : messages;
+  const forOr = hints.openrouter ? messages.concat([{ role: "system", content: String(hints.openrouter) }]) : messages;
 
   const cfModels = unique(
     []
@@ -6142,7 +6249,7 @@ async function askText(env, messages, body) {
 
   if (env.ORPROXY && (body.proxy === true || String(body.provider || "") === "orproxy")) {
     try {
-      const via = await orProxyCall(env, messages, settings);
+      const via = await orProxyCall(env, forOr, settings);
       return { text: via.text, provider: "clef-flash → orproxy", trace: [{ source: "orproxy", via: via.via, model: via.model }] };
     } catch (err) {
       failures.push("orproxy: " + err.message);
@@ -6152,7 +6259,7 @@ async function askText(env, messages, body) {
   if (env.AI) {
     for (const cfModel of cfModels) {
       try {
-        const text = textFrom(await env.AI.run(cfModel, Object.assign({ messages }, settings)));
+        const text = textFrom(await env.AI.run(cfModel, Object.assign({ messages: forCf }, settings)));
         if (text) return { text, provider: "clef-flash → " + cfModel, trace: [{ source: "workers-ai", model: cfModel }] };
         failures.push(cfModel + ": empty response");
       } catch (err) {
@@ -6166,7 +6273,7 @@ async function askText(env, messages, body) {
     const orErrors = [];
     for (const model of models) {
       try {
-        const text = await callOpenRouter(env, model, messages, body);
+        const text = await callOpenRouter(env, model, forOr, body);
         return { text, provider: "clef-flash → openrouter", trace: [{ source: "openrouter", model }] };
       } catch (err) {
         orErrors.push(model + ": " + err.message);
@@ -6180,7 +6287,7 @@ async function askText(env, messages, body) {
 
   if (env.CF_CHAT_MODEL && env.AI) {
     try {
-      const text = textFrom(await env.AI.run(env.CF_CHAT_MODEL, Object.assign({ messages }, settings)));
+      const text = textFrom(await env.AI.run(env.CF_CHAT_MODEL, Object.assign({ messages: forCf }, settings)));
       if (text) return { text, provider: "clef-flash → workers-ai", trace: [{ source: "workers-ai", model: env.CF_CHAT_MODEL }] };
       failures.push("workers-ai: empty response");
     } catch (err) {

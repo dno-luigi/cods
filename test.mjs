@@ -2428,6 +2428,28 @@ function fakeBrowser(pages, opts) {
   const rawGot = await rawSave.json();
   check("a pasted document is taken as text, not an envelope", rawSave.status === 200 && !!rawGot.template && rawGot.template.name === "Pasted markdown", rawGot);
   check("the sheet retries a paste as plain text once", html.indexOf("text/markdown; charset=utf-8") > -1 && html.indexOf("API.templates + '?name='") > -1, "fallback");
+  // Every part is a domain: the code that runs the part reads the rules written
+  // under its own name, and a length he writes is a limit rather than a wish.
+  const fsMod = await import("node:fs");
+  const workerSrc = fsMod.readFileSync(new URL("./worker.js", import.meta.url), "utf8");
+  const hFrom = workerSrc.indexOf("// \u2500\u2500\u2500 the parts, as domains");
+  const hTo = workerSrc.indexOf("function prefsHint(prefs, prompt, domain) {");
+  const parts = hFrom > -1 && hTo > hFrom
+    ? new Function(workerSrc.slice(hFrom, hTo) + "\nreturn { stageRules, stageHint, lengthLimit, lengthLine, clipTo };")()
+    : null;
+  check("the part rules are real code", !!parts, "helpers");
+  const cardsOnly = { domainRules: { cards: [{ text: "answers under 120 words" }] } };
+  const lim = parts && parts.lengthLimit(cardsOnly, "cards");
+  check("a length he writes is read off his rule", lim && lim.words === 120, lim);
+  check("the same rules say nothing to another part", parts && parts.stageRules(cardsOnly, "search").length === 0 && parts.stageRules(cardsOnly, "cloudflare").length === 0, "isolated");
+  check("a rule reaches the part it names", parts && parts.stageHint(cardsOnly, "cards").indexOf("answers under 120 words") > -1, "hint");
+  const sentenceCut = parts && parts.clipTo("One. Two. Three. Four. Five.", { sentences: 2 });
+  check("a sentence limit is enforced", sentenceCut === "One. Two.", sentenceCut);
+  const wordCut = parts && parts.clipTo("word ".repeat(200), { words: 30 });
+  check("a word limit comes back inside the number", wordCut && wordCut.split(/\s+/).filter(Boolean).length <= 30, wordCut && wordCut.split(/\s+/).filter(Boolean).length);
+  // The buttons are built in the browser from this list, so the served page carries
+  // the list and the attribute rather than six rendered buttons.
+  check("the page builds a button per part", html.indexOf("data-stage=") > -1 && html.indexOf("['decide', 'notes', 'search', 'cards', 'cloudflare', 'openrouter']") > -1, "parts on the page");
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");
