@@ -1097,6 +1097,21 @@ function fakeBrowser(pages, opts) {
   check("and the answer still arrives when it cannot run", true, "ok");
 }
 
+// 24a. what it learned is his to edit, and the answer model reads it
+{
+  const env = makeEnv();
+  const added = await (await post("/prefs", { action: "add", q: "Answer length", a: "Long, full answers by default" }, env)).json();
+  check("a preference can be added", added.ok && (added.learned || []).some((x) => x.q === "Answer length" && x.a === "Long, full answers by default"), added.learned);
+  check("and it is in what the models are told", String(added.hint || "").indexOf("Long, full answers") >= 0, added.hint);
+  const edited = await (await post("/prefs", { action: "edit", q: "Answer length", a: "Long answers, short only if I ask" }, env)).json();
+  check("a preference can be edited", (edited.learned || []).some((x) => x.q === "Answer length" && x.a === "Long answers, short only if I ask"), edited.learned);
+  aiInputs = [];
+  await post("/chat", { prompt: "what is consideration", use_cache: false }, env);
+  check("the answering model is given the edited preference", aiInputs.some((a) => JSON.stringify(a).indexOf("short only if I ask") >= 0), aiInputs.length);
+  const removed = await (await post("/prefs", { action: "delete", q: "Answer length" }, env)).json();
+  check("a preference can be removed", !(removed.learned || []).some((x) => x.q === "Answer length"), removed.learned);
+}
+
 // 24b. a pick rides along with each question
 {
   const seen = [];

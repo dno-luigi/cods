@@ -1388,8 +1388,9 @@ function openSheet() {
       '<button data-set="tts">Voice ' + (S.tts ? 'on' : 'off') + '</button>' +
       '<button data-set="think">Thought process ' + (S.think ? 'on' : 'off') + '</button>' +
     '</div></div>' +
-    '<div class="sect"><h4>What it learned</h4><p id="prefText" style="font-size:12px;color:var(--dim);line-height:1.5">loading...</p>' +
-      '<div class="row" style="margin-top:8px"><button data-set="prefs">Refresh</button><button data-set="forget">Forget it</button></div></div>' +
+    '<div class="sect"><h4>What it learned</h4><p style="font-size:11px;color:var(--dim);line-height:1.5">These are read from KV and given to the model that answers. Edit them, add your own, or remove one.</p>' +
+      '<div id="prefList">loading...</div>' +
+      '<div class="row" style="margin-top:8px"><button data-set="prefs">Refresh</button><button data-set="forget">Forget it all</button></div></div>' +
     '<div class="sect"><h4>Approved answers</h4><p id="apprText" style="font-size:12px;color:var(--dim);line-height:1.5">loading...</p>' +
       '<div class="row" style="margin-top:8px"><button data-set="approved">Refresh</button></div></div>' +
     '<div class="sect"><h4>API</h4><p style="font-size:11px;color:var(--dim);line-height:1.6">' + esc(location.origin) + '/chat · /card · /deck · /prefs</p></div>';
@@ -1399,11 +1400,50 @@ function openSheet() {
 }
 function loadPrefs() {
   fetch(API.prefs).then(function (r) { return r.json(); }).then(function (d) {
-    var p = $('prefText');
-    if (!p) return;
-    p.textContent = d && d.hint ? d.hint : 'Nothing yet. Press a card button and it starts learning.';
+    var box = $('prefList');
+    if (!box) return;
+    var rows = ((d && d.learned) || []).map(function (x) {
+      var q = esc(x.q || '');
+      return '<div style="margin:6px 0 2px;font-size:10px;color:var(--dim)">' + esc(x.prompt || x.q) + '</div>' +
+        '<div class="row" style="align-items:center">' +
+        '<input data-pref-a="' + q + '" value="' + esc(x.a || '') + '" style="flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px;font-size:12px">' +
+        '<button class="icon" data-pref-save="' + q + '">Save</button>' +
+        '<button class="icon" data-pref-del="' + q + '">Remove</button></div>';
+    }).join('');
+    box.innerHTML = (rows || '<p style="font-size:11px;color:var(--dim);margin:0 0 8px">Nothing yet. Add one below, or press a card button and it starts learning.</p>') +
+      '<div class="row" style="margin-top:10px;align-items:center">' +
+      '<input id="prefNewQ" placeholder="what it should know about you" style="flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px;font-size:12px">' +
+      '<input id="prefNewA" placeholder="your preference" style="flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px;font-size:12px">' +
+      '<button class="icon" data-pref-add="1">Add</button></div>';
   }).catch(function () {});
 }
+
+function prefsWrite(b) {
+  fetch(API.prefs, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b)
+  }).then(function (r) { return r.json(); }).then(function (d) {
+    if (d && d.error) { toast(d.error); return; }
+    toast('Saved. The models read this on the next question.');
+    loadPrefs();
+  }).catch(function (e) { toast('Could not save: ' + ((e && e.message) || e)); });
+}
+
+document.addEventListener('click', function (e) {
+  var b = e.target && e.target.closest ? e.target.closest('[data-pref-save],[data-pref-del],[data-pref-add]') : null;
+  if (!b) return;
+  e.preventDefault();
+  if (b.hasAttribute('data-pref-add')) {
+    var nq = (($('prefNewQ') && $('prefNewQ').value) || '').trim();
+    var na = (($('prefNewA') && $('prefNewA').value) || '').trim();
+    if (!nq || !na) { toast('Add what it should know, and your preference'); return; }
+    return prefsWrite({ action: 'add', q: nq, a: na });
+  }
+  var delQ = b.getAttribute('data-pref-del');
+  if (delQ) return prefsWrite({ action: 'delete', q: delQ });
+  var row = b.closest('.row');
+  var input = row && row.querySelector('[data-pref-a]');
+  prefsWrite({ action: 'edit', q: b.getAttribute('data-pref-save'), a: input ? input.value : '' });
+});
 function loadApprovedList() {
   fetch('/approved').then(function (r) { return r.json(); }).then(function (d) {
     var p = document.getElementById('apprText');
@@ -1873,6 +1913,76 @@ export default {
     return json({ text: heard.text, model: heard.model, free: true });
   }
 
+  // What he has taught it is his to change. Edit, add or remove one, and the
+
+  // next question reads the edited list from KV. The stored record is read and
+
+  // written whole, so nothing else in it is lost.
+
+  if (url.pathname === "/prefs" && request.method === "POST") {
+
+    const { body, error } = await readBody(request);
+
+    if (error) return error;
+
+    const store = ctxStore(env);
+
+    if (!store) return json({ error: "No preferences store is bound" }, 503);
+
+    let prefs = {};
+
+    try {
+
+      const raw = await readMoved(env, store, PREFS_KEY);
+
+      prefs = raw ? JSON.parse(raw) || {} : {};
+
+    } catch (err) {
+
+      prefs = {};
+
+    }
+
+    prefs.learned = Array.isArray(prefs.learned) ? prefs.learned : [];
+
+    const act = String(body.action || "").trim();
+
+    const q = String(body.q || "").trim().slice(0, 80);
+
+    const a = String(body.a || "").trim().slice(0, 200);
+
+    if (act === "add" || act === "edit") {
+
+      if (!q || !a) return json({ error: "Send what it should know (q) and the preference (a)" }, 400);
+
+      prefs.learned = prefs.learned.filter((x) => x && x.q !== q);
+
+      prefs.learned.push({ q, a, prompt: "set by him", at: new Date().toISOString() });    } else if (act === "delete") {
+      if (!q) return json({ error: "Send q" }, 400);
+      prefs.learned = prefs.learned.filter((x) => x && x.q !== q);
+    } else if (act === "reset" || body.reset === true) {
+      // "Forget it all" still forgets everything, learned list included.
+      prefs = { actions: {}, domains: {}, events: [], learned: [], updated: new Date().toISOString() };
+      await store.put(PREFS_KEY, JSON.stringify(prefs));
+      return json({ ok: true, reset: true, hint: prefsHint(prefs), learned: [] });
+    } else {
+      return json({ error: "Unknown action: " + act }, 400);
+    }
+
+    prefs.updated = new Date().toISOString();
+
+    prefs.events = (Array.isArray(prefs.events) ? prefs.events : []).slice(-24);
+
+    prefs.learned = prefs.learned.slice(-40);
+
+    await store.put(PREFS_KEY, JSON.stringify(prefs));
+
+    return json({ ok: true, action: act, hint: prefsHint(prefs), learned: prefs.learned });
+
+  }
+
+
+  
   if (url.pathname === "/prefs") {
       // POST { reset: true } forgets everything learned, so drift can be undone.
       if (request.method === "POST") {
