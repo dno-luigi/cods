@@ -1119,6 +1119,8 @@ function fakeBrowser(pages, opts) {
   const page = await (await worker.fetch(new Request("https://cods.example/"), env)).text();
   check("the sheet lets him edit the label as well as the words", page.includes("data-pref-q"), "label field");
   check("and the edit box holds a paragraph", /<textarea[^>]*id="modalInput"/.test(page), "textarea");
+  check("every field on a card is editable, not just the two", page.includes("function editCardSheet") && page.includes("data-field") && page.includes("data-card-save"), "card sheet");
+  check("and the sheet writes back whatever he changed", page.includes("function saveCardSheet") && page.includes("changed.join"), "save path");
   const removed = await (await post("/prefs", { action: "delete", q: "Length I want" }, env)).json();
   check("a preference can be removed", !(removed.learned || []).some((x) => x.q === "Length I want"), removed.learned);
 }

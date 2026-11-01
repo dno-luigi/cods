@@ -912,6 +912,15 @@ function render() {
   updSel();
 }
 document.addEventListener('click', function (ev) {
+  var sheetBtn = ev.target && ev.target.closest ? ev.target.closest('[data-card-save],[data-card-cancel]') : null;
+  if (sheetBtn) {
+    ev.preventDefault(); ev.stopPropagation();
+    if (sheetBtn.hasAttribute('data-card-cancel')) { shutSheet(); return; }
+    saveCardSheet();
+    return;
+  }
+}, true);
+document.addEventListener('click', function (ev) {
   var t = ev.target && ev.target.closest ? ev.target.closest('[data-expand]') : null;
   if (!t) return;
   ev.preventDefault();
@@ -967,14 +976,7 @@ function ask(title, desc, ph, cb, value) {
 function act(name) {
   var c = byId(S.ctx);
   closeMenu();
-  if (name === 'edit') {
-    ask('Edit the request', 'The line on the front of the card.', 'the request', function (q2) {
-      ask('Edit the answer', 'What the card says back. Your wording is saved as a preference the models read.', 'the answer', function (a2) {
-        editCard(c, q2, a2);
-      }, c.a);
-    }, c.q);
-    return;
-  }
+  if (name === 'edit') { editCardSheet(c); return; }
   if (name === 'merge') {
     var p = picked();
     if (p.length < 2) { toast('Select two cards first'); return; }
@@ -1056,6 +1058,67 @@ function editCard(c, q2, a2) {
     if (d && d.error) { toast('Card edited; not learned: ' + d.error); return; }
     toast('Card edited, and saved as a preference');
   }).catch(function () { toast('Card edited; preference not saved'); });
+}
+
+function fieldText(v) {
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'object') { try { return JSON.stringify(v, null, 2); } catch (e) { return String(v); } }
+  return String(v);
+}
+function shutSheet() { $('sheet').classList.remove('show'); S.editing = null; }
+function learnCardEdit(c, changed) {
+  var a = 'He rewrote ' + changed.join(', ') + ' on this card. It now says: ' + String(c.a || '').slice(0, 200);
+  if (c.provider) a += ' — how it got there: ' + String(c.provider).slice(0, 90);
+  fetch(API.prefs, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'add', q: 'Card he corrected: ' + String(c.q || '').slice(0, 60), a: a.slice(0, 400) })
+  }).then(function (r) { return r.json(); }).then(function (d) {
+    if (d && d.error) { toast('Card saved; not learned: ' + d.error); return; }
+    toast('Card saved, and the models read the change');
+  }).catch(function () { toast('Card saved; preference not saved'); });
+}
+function saveCardSheet() {
+  var c = byId(S.editing);
+  if (!c) { shutSheet(); return; }
+  var boxes = $('sheetBody').querySelectorAll('[data-field]');
+  var changed = [];
+  for (var i = 0; i < boxes.length; i++) {
+    var b = boxes[i];
+    var k = b.getAttribute('data-field');
+    var was = c[k], now;
+    if (was && typeof was === 'object') {
+      var txt = String(b.value).trim();
+      if (!txt) now = null;
+      else { try { now = JSON.parse(txt); } catch (e) { now = String(b.value); } }
+    } else {
+      now = String(b.value);
+    }
+    if (JSON.stringify(now) !== JSON.stringify(was)) { c[k] = now; changed.push(k); }
+  }
+  if (!changed.length) { shutSheet(); toast('Nothing changed'); return; }
+  c.edited = true;
+  c.edited_at = new Date().toISOString();
+  render(); save(); shutSheet();
+  learnCardEdit(c, changed);
+}
+function editCardSheet(c) {
+  if (!c) return;
+  var keys = Object.keys(c).filter(function (k) { return k !== 'id'; });
+  var h = '<h3>Every field on this card</h3>' +
+    '<p style="font-size:11px;color:var(--dim);margin:0 0 10px;line-height:1.5">All of it is yours: what it says, and how it got here. Clear a field to empty it. Written as JSON, a field keeps its structure.</p>';
+  keys.forEach(function (k) {
+    var obj = !!c[k] && typeof c[k] === 'object';
+    h += '<div style="margin:0 0 10px"><div style="font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);margin:0 0 3px">' + esc(k) + '</div>' +
+      '<textarea data-field="' + esc(k) + '" style="width:100%;min-height:' + (obj ? 84 : 40) + 'px;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:8px;font-size:12px;font-family:inherit">' +
+      esc(fieldText(c[k])) + '</textarea></div>';
+  });
+  h += '<div class="row" style="justify-content:flex-end;margin-top:8px">' +
+    '<button data-card-cancel="1">Cancel</button>' +
+    '<button class="on" data-card-save="1">Save the card</button></div>' +
+    '<div style="font-size:10px;color:var(--dim);margin-top:8px">id ' + esc(String(c.id || '')) + ' · saved on this device and written as a preference</div>';
+  $('sheetBody').innerHTML = h;
+  $('sheet').classList.add('show');
+  S.editing = c.id;
 }
 
 function approveCard(c, rank) {
