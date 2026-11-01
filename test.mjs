@@ -2291,6 +2291,64 @@ function fakeBrowser(pages, opts) {
   });
 }
 
+// 31. his hierarchy, in his order: preferences, domain principles, learned
+{
+  const base = makeEnv();
+  const inner = base.AI.run;
+  const seen = [];
+  const env = makeEnv({
+    AI: { run: async (m, i) => {
+      seen.push(JSON.stringify({ model: String(m), input: i }));
+      if (String(m).startsWith("@cf/cloudflare/clef")) {
+        return { answers: {
+          intent: { probabilities: { answer: 0.9 } },
+          domain: { probabilities: { research: 0.95, general: 0.05 } },
+          depth: { score: 2 },
+          needs_web: { probability: 0.1 },
+          clarify: { probability: 0.02 },
+          sensitive: { probability: 0.02 },
+        } };
+      }
+      return inner(m, i);
+    } },
+  });
+
+  await post("/prefs", { action: "add", q: "Register", a: "Write for a judge, never for a search engine." }, env);
+  await post("/prefs", { action: "domain", domain: "research", text: "Cite the page, not the summary." }, env);
+  await post("/prefs", { action: "domain", domain: "legal", text: "Never file before the deadline is checked." }, env);
+  await post("/prefs", { action: "add", source: "chat", q: "Card he corrected: names list", a: "Extract the names, one per line." }, env);
+
+  await post("/chat", { prompt: "extract the names from this research page", use_cache: false }, env);
+
+  const answer = seen.filter((s) => s.indexOf("Write for a judge") >= 0);
+  check("his own preference reaches the answer", answer.length > 0, answer.length);
+  check("the domain's principle reaches it too", seen.some((s) => s.indexOf("Cite the page, not the summary") >= 0), seen.length);
+  check("a principle for another domain does not", !seen.some((s) => s.indexOf("Never file before") >= 0), seen.length);
+
+  // The decision call runs before the domain is known, so the layered call is
+  // the one that carries the domain heading and his preferences together.
+  const layered = seen.filter((s) => s.indexOf("Write for a judge") >= 0 && s.indexOf("Principles for research") >= 0);
+  const one = layered[0] || "";
+  check("a call carries all three layers", layered.length > 0, layered.length);
+  const iHis = one.indexOf("His own preferences");
+  const iDom = one.indexOf("Principles for research");
+  const iLearn = one.indexOf("Learned in chat");
+  check("his preferences outrank the domain, and the domain outranks what chat learned",
+    iHis >= 0 && iDom > iHis && iLearn > iDom, [iHis, iDom, iLearn]);
+
+  const saved = await (await worker.fetch(new Request("https://cods.example/prefs"), env)).json();
+  check("domain principles are stored by domain", (saved.domainRules.research || []).length === 1 && (saved.domainRules.legal || []).length === 1, saved.domainRules);
+
+  await post("/prefs", { action: "domain-remove", domain: "research", text: "Cite the page, not the summary." }, env);
+  const gone = await (await worker.fetch(new Request("https://cods.example/prefs"), env)).json();
+  check("and one can be taken back", (gone.domainRules.research || []).length === 0, gone.domainRules);
+
+  const html = await (await worker.fetch(new Request("https://x/"), makeEnv())).text();
+  ["id=\"domList\"", "data-dom-add", "data-dom-del", "domain principles"].forEach(function (n) {
+    check("the sheet has " + n, html.indexOf(n) >= 0, n);
+  });
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
 

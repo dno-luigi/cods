@@ -1084,7 +1084,7 @@ function learnCardEdit(c, changed) {
   if (c.provider) a += ' — how it got there: ' + String(c.provider).slice(0, 90);
   fetch(API.prefs, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'add', q: 'Card he corrected: ' + String(c.q || '').slice(0, 60), a: a.slice(0, 400) })
+    body: JSON.stringify({ action: 'add', source: 'chat', q: 'Card he corrected: ' + String(c.q || '').slice(0, 60), a: a.slice(0, 400) })
   }).then(function (r) { return r.json(); }).then(function (d) {
     if (d && d.error) { toast('Card saved; not learned: ' + d.error); return; }
     toast('Card saved, and the models read the change');
@@ -1509,6 +1509,11 @@ function openSheet() {
     '<div class="sect"><h4>Principles</h4><p style="font-size:11px;color:var(--dim);line-height:1.5">Unchanging. Every model is given these before anything else, and nothing learned or asked can put itself above them.</p><div id="prinList">loading...</div></div>' +
     '<div class="sect"><h4>What it learned</h4><p style="font-size:11px;color:var(--dim);line-height:1.5">These are read from KV and given to the model that answers. Edit them, add your own, or remove one.</p>' +
       '<div id="prefList">loading...</div>' +
+      '<div id="domList" style="margin-top:14px">loading...</div>' +
+      '<div class="row" style="margin-top:6px;align-items:center">' +
+      '<input id="domNewD" placeholder="domain" style="width:90px;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px;font-size:12px">' +
+      '<input id="domNewT" placeholder="principles for that domain" style="flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px;font-size:12px">' +
+      '<button class="icon" data-dom-add="1">Add rule</button></div>' +
       '<div class="row" style="margin-top:8px"><button data-set="prefs">Refresh</button><button data-set="forget">Forget it all</button></div></div>' +
     '<div class="sect"><h4>Approved answers</h4><p id="apprText" style="font-size:12px;color:var(--dim);line-height:1.5">loading...</p>' +
       '<div class="row" style="margin-top:8px"><button data-set="approved">Refresh</button></div></div>' +
@@ -1559,6 +1564,21 @@ function loadPrefs() {
       '<input id="prefNewQ" placeholder="what it should know about you" style="flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px;font-size:12px">' +
       '<input id="prefNewA" placeholder="your preference" style="flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px;font-size:12px">' +
       '<button class="icon" data-pref-add="1">Add</button></div>';
+
+    var dom = (d && d.domainRules) || {};
+    var db = $('domList');
+    if (db) {
+      var names = Object.keys(dom);
+      db.innerHTML = names.length
+        ? '<div style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);margin:0 0 4px">domain principles</div>' + names.map(function (k) {
+            return '<div style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);margin:8px 0 2px">' + esc(k) + '</div>' +
+              dom[k].map(function (r) {
+                return '<div class="row" style="align-items:center;margin:4px 0"><div style="flex:1;min-width:0;font-size:11px;color:var(--text);line-height:1.45">' + esc(r.text) + '</div>' +
+                  '<button class="icon" data-dom-del="' + esc(k) + '|' + esc(r.text) + '">Remove</button></div>';
+              }).join('');
+          }).join('')
+        : '<p style="font-size:11px;color:var(--dim);margin:0">No domain principles yet. Add one by naming a domain and the rule for it.</p>';
+    }
   }).catch(function () {});
 }
 
@@ -1599,6 +1619,22 @@ document.addEventListener('click', function (e) {
     q: label ? label.value : b.getAttribute('data-pref-save'),
     a: input ? input.value : ''
   });
+});
+document.addEventListener('click', function (e) {
+  var add = e.target && e.target.closest ? e.target.closest('[data-dom-add]') : null;
+  if (add) {
+    var dEl = $('domNewD');
+    var tEl = $('domNewT');
+    var d = ((dEl && dEl.value) || '').trim();
+    var tx = ((tEl && tEl.value) || '').trim();
+    if (!d || !tx) { toast('Name the domain and the rule'); return; }
+    return prefsWrite({ action: 'domain', domain: d, text: tx });
+  }
+  var del = e.target && e.target.closest ? e.target.closest('[data-dom-del]') : null;
+  if (del) {
+    var bits = String(del.getAttribute('data-dom-del') || '').split('|');
+    return prefsWrite({ action: 'domain-remove', domain: bits[0], text: bits.slice(1).join('|') });
+  }
 });
 function loadApprovedList() {
   fetch('/approved').then(function (r) { return r.json(); }).then(function (d) {
@@ -2115,6 +2151,7 @@ export default {
       prefs.learned = prefs.learned.filter((x) => x && x.q !== q);
 
       if (from && from !== q) prefs.learned = prefs.learned.filter((x) => x && x.q !== from);
+      const source = String(body.source || "").toLowerCase() === "chat" ? "chat" : "him";
       const twin = prefs.learned.find((x) => x && x.q !== q && textAlike(String(x.a || ""), a) >= 0.8);
       if (twin) {
         twin.prompts = (Array.isArray(twin.prompts) ? twin.prompts : [String(twin.prompt || "")]).filter(Boolean);
@@ -2125,7 +2162,13 @@ export default {
         twin.merged = (twin.merged || 0) + 1;
         twin.at = new Date().toISOString();
       } else {
-        prefs.learned.push({ q, a, prompt: from && from !== q ? "renamed by him" : "set by him", at: new Date().toISOString() });
+        prefs.learned.push({
+          q,
+          a,
+          prompt: source === "chat" ? "learned in chat" : from && from !== q ? "renamed by him" : "set by him",
+          source,
+          at: new Date().toISOString(),
+        });
       }    } else if (act === "promote" || act === "demote") {
       if (!q) return json({ error: "Send q" }, 400);
       const row = prefs.learned.find((x) => x && x.q === q);
@@ -2142,6 +2185,20 @@ export default {
         row.why = "held by him";
       }
       row.moved = new Date().toISOString();
+    } else if (act === "domain" || act === "domain-remove") {
+      const dom = String(body.domain || "").trim().toLowerCase().slice(0, 40);
+      const text = String(body.text || body.a || "").trim().slice(0, 300);
+      if (!dom || !text) return json({ error: "Send domain and text" }, 400);
+      prefs.domainRules = prefs.domainRules && typeof prefs.domainRules === "object" ? prefs.domainRules : {};
+      if (act === "domain") {
+        prefs.domainRules[dom] = Array.isArray(prefs.domainRules[dom]) ? prefs.domainRules[dom] : [];
+        prefs.domainRules[dom] = prefs.domainRules[dom].filter((r) => r && r.text !== text);
+        prefs.domainRules[dom].push({ text, at: new Date().toISOString() });
+      } else {
+        if (Array.isArray(prefs.domainRules[dom])) {
+          prefs.domainRules[dom] = prefs.domainRules[dom].filter((r) => !r || r.text !== text);
+        }
+      }
     } else if (act === "rephrase") {
       if (!q) return json({ error: "Send q" }, 400);
       const row = prefs.learned.find((x) => x && x.q === q);
@@ -2218,6 +2275,7 @@ export default {
         kv: !!env.KV,
         actions: prefs.actions,
         learned: (prefs.learned || []).slice(-30),
+        domainRules: prefs.domainRules || {},
         domains: prefs.domains,
         events: (prefs.events || []).slice(-10),
         hint: prefsHint(prefs),
@@ -3854,7 +3912,14 @@ async function loadPrefs(env) {
       actions: parsed.actions && typeof parsed.actions === "object" ? parsed.actions : {},
       domains: parsed.domains && typeof parsed.domains === "object" ? parsed.domains : {},
       events: Array.isArray(parsed.events) ? parsed.events : [],
-      learned: Array.isArray(parsed.learned) ? parsed.learned : [],
+      // Anything that came off a card is chat-learned, whatever an older record
+      // called it, so it sits in the bottom layer rather than among his own rules.
+      domainRules: parsed.domainRules && typeof parsed.domainRules === "object" ? parsed.domainRules : {},
+      learned: (Array.isArray(parsed.learned) ? parsed.learned : []).map((x) =>
+        x && /^card he corrected:/i.test(String(x.q || "")) && !/^renamed/i.test(String(x.prompt || ""))
+          ? Object.assign({}, x, { prompt: "learned in chat", source: "chat" })
+          : x
+      ),
       model: parsed.model || null,
       updated: parsed.updated || null,
     };
@@ -3983,9 +4048,29 @@ async function tendPrefs(env, prefs, prompt) {
   return moved;
 }
 
-function prefsHint(prefs, prompt) {
+function prefsHint(prefs, prompt, domain) {
   const a = (prefs && prefs.actions) || {};
   const parts = [];
+  // His order, top to bottom: the principles come before all of this, then his
+  // own preferences, then the principles for this domain, then what chat has
+  // learned. A line lower down never outranks a line above it.
+  const his = ((prefs && prefs.learned) || []).filter(
+    (x) => x && x.status !== "candidate" && /^(set|renamed) by him/i.test(String(x.prompt || ""))
+  );
+  if (his.length) {
+    parts.push(
+      "His own preferences, above the domain rules and above anything learned in chat:\n" +
+        his.slice(-8).map((x) => "- " + String((x && x.a) || "").slice(0, 300)).join("\n")
+    );
+  }
+  const dom = String(domain || "").trim().toLowerCase();
+  const rules = dom && prefs && prefs.domainRules && Array.isArray(prefs.domainRules[dom]) ? prefs.domainRules[dom] : [];
+  if (rules.length) {
+    parts.push(
+      "Principles for " + dom + ", above anything learned in chat:\n" +
+        rules.map((r) => "- " + String((r && r.text) || "").slice(0, 300)).join("\n")
+    );
+  }
   // What he answered when it asked, and what he corrected. A candidate is not
   // sent: it waits. A correction about something else is not sent either, which
   // is what stopped the same note repeating on every card.
@@ -3993,13 +4078,16 @@ function prefsHint(prefs, prompt) {
   const scored = (learned || []).map((x) => ({ x, m: prompt ? prefMatch(x, prompt) : { score: 1, same: [] } }));
   const use = scored
     .filter(({ x, m }) =>
-      x && (prompt
+      x &&
+      !/^(set|renamed) by him/i.test(String((x && x.prompt) || "")) &&
+      (prompt
         ? !isCardPref(x) || (m.score >= PREF_USE && (x.status !== "candidate" || m.score >= PREF_CANDIDATE))
         : x.status !== "candidate")
     )
     .slice(-4);
   if (use.length) {
     parts.push(
+      "Learned in chat, below the two levels above:\n" +
       "he told you: " +
         use
           .map(({ x, m }) =>
@@ -5038,8 +5126,11 @@ async function handleChat(request, env, emit) {
   const instructionLine = explicit
     ? "He gave an explicit instruction. Carry it out exactly as written: do not ask what he wants, do not reinterpret it, do not add advice he did not ask for."
     : "";
-  const preferenceLine = learnedNow || learned
-    ? "What he has told you before, and what he wants: " + (learnedNow || learned)
+  const ordered = prefsHint(prefs, prompt, plan.domain);
+  const orderedText = ordered || learnedNow || learned;
+  const preferenceLine = orderedText
+    ? "What he has told you, in his order. His principles stand above his own preferences, which stand above the principles for this domain, which stand above what chat has learned; where two of these disagree, the higher one wins.\n" +
+      orderedText
     : "";
   const systemBits = [styleHint(decision), plan.pack.guidance, plan.care ? plan.pack.safety : "", preferenceLine, instructionLine]
     .filter(Boolean);
