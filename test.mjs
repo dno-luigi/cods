@@ -832,6 +832,12 @@ function fakeBrowser(pages, opts) {
 // 18c. the page ships the theme and approve wiring
 {
   const html = await (await worker.fetch(new Request("https://cods.example/"), makeEnv({}))).text();
+  check("a card can be edited by him",
+    html.indexOf('data-op="edit"') >= 0 && html.indexOf("function editCard") >= 0,
+    "edit wiring");
+  check("and the edit is kept as a preference the models read",
+    html.indexOf("Card he corrected") >= 0 && html.indexOf("saved as a preference") >= 0,
+    "edit as preference");
   ['data-op="approve"', "applyTheme", "PRESETS", "/approve", "loadApprovedList"].forEach(function (needle) {
     check("page has " + needle, html.indexOf(needle) >= 0, needle);
   });

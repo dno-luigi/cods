@@ -930,6 +930,7 @@ function openMenu(id, x, y) {
   S.ctx = id;
   var n = picked().length;
   var h = '<div class="menu-t">' + esc(String(c.q || '').slice(0, 54)) + '</div>' +
+    '<button data-op="edit">Edit this card</button>' +
     '<button data-op="continue">Continue / refine</button>' +
     '<button data-op="magic">Magic rewrite</button>' +
     '<button data-op="style">Style</button>' +
@@ -953,10 +954,10 @@ function openMenu(id, x, y) {
 }
 function closeMenu() { $('menu').classList.remove('show'); S.ctx = null; }
 
-function ask(title, desc, ph, cb) {
+function ask(title, desc, ph, cb, value) {
   $('modalTitle').textContent = title;
   $('modalDesc').textContent = desc;
-  $('modalInput').value = '';
+  $('modalInput').value = value || '';
   $('modalInput').placeholder = ph || '';
   S.cb = cb;
   $('modal').classList.add('show');
@@ -966,6 +967,14 @@ function ask(title, desc, ph, cb) {
 function act(name) {
   var c = byId(S.ctx);
   closeMenu();
+  if (name === 'edit') {
+    ask('Edit the request', 'The line on the front of the card.', 'the request', function (q2) {
+      ask('Edit the answer', 'What the card says back. Your wording is saved as a preference the models read.', 'the answer', function (a2) {
+        editCard(c, q2, a2);
+      }, c.a);
+    }, c.q);
+    return;
+  }
   if (name === 'merge') {
     var p = picked();
     if (p.length < 2) { toast('Select two cards first'); return; }
@@ -1020,6 +1029,33 @@ function run(kind, list, instruction) {
       render(); save(); toast(kind + ' done');
     })
     .catch(function (e) { toast('Failed: ' + (e && e.message ? e.message : e)); });
+}
+
+// His correction is the strongest signal there is, so it is stored as a
+// preference the decision model and the answering model both read, not just
+// pasted onto the card.
+function editCard(c, q2, a2) {
+  if (!c) return;
+  var q = String(q2 || '').trim() || c.q;
+  var a = String(a2 || '').trim() || c.a;
+  c.q = q;
+  c.a = a;
+  c.edited = true;
+  c.edited_at = new Date().toISOString();
+  S.flip[c.id] = true;
+  render();
+  save();
+  fetch(API.prefs, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      action: 'add',
+      q: 'Card he corrected: ' + String(q).slice(0, 60),
+      a: 'He rewrote this card as: ' + String(a).slice(0, 180)
+    })
+  }).then(function (r) { return r.json(); }).then(function (d) {
+    if (d && d.error) { toast('Card edited; not learned: ' + d.error); return; }
+    toast('Card edited, and saved as a preference');
+  }).catch(function () { toast('Card edited; preference not saved'); });
 }
 
 function approveCard(c, rank) {
