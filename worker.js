@@ -570,7 +570,7 @@ code{font-size:12.5px;background:#00000044;padding:1px 4px;border-radius:4px}
 </div>
 <div id="toast"></div>
 <script>
-var API = { chat: '/chat', feedback: '/feedback', card: '/card', deck: '/deck', prefs: '/prefs' };
+var API = { chat: '/chat', feedback: '/feedback', card: '/card', deck: '/deck', prefs: '/prefs', templates: '/templates' };
 var NL = String.fromCharCode(10);
 var LS = 'cods:deck:v1';
 var S = { cards: [], flip: {}, sel: {}, ctx: null, fs: null, tts: false, light: false, deck: '', cb: null, theme: null, speaking: null, think: false, model: null, tpl: null };
@@ -1135,14 +1135,19 @@ function templateSheet(c) {
 
 function loadTemplates() {
   fetch(API.templates, { cache: 'no-store' })
-    .then(function (r) { return r.json(); })
+    .then(function (r) {
+      if (!r.ok) throw new Error('his templates: ' + r.status);
+      return r.json();
+    })
     .then(function (d) { paintTemplates(d && d.templates ? d.templates : []); })
-    .catch(function () { paintTemplates([]); });
+    .catch(function (err) { paintTemplates([], 'Could not load your templates: ' + ((err && err.message) || err)); });
 }
 
-function paintTemplates(list) {
+function paintTemplates(list, problem) {
   var h = '<h3>Template</h3>' +
-    '<p class="tplhint">Pick one and the answer is rewritten in its shape. The request, the facts and the sources stay as they are.</p>';
+    (problem
+      ? '<p class="tplhint">' + esc(problem) + '</p>'
+      : '<p class="tplhint">Pick one and the answer is rewritten in its shape. The request, the facts and the sources stay as they are.</p>');
   if (list.length) {
     h += list.map(function (t) {
       return '<div class="tplrow"><button class="tplpick" data-tpl="' + esc(t.id) + '">' +
@@ -1997,7 +2002,10 @@ $('sheet').addEventListener('click', function (e) {
     if (ex.length < 20) return toast('Paste an example of the writing you want');
     save.disabled = true;
     fetch(API.templates, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: nm, example: ex }) })
-      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        if (!r.ok) throw new Error('save failed (' + r.status + ')');
+        return r.json();
+      })
       .then(function (d) {
         if (!d || !d.template) { toast('Could not save: ' + ((d && d.error) || 'no reply')); save.disabled = false; return; }
         S.tplNew = d.template.id;

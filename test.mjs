@@ -2421,6 +2421,8 @@ function fakeBrowser(pages, opts) {
   check("templates say so when there is no store", noStoreTpl.status === 503, noStoreTpl.status);
   check("the page has no invented templates", html.indexOf("var TPL = [") < 0 && html.indexOf('data-tpl="emotions"') < 0 && html.indexOf('data-tpl="letter"') < 0, "presets");
   check("the page lets him name and paste one", html.indexOf("data-tplsave") > -1 && html.indexOf("function paintTemplates") > -1 && html.indexOf("id=\"tplText\"") > -1, "form");
+  check("the sheet posts to the templates route", html.indexOf("templates: '/templates'") > -1, "route");
+  check("a failed template load says so", html.indexOf("Could not load your templates: ") > -1, "load error");
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");
