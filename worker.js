@@ -526,9 +526,10 @@ code{font-size:12.5px;background:#00000044;padding:1px 4px;border-radius:4px}
 .why-r{padding:2px 0}
 .why-r b{color:var(--text);font-weight:600}
 .why-ms{opacity:.55}
-.shotwrap{margin:10px 14px 0}
-.shot{width:100%;display:block;border:1px solid var(--line);border-radius:10px;background:#000;aspect-ratio:16/10;object-fit:cover}
-.shotcap{font-size:10px;color:var(--dim);margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.shotwrap{display:flex;align-items:center;gap:10px;margin:12px 14px 0;text-decoration:none;color:inherit}
+.shot{width:104px;height:74px;flex:none;display:block;border:1px solid var(--line);border-radius:8px;background:#000;object-fit:cover;object-position:50% 20%}
+.shotcap{min-width:0;font-size:11px;color:var(--dim);line-height:1.35;overflow:hidden}
+.shotcap b{display:block;font-size:11px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 </style>
 </head>
 <body>
@@ -853,9 +854,11 @@ function shots(c) {
   if (!c.sources || !c.sources.length) return '';
   var s = c.sources[0];
   if (!s || !s.url) return '';
-  return '<div class="shotwrap"><img class="shot" loading="lazy" decoding="async" alt="' +
-    esc(s.title || s.url) + '" src="/shot?u=' + encodeURIComponent(s.url) + '">' +
-    '<div class="shotcap">the page itself: ' + esc(s.title || s.url) + '</div></div>';
+  var host = '';
+  try { host = String(new URL(s.url).hostname).replace(/^www\./, ''); } catch (e) { host = ''; }
+  return '<a class="shotwrap" href="' + esc(s.url) + '" target="_blank" rel="noopener noreferrer">' +
+    '<img class="shot" loading="lazy" decoding="async" alt="" src="/shot?u=' + encodeURIComponent(s.url) + '">' +
+    '<span class="shotcap"><b>' + esc(host || 'source') + '</b>' + esc(s.title || s.url) + '</span></a>';
 }
 
 function readStream(res, onStep) {
@@ -4337,19 +4340,20 @@ function paragraphsOf(text) {
 
 // ─── the page as it looked, and a link to hand someone ─────────────────────
 
-// A screenshot is taken the first time a card that cites a page is looked at,
-// then kept under the URL's digest: one render per source, ever. It is the real
-// page through the BROWSER binding, not a thumbnail service.
+// A small picture of the first cited page, taken the first time a card that
+// cites it is looked at and kept under the URL's digest: one cheap render per
+// source, ever. Small on purpose — it is a marker beside the writing, not the
+// card itself, and tapping it opens the page.
 async function shotKey(url) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(url));
   const hex = Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
-  return "shot/" + hex.slice(0, 32) + ".png";
+  return "thumb/" + hex.slice(0, 32) + ".jpg";
 }
 
 const SHOT_HEADERS = {
-  "Content-Type": "image/png",
+  "Content-Type": "image/jpeg",
   "Cache-Control": "public, max-age=604800, immutable",
 };
 
@@ -4373,9 +4377,9 @@ async function handleShot(env, url) {
     res = await env.BROWSER.quickAction("screenshot", {
       url: target,
       userAgent: BROWSER_UA,
-      viewport: { width: 1200, height: 750 },
+      viewport: { width: 800, height: 600 },
       gotoOptions: { waitUntil: "networkidle2", timeout: 20000 },
-      screenshotOptions: { fullPage: false },
+      screenshotOptions: { fullPage: false, type: "jpeg", quality: 55 },
     });
   } catch (err) {
     return new Response("The page would not render", { status: 502, headers: cH });
@@ -4385,7 +4389,7 @@ async function handleShot(env, url) {
   if (!bytes.length) return new Response("Empty picture", { status: 502, headers: cH });
   if (env.LTM && bytes.length < 4 * 1024 * 1024) {
     try {
-      await env.LTM.put(key, bytes, { httpMetadata: { contentType: "image/png" } });
+      await env.LTM.put(key, bytes, { httpMetadata: { contentType: "image/jpeg" } });
     } catch (err) {}
   }
   return new Response(bytes, { headers: { ...SHOT_HEADERS, ...cH } });

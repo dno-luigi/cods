@@ -2391,6 +2391,8 @@ function fakeBrowser(pages, opts) {
     check("the page has " + n, html.indexOf(n) >= 0, n);
   });
   check("the provenance sits with the request", html.indexOf("'</div>' + why(c) + '</div>'") > -1, "why");
+  check("the picture is a small marker, not the card", html.indexOf(".shot{width:104px;height:74px") > -1 && html.indexOf(".shot{width:100%") < 0, "shot size");
+  check("the picture opens the page it came from", html.indexOf('class="shotwrap" href="') > -1 && html.indexOf('rel="noopener noreferrer"') > -1, "shot link");
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");
