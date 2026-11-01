@@ -3443,8 +3443,18 @@ async function savePicks(env, list) {
 // OpenRouter slug, a Cloudflare model, or one of his presets. The catalogue in
 // LTM says whether it is a real id, so the label can be its proper name.
 async function resolvePick(env, typed) {
-  const raw = String(typed || "").trim();
+  let raw = String(typed || "").trim();
   if (!raw) return null;
+  // Already a stored pick ("preset:truth"): read it, never prefix it twice.
+  const prefix = /^(openrouter:|preset:|proxy:)/i.exec(raw);
+  if (prefix) {
+    const rest = raw.slice(prefix[1].length);
+    if (!rest) return null;
+    if (prefix[1].toLowerCase() === "openrouter:") {
+      return { store: "openrouter:" + rest, label: rest, kind: "model", known: true };
+    }
+    return { store: "preset:" + rest, label: "preset: " + rest, kind: "preset", known: true };
+  }
   const lower = raw.toLowerCase();
   const quick = MODEL_CHOICES.concat(OR_CHOICES).find((m) => String(m.id).toLowerCase() === lower);
   let catalogue = null;
@@ -4164,7 +4174,11 @@ async function handleFeedback(request, env) {
   let resolved = null;
   if (action === "model") {
     const chosenModel = String(body.model || "").trim();
-    if (body.resolve === true || body.typed === true) {
+    if (body.forget === true) {
+      const picks = await loadPicks(env);
+      await savePicks(env, picks.filter((p) => p.store !== chosenModel));
+      if (prefs.model === chosenModel) delete prefs.model;
+    } else if (body.resolve === true || body.typed === true) {
       // Typed in by hand: keep it, and keep it as a button for next time.
       resolved = await resolvePick(env, chosenModel);
       if (resolved) {

@@ -1074,6 +1074,10 @@ function fakeBrowser(pages, opts) {
   const presetTyped = await (await post("/feedback", { action: "model", model: "truth", resolve: true, q: "model picker" }, env)).json();
   check("a bare name is taken as a preset", presetTyped.resolved && presetTyped.resolved.store === "preset:truth", presetTyped.resolved);
   const cfTyped = await (await post("/feedback", { action: "model", model: "@cf/deepseek-ai/deepseek-v4-flash-0731", resolve: true, q: "model picker" }, env)).json();
+  const storeTyped = await (await post("/feedback", { action: "model", model: "preset:truth", resolve: true, q: "model picker" }, env)).json();
+  check("a stored id is not prefixed twice", storeTyped.resolved && storeTyped.resolved.store === "preset:truth", storeTyped.resolved && storeTyped.resolved.store);
+  const forgot = await (await post("/feedback", { action: "model", model: "preset:truth", forget: true, q: "model picker" }, env)).json();
+  check("a pick can be taken off the list", !forgot.picks.some((p) => p.store === "preset:truth"), forgot.picks);
   check("a Cloudflare id keeps its name", cfTyped.resolved && cfTyped.resolved.store === "@cf/deepseek-ai/deepseek-v4-flash-0731" && cfTyped.resolved.label.indexOf("DeepSeek") >= 0, cfTyped.resolved);
 
   const pick = "@cf/mistralai/mistral-small-3.1-24b-instruct";
