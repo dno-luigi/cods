@@ -435,13 +435,14 @@ body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;dis
 .card:not(.flipped) .front{display:block}
 .card.flipped .back{display:block}
 @keyframes pop{from{opacity:.2;transform:translateY(3px)}to{opacity:1;transform:none}}
-.body{padding:8px 14px 12px;font-size:14px;line-height:1.55;word-break:break-word}
+.body{padding:8px 14px 12px;font-size:14px;line-height:1.62;word-break:break-word}
 .card-q{white-space:pre-wrap;font-size:15px}
 .front .card-q{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 .front .card-q.open{display:block;overflow:visible}
 .card-a{white-space:normal}
 :is(.card-a,.fs-body){-webkit-user-select:text;user-select:text;overflow-wrap:anywhere}
-:is(.card-a,.fs-body) p{margin:0 0 10px}
+:is(.card-a,.fs-body) p{margin:0 0 15px;line-height:1.68}
+:is(.card-a,.fs-body) p+p{margin-top:2px}
 :is(.card-a,.fs-body)>:first-child{margin-top:0}
 :is(.card-a,.fs-body)>:last-child{margin-bottom:0}
 :is(.card-a,.fs-body) h2,:is(.card-a,.fs-body) h3,:is(.card-a,.fs-body) h4{margin:15px 0 7px;line-height:1.3;font-weight:680;letter-spacing:.01em}
@@ -452,7 +453,7 @@ body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;dis
 :is(.card-a,.fs-body) ul{list-style:disc}
 :is(.card-a,.fs-body) ul ul{list-style:circle;margin:5px 0 0}
 :is(.card-a,.fs-body) ol{list-style:decimal}
-:is(.card-a,.fs-body) li{margin:0 0 5px;padding-left:2px}
+:is(.card-a,.fs-body) li{margin:0 0 8px;padding-left:2px}
 :is(.card-a,.fs-body) li::marker{color:var(--p)}
 :is(.card-a,.fs-body) li.task{list-style:none;margin-left:-20px}
 :is(.card-a,.fs-body) li.task.done{opacity:.55;text-decoration:line-through}
@@ -525,6 +526,9 @@ code{font-size:12.5px;background:#00000044;padding:1px 4px;border-radius:4px}
 .why-r{padding:2px 0}
 .why-r b{color:var(--text);font-weight:600}
 .why-ms{opacity:.55}
+.shotwrap{margin:10px 14px 0}
+.shot{width:100%;display:block;border:1px solid var(--line);border-radius:10px;background:#000;aspect-ratio:16/10;object-fit:cover}
+.shotcap{font-size:10px;color:var(--dim);margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 </style>
 </head>
 <body>
@@ -557,7 +561,7 @@ code{font-size:12.5px;background:#00000044;padding:1px 4px;border-radius:4px}
 var API = { chat: '/chat', feedback: '/feedback', card: '/card', deck: '/deck', prefs: '/prefs' };
 var NL = String.fromCharCode(10);
 var LS = 'cods:deck:v1';
-var S = { cards: [], flip: {}, sel: {}, ctx: null, fs: null, tts: false, light: false, deck: '', cb: null, theme: null, speaking: null, think: false, model: null };
+var S = { cards: [], flip: {}, sel: {}, ctx: null, fs: null, tts: false, light: false, deck: '', cb: null, theme: null, speaking: null, think: false, model: null, tpl: null };
 var MK = 'cods:model:v1';
 var MODELS = null;
 var LP = null;
@@ -841,6 +845,19 @@ function why(c) {
   }).join('') + '</div>';
 }
 
+// The first cited page, photographed the way a visitor sees it. The Worker
+// renders it through the browser binding once and keeps it in R2, so the same
+// source is never paid for twice; a page that will not render simply shows
+// nothing rather than a broken frame.
+function shots(c) {
+  if (!c.sources || !c.sources.length) return '';
+  var s = c.sources[0];
+  if (!s || !s.url) return '';
+  return '<div class="shotwrap"><img class="shot" loading="lazy" decoding="async" alt="' +
+    esc(s.title || s.url) + '" src="/shot?u=' + encodeURIComponent(s.url) + '">' +
+    '<div class="shotcap">the page itself: ' + esc(s.title || s.url) + '</div></div>';
+}
+
 function readStream(res, onStep) {
   var done = null;
   if (!res.body || !res.body.getReader) {
@@ -895,12 +912,12 @@ function cardHTML(c) {
   return '<div class="card' + flipped + sel + '" data-id="' + id + '">' +
     '<div class="face front"><div class="fh"><span class="lab">req</span>' +
       '<span class="acts"><span class="dots" data-edit="' + id + '">edit</span><span class="dots" data-expand="' + id + '">expand</span><span class="dots" data-dots="' + id + '">more</span></span></div>' +
-      '<div class="body card-q">' + esc(c.q) + '</div></div>' +
+      '<div class="body card-q">' + esc(c.q) + '</div>' + why(c) + '</div>' +
     '<div class="face back"><div class="fh"><span class="lab">answer</span><span class="acts">' +
       '<span class="dots" data-tts="' + id + '">' + (S.speaking === c.id ? 'stop' : 'play') + '</span>' +
       (c.more ? '<span class="dots" data-full="' + id + '">' + (c.showFull ? 'short' : 'long') + '</span>' : '') +
       '<span class="dots" data-dots="' + id + '">more</span></span></div>' +
-      '<div class="body card-a">' + md(c.showFull && c.more ? c.more : c.a) + '</div>' + meta(c) + why(c) + notes(c) + fb(c) + '</div>' +
+      '<div class="body card-a">' + md(c.showFull && c.more ? c.more : c.a) + '</div>' + meta(c) + shots(c) + notes(c) + fb(c) + '</div>' +
     '<div class="via">via ' + esc(c.provider) + '</div></div>';
 }
 function render() {
@@ -944,6 +961,96 @@ document.addEventListener('click', function (ev) {
 }, true);
 function scrollBottom() { var b = $('cards'); b.scrollTop = b.scrollHeight; }
 
+// A card is also a document: the same request, answer and trail written out as
+// markdown, as paper, or as a link that keeps its shape on someone else's screen.
+function cardMd(c) {
+  var out = '# ' + String(c.q || '').trim() + NL + NL + String(c.a || '').trim() + NL;
+  if (c.sources && c.sources.length) {
+    out += NL + '## Sources' + NL + NL;
+    c.sources.forEach(function (s, i) { out += (i + 1) + '. [' + (s.title || s.url) + '](' + s.url + ')' + NL; });
+  }
+  if (c.thinking && c.thinking.length) {
+    out += NL + '## How it got here' + NL + NL;
+    c.thinking.forEach(function (s) {
+      out += '- **' + s.step + '**' + (s.detail ? ' ' + s.detail : '') + (s.ms != null ? ' (' + s.ms + 'ms)' : '') + NL;
+    });
+  }
+  if (c.provider) out += NL + '---' + NL + NL + String(c.provider) + NL;
+  return out;
+}
+function exportMd(c) {
+  var name = String(c.q || 'card').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'card';
+  var href = URL.createObjectURL(new Blob([cardMd(c)], { type: 'text/markdown;charset=utf-8' }));
+  var a = document.createElement('a');
+  a.href = href;
+  a.download = name + '.md';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(function () { URL.revokeObjectURL(href); }, 4000);
+  toast('Markdown saved');
+}
+function printCard(c) {
+  var w = window.open('', '_blank');
+  if (!w) { toast('The browser blocked the print window'); return; }
+  var srcs = (c.sources || []).map(function (s, i) {
+    return '<li>[' + (i + 1) + '] ' + esc(s.title || s.url) + ' — ' + esc(s.url) + '</li>';
+  }).join('');
+  var doc = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>' + esc(String(c.q || 'card')) + '</title><style>' +
+    'body{font:400 17px/1.72 Georgia,"Times New Roman",serif;margin:0 auto;max-width:44em;padding:34px;color:#17171b}' +
+    'h1{font-size:21px;line-height:1.35;margin:0 0 20px}p{margin:0 0 15px}' +
+    'h2,h3{font-family:system-ui,sans-serif;font-size:16px;margin:26px 0 10px}' +
+    'ul,ol{margin:0 0 15px;padding-left:24px}li{margin:0 0 8px}' +
+    'blockquote{margin:0 0 15px;padding-left:14px;border-left:3px solid #b9b4ab;color:#444}' +
+    'table{width:100%;border-collapse:collapse;margin:0 0 15px}th,td{border:1px solid #ddd;padding:7px 9px;text-align:left;font:14px/1.5 system-ui,sans-serif}' +
+    'pre{background:#f4f4f2;padding:12px;border-radius:8px;overflow-x:auto;font-size:13px}code{font-size:14px}' +
+    '.meta{font:12px/1.6 system-ui,sans-serif;color:#777;border-top:1px solid #e2dfd9;margin-top:30px;padding-top:10px}' +
+    '@page{margin:18mm}</style></head><body><h1>' + esc(c.q) + '</h1>' + md(c.a) +
+    (srcs ? '<div class="meta"><b>Sources</b><ol>' + srcs + '</ol></div>' : '') +
+    '<div class="meta">' + esc(c.provider || '') + (c.provider ? ' · ' : '') + 'kards · ai-nspired.com</div>' +
+    '</body></html>';
+  w.document.write(doc);
+  w.document.close();
+  w.focus();
+  setTimeout(function () { try { w.print(); } catch (e) {} }, 400);
+}
+function shareCard(c) {
+  toast('Making the link');
+  fetch('/share', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ q: c.q, a: c.a, html: md(c.a), provider: c.provider })
+  }).then(function (r) { return r.json(); }).then(function (d) {
+    if (!d || d.error || !d.url) { toast('Could not share: ' + ((d && d.error) || 'no link')); return; }
+    c.share = d.url;
+    render();
+    save();
+    if (navigator.clipboard) navigator.clipboard.writeText(d.url).then(function () { toast('Link copied'); }, function () { toast(d.url); });
+    else toast(d.url);
+  }).catch(function (e) { toast('Could not share: ' + (e && e.message ? e.message : e)); });
+}
+
+// Shapes a card can be written into. Emotions have their own shape because they
+// are asked for by name; the rest are the documents people actually hand over.
+var TPL = [
+  ['letter', 'Letter'],
+  ['memo', 'Memo'],
+  ['brief', 'Brief'],
+  ['emotions', 'Emotions'],
+  ['steps', 'Steps'],
+  ['story', 'Story'],
+  ['plain', 'Plain prose']
+];
+function templateSheet(c) {
+  S.tpl = c.id;
+  $('sheetBody').innerHTML = '<h3>Template</h3>' +
+    '<p style="font-size:11px;color:var(--dim);margin-bottom:10px;line-height:1.6">The answer is rewritten into this shape. The request, the facts and the sources stay as they are.</p>' +
+    '<div class="row">' + TPL.map(function (t) {
+      return '<button data-tpl="' + t[0] + '">' + esc(t[1]) + '</button>';
+    }).join('') + '</div>';
+  $('sheet').classList.add('show');
+}
+
 function openMenu(id, x, y) {
   var c = byId(id);
   if (!c) return;
@@ -963,6 +1070,10 @@ function openMenu(id, x, y) {
     '<button data-op="sel">' + (S.sel[id] ? 'Deselect' : 'Select') + '</button>' +
     '<button data-op="copy">Copy</button>' +
     '<button data-op="full">Fullscreen</button>' +
+    '<button data-op="template">Template…</button>' +
+    '<button data-op="md">Export markdown</button>' +
+    '<button data-op="print">Print / PDF</button>' +
+    '<button data-op="share">Share link</button>' +
     '<hr>' +
     '<button class="danger" data-op="del">Delete</button>';
   var m = $('menu');
@@ -1005,6 +1116,10 @@ function act(name) {
     return;
   }
   if (name === 'full') { openFs(c); return; }
+  if (name === 'template') { templateSheet(c); return; }
+  if (name === 'md') { exportMd(c); return; }
+  if (name === 'print') { printCard(c); return; }
+  if (name === 'share') { shareCard(c); return; }
   if (name === 'del') { del(c.id); return; }
   if (name === 'split') { ask('Split card', 'Break this card into separate cards. The decision model still picks the domain.', 'optional: how to split', function (v) { run('split', [c], v); }); return; }
   if (name === 'continue') { ask('Continue', 'Extend this card with the next step.', 'optional: what to continue', function (v) { run('continue', [c], v); }); return; }
@@ -1016,7 +1131,8 @@ function run(kind, list, instruction) {
   var payload = { op: kind };
   if (kind === 'merge') payload.cards = list.map(function (c) { return { q: c.q, a: c.a }; });
   else payload.card = { q: list[0].q, a: list[0].a, prompt: list[0].prompt };
-  if (instruction) payload.instruction = instruction;
+  if (kind === 'template') payload.template = instruction;
+  else if (instruction) payload.instruction = instruction;
   toast(kind);
   fetch(API.card, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
     .then(function (r) { return r.json(); })
@@ -1764,6 +1880,14 @@ $('selBtn').onclick = function () {
 };
 $('gear').onclick = openSheet;
 $('sheet').addEventListener('click', function (e) {
+  var b = e.target && e.target.closest ? e.target.closest('[data-tpl]') : null;
+  if (!b) return;
+  var c = byId(S.tpl);
+  var tpl = b.getAttribute('data-tpl');
+  $('sheet').classList.remove('show');
+  if (c) run('template', [c], tpl);
+});
+$('sheet').addEventListener('click', function (e) {
   if (e.target === $('sheet')) $('sheet').classList.remove('show');
   var b = e.target.closest('[data-set]');
   if (!b) return;
@@ -2341,6 +2465,24 @@ export default {
     if (url.pathname === "/card") {
       if (request.method !== "POST") return json({ error: "Use POST" }, 405);
       return handleCard(request, env);
+    }
+
+    if (url.pathname === "/shot" && request.method === "GET") return handleShot(env, url);
+
+    if (url.pathname === "/share") {
+      if (request.method !== "POST") return json({ error: "Use POST" }, 405);
+      return handleShare(request, env);
+    }
+
+    if (url.pathname.indexOf("/s/") === 0 && request.method === "GET") {
+      const id = url.pathname.slice(3);
+      if (!/^[A-Za-z0-9_-]{8,40}$/.test(id)) return new Response("Not found", { status: 404, headers: cH });
+      if (!env.LTM) return new Response("No bucket", { status: 503, headers: cH });
+      const got = await env.LTM.get("share/" + id + ".html");
+      if (!got) return new Response("That link is gone", { status: 404, headers: cH });
+      return new Response(got.body, {
+        headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...cH },
+      });
     }
 
     if (url.pathname === "/deck") {
@@ -4125,6 +4267,26 @@ const CARD_OPS = {
   style: "Rewrite the answer in the requested style. Keep the meaning. Under 900 characters.",
   split: "Return two or three numbered cards, each on its own subject. Start each one with Card 1: or Card 2: on its own line.",
   merge: "Combine the cards into one card. Under 1000 characters.",
+  template: "Rewrite the answer into the requested shape exactly. Keep every fact and every figure. Under 1200 characters.",
+};
+
+// The shapes behind the Template menu. Each one is a writing instruction, not a
+// model: the facts come from the card, this only decides the form they take.
+const TEMPLATES = {
+  letter:
+    "Write it as a letter: a greeting, one short opening paragraph saying why you are writing, the substance in plain paragraphs, what you are asking for, and a sign-off. No headings, no bullets.",
+  memo:
+    "Write it as a memo: a one-line purpose, then short labelled sections — Background, What we found, What to do, and the decision being asked for. Plain and factual.",
+  brief:
+    "Write it as a brief: the finding in the first line, then three or four numbered points, each carrying one fact and where it came from.",
+  emotions:
+    "Write it as an emotions card: name the feeling in one line, then what it is reacting to, what it is asking for, and one sentence on what would actually help. Warm and plain; no clinical language, no diagnosis, no advice column.",
+  steps:
+    "Write it as steps: a numbered sequence, one action per line, each with what it needs and what done looks like.",
+  story:
+    "Write it as a short narrative: a scene, what happened, what changed. Three short paragraphs, no bullet points.",
+  plain:
+    "Write it as plain prose: two or three paragraphs, no headings, no bullets, nothing a reader has to decode.",
 };
 
 // Split is the one op that can silently lie: a model that ignores the separator
@@ -4173,6 +4335,141 @@ function paragraphsOf(text) {
     .filter((s) => s.length > 40);
 }
 
+// ─── the page as it looked, and a link to hand someone ─────────────────────
+
+// A screenshot is taken the first time a card that cites a page is looked at,
+// then kept under the URL's digest: one render per source, ever. It is the real
+// page through the BROWSER binding, not a thumbnail service.
+async function shotKey(url) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(url));
+  const hex = Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  return "shot/" + hex.slice(0, 32) + ".png";
+}
+
+const SHOT_HEADERS = {
+  "Content-Type": "image/png",
+  "Cache-Control": "public, max-age=604800, immutable",
+};
+
+async function handleShot(env, url) {
+  const target = String(url.searchParams.get("u") || "");
+  if (!/^https?:\/\/[^\s]+$/i.test(target) || target.length > 2048) {
+    return new Response("Need an http(s) url", { status: 400, headers: cH });
+  }
+  const key = await shotKey(target);
+  if (env.LTM) {
+    try {
+      const hit = await env.LTM.get(key);
+      if (hit) return new Response(hit.body, { headers: { ...SHOT_HEADERS, ...cH } });
+    } catch (err) {}
+  }
+  if (!env.BROWSER || typeof env.BROWSER.quickAction !== "function") {
+    return new Response("No browser bound", { status: 503, headers: cH });
+  }
+  let res = null;
+  try {
+    res = await env.BROWSER.quickAction("screenshot", {
+      url: target,
+      userAgent: BROWSER_UA,
+      viewport: { width: 1200, height: 750 },
+      gotoOptions: { waitUntil: "networkidle2", timeout: 20000 },
+      screenshotOptions: { fullPage: false },
+    });
+  } catch (err) {
+    return new Response("The page would not render", { status: 502, headers: cH });
+  }
+  if (!res || res.ok === false) return new Response("The page would not render", { status: 502, headers: cH });
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  if (!bytes.length) return new Response("Empty picture", { status: 502, headers: cH });
+  if (env.LTM && bytes.length < 4 * 1024 * 1024) {
+    try {
+      await env.LTM.put(key, bytes, { httpMetadata: { contentType: "image/png" } });
+    } catch (err) {}
+  }
+  return new Response(bytes, { headers: { ...SHOT_HEADERS, ...cH } });
+}
+
+// Everything a browser would run is stripped before anything is stored: a share
+// link is served from this Worker's own origin, so a page carrying script would
+// be script on our domain.
+const SHARE_MAX = 200000;
+
+function shareEsc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function shareClean(html) {
+  return String(html || "")
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<iframe[\s\S]*?<\/iframe>/gi, "")
+    .replace(/<object[\s\S]*?<\/object>/gi, "")
+    .replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    .replace(/\s(href|src)\s*=\s*(?:"|')?\s*javascript:[^"'\s>]*/gi, "")
+    .slice(0, SHARE_MAX);
+}
+
+function sharePage({ q, a, body, provider }) {
+  const prose = body || "<p>" + shareEsc(a).replace(/\n{2,}/g, "</p><p>").replace(/\n/g, "<br>") + "</p>";
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${shareEsc(q)}</title>
+<style>
+:root{color-scheme:light}
+body{margin:0;background:#f6f5f2;color:#17171b}
+main{max-width:46em;margin:0 auto;padding:48px 26px 64px;background:#fff;min-height:100vh;box-shadow:0 0 0 1px #e6e3dd}
+h1{font:600 22px/1.35 Georgia,"Times New Roman",serif;margin:0 0 24px;letter-spacing:-.01em}
+.body{font:400 17px/1.72 Georgia,"Times New Roman",serif}
+.body p{margin:0 0 16px}
+.body h2,.body h3{font-family:system-ui,sans-serif;margin:26px 0 10px;font-size:16px}
+.body ul,.body ol{margin:0 0 16px;padding-left:24px}
+.body li{margin:0 0 8px}
+.body blockquote{margin:0 0 16px;padding:2px 0 2px 14px;border-left:3px solid #c41e3a;color:#444}
+.body table{width:100%;border-collapse:collapse;margin:0 0 16px}
+.body th,.body td{border:1px solid #ddd;padding:7px 9px;text-align:left;font:14px/1.5 system-ui,sans-serif}
+.body pre{background:#f3f3f1;padding:12px;border-radius:8px;overflow-x:auto;font-size:13px}
+.body code{font-size:14px;background:#f3f3f1;padding:1px 4px;border-radius:4px}
+footer{margin-top:34px;padding-top:12px;border-top:1px solid #e6e3dd;font:12px/1.6 system-ui,sans-serif;color:#777}
+@media print{body{background:#fff}main{box-shadow:none;max-width:none;padding:0}@page{margin:18mm}}
+</style></head>
+<body><main>
+<h1>${shareEsc(q)}</h1>
+<div class="body">${prose}</div>
+<footer>${provider ? shareEsc(provider) + " · " : ""}shared from kards · ai-nspired.com</footer>
+</main></body></html>`;
+}
+
+async function handleShare(request, env) {
+  if (!env.LTM) return json({ error: "No LTM bucket is bound" }, 503);
+  const { body, error } = await readBody(request);
+  if (error) return error;
+  const q = String(body.q || "").slice(0, 1200);
+  const a = String(body.a || "").slice(0, 20000);
+  if (!q && !a) return json({ error: "Nothing to share" }, 400);
+  const id = crypto.randomUUID().replace(/-/g, "").slice(0, 20);
+  const page = sharePage({
+    q,
+    a,
+    body: shareClean(body.html),
+    provider: String(body.provider || "").slice(0, 80),
+  });
+  if (page.length > 900000) return json({ error: "That card is too big to share" }, 413);
+  try {
+    await env.LTM.put("share/" + id + ".html", page, {
+      httpMetadata: { contentType: "text/html; charset=utf-8" },
+    });
+  } catch (err) {
+    return json({ error: "Could not store the link: " + err.message }, 502);
+  }
+  return json({ id, url: new URL(request.url).origin + "/s/" + id, at: new Date().toISOString() });
+}
+
 async function handleCard(request, env) {
   const { body, error } = await readBody(request);
   if (error) return error;
@@ -4206,6 +4503,7 @@ async function handleCard(request, env) {
 
   const systemBits = [
     CARD_OPS[op],
+    op === "template" ? TEMPLATES[String(body.template || "").toLowerCase()] || TEMPLATES.plain : "",
     styleHint(decision),
     plan.pack.guidance,
     plan.care ? plan.pack.safety : "",

@@ -2349,6 +2349,50 @@ function fakeBrowser(pages, opts) {
   });
 }
 
+// 32. a card as a document: markdown, paper, a link, and the page as it looked
+{
+  const store = new Map();
+  const env = makeEnv({
+    LTM: {
+      put: async (k, v) => { store.set(k, v); },
+      get: async (k) => (store.has(k) ? { body: store.get(k) } : null),
+    },
+  });
+  const posted = await (await worker.fetch(new Request("https://cods.example/share", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ q: "What is a fair rent?", a: "**Fair** is contextual.", html: "<p>Fair</p><script>alert(1)</script>" }),
+  }), env)).json();
+  check("a card can be shared", String(posted.url).indexOf("https://cods.example/s/") === 0 && String(posted.id).length >= 8, posted);
+  const page = String(store.get("share/" + posted.id + ".html") || "");
+  check("the share page carries the request", page.indexOf("What is a fair rent?") > -1, page.slice(0, 60));
+  check("the share page cannot run script", page.indexOf("<script") < 0 && page.indexOf("javascript:") < 0, "script");
+  const served = await worker.fetch(new Request(posted.url), env);
+  const servedText = await served.text();
+  check("the link serves the page", served.status === 200 && servedText.indexOf("Fair") > -1, served.status);
+  const gone = await worker.fetch(new Request("https://cods.example/s/aaaaaaaa"), env);
+  check("a link that never existed is a 404", gone.status === 404, gone.status);
+  const noBucket = await worker.fetch(new Request("https://cods.example/share", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ q: "x" }) }), makeEnv({}));
+  check("sharing says so when there is no bucket", noBucket.status === 503, noBucket.status);
+  const noBrowser = await worker.fetch(new Request("https://cods.example/shot?u=https%3A%2F%2Fexample.com"), makeEnv({}));
+  check("a screenshot says so when there is no browser", noBrowser.status === 503, noBrowser.status);
+  const badShot = await worker.fetch(new Request("https://cods.example/shot?u=javascript:alert(1)"), env);
+  check("a screenshot only renders a real page", badShot.status === 400, badShot.status);
+  const html = await (await worker.fetch(new Request("https://cods.example/"), env)).text();
+  [
+    'data-op="template"',
+    'data-op="md"',
+    'data-op="print"',
+    'data-op="share"',
+    "function cardMd",
+    "function templateSheet",
+    'class="shot"',
+  ].forEach(function (n) {
+    check("the page has " + n, html.indexOf(n) >= 0, n);
+  });
+  check("the provenance sits with the request", html.indexOf("'</div>' + why(c) + '</div>'") > -1, "why");
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
 
