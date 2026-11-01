@@ -1059,6 +1059,7 @@ function fakeBrowser(pages, opts) {
   check("the picker lists Cloudflare models", Array.isArray(list.workers) && list.workers.length >= 3, list.workers && list.workers.length);
   check("and starts with the default one", list.workers[0].id === list.default, list.default);
   check("it lists the proxy presets too", list.proxy && list.proxy.bound === true && list.proxy.presets.indexOf("truth") >= 0, list.proxy);
+  check("and lists every preset he named", ["truth", "mnl", "operator", "tarot"].every((p) => list.proxy.presets.indexOf(p) >= 0), list.proxy.presets);
   check("and keeps granite micro on the list", list.workers.some((m) => m.id === "@cf/ibm-granite/granite-4.0-h-micro"), list.workers.map((m) => m.id));
   check("and offers no llama at all", JSON.stringify(list).toLowerCase().indexOf("llama") === -1, JSON.stringify(list.workers.map((m) => m.id)));
   check("nothing is chosen to begin with", list.chosen === null, list.chosen);

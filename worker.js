@@ -210,9 +210,13 @@ const MODEL_CHOICES = [
   { id: "@cf/mistralai/mistral-small-3.1-24b-instruct", short: "mistral 24B", label: "Mistral Small 3.1 24B" },
 ];
 
+// The presets he has set up on the account. He named these: truth, mnl,
+// operator, tarot. ORPROXY_PRESETS overrides the list without a code change.
+const PRESET_FALLBACK = ["truth", "mnl", "operator", "tarot"];
+
 function proxyPresets(env) {
   const raw = String(env.ORPROXY_PRESETS || "").trim();
-  if (!raw) return [env.ORPROXY_PRESET || OR_PROXY_PRESET];
+  if (!raw) return PRESET_FALLBACK.slice();
   return raw.split(",").map((p) => p.trim()).filter(Boolean);
 }
 
