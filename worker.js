@@ -1440,7 +1440,10 @@ function loadPrefs() {
     if (!box) return;
     var rows = ((d && d.learned) || []).map(function (x) {
       var q = esc(x.q || '');
-      return '<div style="margin:6px 0 2px;font-size:10px;color:var(--dim)">' + esc(x.prompt || x.q) + '</div>' +
+      return '<div class="row" style="align-items:center;margin:8px 0 2px">' +
+        '<input data-pref-q="' + q + '" value="' + esc(x.q || '') + '" placeholder="what it should know about you" style="flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);color:var(--dim);border-radius:8px;padding:5px;font-size:11px">' +
+        '</div>' +
+        (x.prompt && x.prompt !== x.q ? '<div style="font-size:10px;color:var(--dim);margin:0 0 2px">' + esc(x.prompt) + '</div>' : '') +
         '<div class="row" style="align-items:center">' +
         '<input data-pref-a="' + q + '" value="' + esc(x.a || '') + '" style="flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px;font-size:12px">' +
         '<button class="icon" data-pref-save="' + q + '">Save</button>' +
@@ -1476,9 +1479,15 @@ document.addEventListener('click', function (e) {
   }
   var delQ = b.getAttribute('data-pref-del');
   if (delQ) return prefsWrite({ action: 'delete', q: delQ });
-  var row = b.closest('.row');
-  var input = row && row.querySelector('[data-pref-a]');
-  prefsWrite({ action: 'edit', q: b.getAttribute('data-pref-save'), a: input ? input.value : '' });
+  var box = b.parentNode || b.closest('.row');
+  var input = box && box.querySelector('[data-pref-a]');
+  var label = box && box.querySelector('[data-pref-q]');
+  prefsWrite({
+    action: 'edit',
+    from: b.getAttribute('data-pref-save'),
+    q: label ? label.value : b.getAttribute('data-pref-save'),
+    a: input ? input.value : ''
+  });
 });
 function loadApprovedList() {
   fetch('/approved').then(function (r) { return r.json(); }).then(function (d) {
@@ -1982,6 +1991,7 @@ export default {
     prefs.learned = Array.isArray(prefs.learned) ? prefs.learned : [];
 
     const act = String(body.action || "").trim();
+    const from = String(body.from || "").trim().slice(0, 80);
 
     const q = String(body.q || "").trim().slice(0, 80);
 
@@ -1993,7 +2003,8 @@ export default {
 
       prefs.learned = prefs.learned.filter((x) => x && x.q !== q);
 
-      prefs.learned.push({ q, a, prompt: "set by him", at: new Date().toISOString() });    } else if (act === "delete") {
+      if (from && from !== q) prefs.learned = prefs.learned.filter((x) => x && x.q !== from);
+      prefs.learned.push({ q, a, prompt: from && from !== q ? "renamed by him" : "set by him", at: new Date().toISOString() });    } else if (act === "delete") {
       if (!q) return json({ error: "Send q" }, 400);
       prefs.learned = prefs.learned.filter((x) => x && x.q !== q);
     } else if (act === "reset" || body.reset === true) {

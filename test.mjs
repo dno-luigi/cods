@@ -1114,8 +1114,13 @@ function fakeBrowser(pages, opts) {
   aiInputs = [];
   await post("/chat", { prompt: "what is consideration", use_cache: false }, env);
   check("the answering model is given the edited preference", aiInputs.some((a) => JSON.stringify(a).indexOf("short only if I ask") >= 0), aiInputs.length);
-  const removed = await (await post("/prefs", { action: "delete", q: "Answer length" }, env)).json();
-  check("a preference can be removed", !(removed.learned || []).some((x) => x.q === "Answer length"), removed.learned);
+  const renamed = await (await post("/prefs", { action: "edit", from: "Answer length", q: "Length I want", a: "Long unless I ask otherwise" }, env)).json();
+  check("a preference can be renamed", !(renamed.learned || []).some((x) => x.q === "Answer length") && (renamed.learned || []).some((x) => x.q === "Length I want" && x.a === "Long unless I ask otherwise"), renamed.learned);
+  const page = await (await worker.fetch(new Request("https://cods.example/"), env)).text();
+  check("the sheet lets him edit the label as well as the words", page.includes("data-pref-q"), "label field");
+  check("and the edit box holds a paragraph", /<textarea[^>]*id="modalInput"/.test(page), "textarea");
+  const removed = await (await post("/prefs", { action: "delete", q: "Length I want" }, env)).json();
+  check("a preference can be removed", !(removed.learned || []).some((x) => x.q === "Length I want"), removed.learned);
 }
 
 // 24b. a pick rides along with each question
