@@ -2495,6 +2495,15 @@ function planRoute(decision) {
 // wants is what made the thing argue with him.
 const DIRECTIVE_VERBS = /^(?:please\s+|kindly\s+|can you\s+|could you\s+|would you\s+|just\s+|now\s+|also\s+|only\s+|and\s+|i (?:want|need) you to\s+|go ahead and\s+)*(?:extract|strip|remove|delete|drop|replace|rewrite|reformat|format|convert|translate|summari[sz]e|paraphrase|return|output|print|emit|give me|show me|list|split|merge|join|parse|dedupe|capitali[sz]e|anonymi[sz]e|redact|truncate)\b/i;
 
+// He says how long he wants it, so that is the instruction. A long answer is
+// his to ask for, and it wins over whatever depth the decision model guessed.
+function askedDepth(prompt) {
+  const p = String(prompt || "").toLowerCase();
+  if (/\b(long|full|detailed|in[- ]depth|thorough|comprehensive|exhaustive|everything|all of it)\b/.test(p)) return 3;
+  if (/\b(short|brief|terse|one line|quick answer|summary only|tl;?dr)\b/.test(p)) return 0.3;
+  return null;
+}
+
 function isDirective(prompt) {
   const p = String(prompt || "").trim();
   if (!p) return false;
@@ -2513,13 +2522,6 @@ function clarifyQuestions(decision, said) {
       id: "web",
       q: "Should I search the web for this, or answer from what the model already knows?",
       options: ["Search the web", "Answer from knowledge"],
-    });
-  }
-  if (!asked.has("goal") && typeof d.clarify === "number" && d.clarify >= 0.5) {
-    out.push({
-      id: "goal",
-      q: "What do you want back: the short answer, the reasoning, or the steps to act on?",
-      options: ["Short answer", "The reasoning", "Steps to act on"],
     });
   }
   if (!asked.has("target") && typeof d.clarify === "number" && d.clarify >= 0.75) {
@@ -4403,6 +4405,8 @@ async function handleChat(request, env, emit) {
   let decisionError = null;
   try {
     decision = await decide(env, state, body.questions);
+    const wantDepth = askedDepth(prompt);
+    if (wantDepth != null) decision.depth = wantDepth;
     if (String(body.search || "").toLowerCase() === "yes") decision.needs_web = 0.95;
     if (String(body.search || "").toLowerCase() === "no") decision.needs_web = 0.02;
 
@@ -4714,13 +4718,17 @@ async function handleChat(request, env, emit) {
   if (pick.cf) cfModels.unshift(pick.cf);
 
   if (pick.openrouter) {
-    const target = pick.preset ? "@preset/" + pick.preset : pick.model;
+    const rawTarget = pick.preset ? "@preset/" + pick.preset : String(pick.model || "");
+    // The suffix asks for the plugin; the slug goes without it so the search is
+    // requested in exactly one place.
+    const online = /:online\b/i.test(rawTarget);
+    const target = rawTarget.replace(/:online\b/gi, "");
     if (env.OPENROUTER_API_KEY) {
       try {
         // The answer path is grounded only when the decision asked for the
         // web: the plugin searches before the model speaks and its citation
         // annotations come back out as sources.
-        const grounded = wantsWeb && body.web !== false;
+        const grounded = (wantsWeb || online) && body.web !== false;
         const via = await openRouterCall(
           env,
           target,
@@ -5418,10 +5426,17 @@ async function callOpenRouter(env, model, messages, body) {
 // the cheap default, { web: {...} } takes whatever it names. Cards and other
 // sub-calls stay ungrounded, so one answer does not pay to search five times.
 function webPlugins(body) {
+  if (body && body.use_web === false) return [];
   const asked = body && body.web;
-  if (!asked || (body && body.use_web === false)) return [];
-  const plan = typeof asked === "object" ? Object.assign({}, OR_WEB_PLUGIN, asked) : OR_WEB_PLUGIN;
-  return [plan];
+  // ":online" is a request for the web plugin by another name.
+  const online = /:online\b/i.test(String((body && body.model) || ""));
+  if (!asked && !online) return [];
+  const askedPlan = asked && typeof asked === "object" ? asked : {};
+  // His rule: online means Parallel, and only turbo or fast. Whatever the
+  // caller passes, nothing else leaves this Worker.
+  const mode = /^fast$/i.test(String(askedPlan.mode || "")) ? "fast" : "turbo";
+  const maxResults = Math.min(10, Math.max(1, Number(askedPlan.max_results) || OR_WEB_PLUGIN.max_results));
+  return [Object.assign({}, OR_WEB_PLUGIN, askedPlan, { id: "web", engine: "parallel", mode, max_results: maxResults })];
 }
 
 // url_citation annotations are the receipts: one per page the model was given,

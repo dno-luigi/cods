@@ -1149,7 +1149,7 @@ function fakeBrowser(pages, opts) {
   check("an unsure decision asks instead of guessing", first.clarify && first.clarify.questions.length >= 1 && first.answer === null, first.clarify && first.clarify.questions.length);
   const ids = first.clarify.questions.map((q) => q.id);
   check("it asks about searching the web", ids.indexOf("web") >= 0, ids);
-  check("and what shape of answer is wanted", ids.indexOf("goal") >= 0, ids);
+  check("and it does not presume a short answer for him", ids.indexOf("goal") === -1, ids);
   check("the search question offers both answers", first.clarify.questions[0].options.length === 2, first.clarify.questions[0].options);
 
   const second = await (await post("/chat", { prompt: "help me sort this out", clarify: [{ id: "web", q: "Should I search?", a: "Answer from knowledge" }] }, env)).json();
@@ -1425,6 +1425,33 @@ function fakeBrowser(pages, opts) {
   } finally {
     globalThis.fetch = real;
   }
+}
+
+// 25g3. a long answer is his to ask for
+{
+  const base = makeEnv();
+  const inner = base.AI.run;
+  const env = makeEnv({
+    AI: { run: async (m, i) => {
+      if (String(m).startsWith("@cf/cloudflare/clef")) {
+        return { answers: {
+          intent: { probabilities: { answer: 0.8 } },
+          domain: { probabilities: { legal: 0.8 } },
+          tone: { probabilities: { plain: 0.8 } },
+          depth: { score: 1 },
+          needs_web: { probability: 0.1 },
+          cache_ok: { probability: 0.2 },
+          sensitive: { probability: 0.2 },
+          clarify: { probability: 0.1 },
+        } };
+      }
+      return inner(m, i);
+    } },
+  });
+  const long = await (await post("/chat", { prompt: "give me the long, full answer on consideration in contract law", use_cache: false, cards: [] }, env)).json();
+  check("asking for a long answer raises the depth", long.decision && long.decision.depth >= 2.5, long.decision && long.decision.depth);
+  const short = await (await post("/chat", { prompt: "short answer only: what is consideration", use_cache: false, cards: [] }, env)).json();
+  check("asking for a short one lowers it", short.decision && short.decision.depth < 0.5, short.decision && short.decision.depth);
 }
 
 // 25g2. "search the web for X" is an instruction: it searches, first time
