@@ -2403,6 +2403,24 @@ function fakeBrowser(pages, opts) {
   check("a money question gets the money marker", rent && rent.k === "money", rent && rent.k);
   check("a question with no subject gets no picture", picked.markOf({ q: "what does this mean" }) === null, "none");
   check("the marker says when it applies", picked.whenWord({ tomorrow: 1 }) === "tomorrow", "when");
+  const tplKV = new Map();
+  const tplStore = makeEnv({ KV: { get: async (k) => tplKV.get(k) || null, put: async (k, v) => { tplKV.set(k, v); } } });
+  const made = await (await worker.fetch(new Request("https://cods.example/templates", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "CRAC", example: "C \u2014 Conclusion: the search was unlawful. R \u2014 Rule: Riley v. California, 573 U.S. 373 (2014). A \u2014 Analysis: no warrant, no exception, no emergency. C \u2014 Conclusion: suppressed." }),
+  }), tplStore)).json();
+  check("a template is saved under the name he gave it", made.template && made.template.name === "CRAC", made);
+  const named = await (await worker.fetch(new Request("https://cods.example/templates"), tplStore)).json();
+  check("it comes back by that name", named.templates.length === 1 && named.templates[0].name === "CRAC", named);
+  check("the list carries a preview, not the whole example", named.templates[0].preview.indexOf("Riley") > -1 && JSON.stringify(named).indexOf("no exception") < 0, "preview");
+  const unnamed = await worker.fetch(new Request("https://cods.example/templates", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "", example: "x".repeat(40) }) }), tplStore);
+  check("a template without a name is refused", unnamed.status === 400, unnamed.status);
+  const emptyEx = await worker.fetch(new Request("https://cods.example/templates", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "Bare" }) }), tplStore);
+  check("a template without an example is refused", emptyEx.status === 400, emptyEx.status);
+  const noStoreTpl = await worker.fetch(new Request("https://cods.example/templates"), { AI: { run: async () => ({}) } });
+  check("templates say so when there is no store", noStoreTpl.status === 503, noStoreTpl.status);
+  check("the page has no invented templates", html.indexOf("var TPL = [") < 0 && html.indexOf('data-tpl="emotions"') < 0 && html.indexOf('data-tpl="letter"') < 0, "presets");
+  check("the page lets him name and paste one", html.indexOf("data-tplsave") > -1 && html.indexOf("function paintTemplates") > -1 && html.indexOf("id=\"tplText\"") > -1, "form");
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");
