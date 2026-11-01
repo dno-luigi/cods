@@ -2393,6 +2393,16 @@ function fakeBrowser(pages, opts) {
   check("the provenance sits with the request", html.indexOf("'</div>' + why(c) + '</div>'") > -1, "why");
   check("the picture is a small marker, not the card", html.indexOf(".shot{width:104px;height:74px") > -1 && html.indexOf(".shot{width:100%") < 0, "shot size");
   check("the picture opens the page it came from", html.indexOf('class="shotwrap" href="') > -1 && html.indexOf('rel="noopener noreferrer"') > -1, "shot link");
+  const m0 = html.indexOf("var MARKS = [");
+  const m1 = html.indexOf("function markSvg(");
+  check("the subject markers ship with the page", m0 > -1 && m1 > m0, m0);
+  const picked = new Function(html.slice(m0, m1) + "\nreturn { markOf: markOf, whenWord: whenWord };")();
+  const rain = picked.markOf({ q: "will it rain tomorrow" });
+  check("a rain question gets the rain marker", rain && rain.k === "rain", rain && rain.k);
+  const rent = picked.markOf({ q: "how much rent should I pay", a: "Budget for rent and cash." });
+  check("a money question gets the money marker", rent && rent.k === "money", rent && rent.k);
+  check("a question with no subject gets no picture", picked.markOf({ q: "what does this mean" }) === null, "none");
+  check("the marker says when it applies", picked.whenWord({ tomorrow: 1 }) === "tomorrow", "when");
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");

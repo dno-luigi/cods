@@ -526,6 +526,8 @@ code{font-size:12.5px;background:#00000044;padding:1px 4px;border-radius:4px}
 .why-r{padding:2px 0}
 .why-r b{color:var(--text);font-weight:600}
 .why-ms{opacity:.55}
+.mk{display:inline-flex;align-items:center;gap:7px;margin:12px 14px 0;padding:4px 11px 4px 7px;border:1px solid var(--line);border-radius:999px;font-size:11px;color:var(--dim);background:#ffffff05}
+.mk svg{width:17px;height:17px;flex:none;fill:none;stroke:var(--p);stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 .shotwrap{display:flex;align-items:center;gap:10px;margin:12px 14px 0;text-decoration:none;color:inherit}
 .shot{width:104px;height:74px;flex:none;display:block;border:1px solid var(--line);border-radius:8px;background:#000;object-fit:cover;object-position:50% 20%}
 .shotcap{min-width:0;font-size:11px;color:var(--dim);line-height:1.35;overflow:hidden}
@@ -851,6 +853,7 @@ function why(c) {
 // source is never paid for twice; a page that will not render simply shows
 // nothing rather than a broken frame.
 function shots(c) {
+  if (markOf(c)) return '';
   if (!c.sources || !c.sources.length) return '';
   var s = c.sources[0];
   if (!s || !s.url) return '';
@@ -859,6 +862,85 @@ function shots(c) {
   return '<a class="shotwrap" href="' + esc(s.url) + '" target="_blank" rel="noopener noreferrer">' +
     '<img class="shot" loading="lazy" decoding="async" alt="" src="/shot?u=' + encodeURIComponent(s.url) + '">' +
     '<span class="shotcap"><b>' + esc(host || 'source') + '</b>' + esc(s.title || s.url) + '</span></a>';
+}
+
+// The little picture is the subject of the card, not a photograph of the page
+// that happened to mention it: rain for a question about rain, a coin for money,
+// a page for a document. Drawn here in the card, so it costs nothing to make and
+// cannot pretend to be something it is not. No confident subject, no picture.
+var MARKS = [
+  { k: "rain", w: ["rain", "rains", "raining", "rainy", "showers", "drizzle", "downpour", "thunder", "thunderstorms", "monsoon"] },
+  { k: "snow", w: ["snow", "snowing", "snowy", "blizzard", "sleet", "flurries", "frost", "freezing", "ice"] },
+  { k: "sun", w: ["sunny", "sunshine", "sunlight", "uv", "heatwave"] },
+  { k: "cloud", w: ["cloudy", "clouds", "overcast", "fog", "foggy", "mist", "humid", "humidity"] },
+  { k: "money", w: ["money", "pay", "paid", "cost", "costs", "price", "prices", "rent", "salary", "income", "budget", "dollars", "cash", "earnings", "roi", "profit", "hustle", "hustles"] },
+  { k: "document", w: ["document", "documents", "pdf", "letter", "contract", "contracts", "form", "paperwork", "essay", "draft", "memo", "notes"] },
+  { k: "clock", w: ["deadline", "deadlines", "schedule", "delay", "hour", "hours", "minutes", "soon", "later"] },
+  { k: "place", w: ["address", "location", "map", "directions", "nearby", "city", "town", "travel", "flight", "hotel", "route"] },
+  { k: "person", w: ["person", "people", "someone", "anyone", "family", "friend", "child", "kids", "team", "boss"] },
+  { k: "health", w: ["health", "sick", "illness", "pain", "doctor", "medical", "symptom", "symptoms", "medicine", "dose", "sleep"] },
+  { k: "scale", w: ["law", "legal", "lawful", "illegal", "court", "rights", "liable", "liability", "sue", "eviction", "tenant", "landlord", "agreement"] },
+  { k: "chart", w: ["growth", "trend", "increase", "decrease", "compare", "comparison", "rank", "ranking", "ranked", "percent", "rate"] },
+  { k: "code", w: ["code", "javascript", "python", "function", "bug", "error", "api", "deploy", "server", "database"] },
+  { k: "warning", w: ["warning", "warn", "risk", "risky", "danger", "dangerous", "caution", "scam", "avoid"] }
+];
+
+var MARK_PATH = {
+  rain: '<path d="M7 15h10a4 4 0 0 0 .6-7.96A5.5 5.5 0 0 0 7 8.5 3.5 3.5 0 0 0 7 15Z"/><path d="M8.6 18.2l-.9 2M12 18.2l-.9 2M15.4 18.2l-.9 2"/>',
+  snow: '<path d="M7 15h10a4 4 0 0 0 .6-7.96A5.5 5.5 0 0 0 7 8.5 3.5 3.5 0 0 0 7 15Z"/><path d="M8.5 18v2.4M7.4 18.6l2.2 1.2M9.6 18.6l-2.2 1.2"/><path d="M15.5 18v2.4M14.4 18.6l2.2 1.2M16.6 18.6l-2.2 1.2"/>',
+  sun: '<circle cx="12" cy="12" r="3.9"/><path d="M12 3.2v2.1M12 18.7v2.1M3.2 12h2.1M18.7 12h2.1M5.8 5.8l1.5 1.5M16.7 16.7l1.5 1.5M18.2 5.8l-1.5 1.5M7.3 16.7l-1.5 1.5"/>',
+  cloud: '<path d="M7 15.5h10a3.9 3.9 0 0 0 .5-7.8A5.6 5.6 0 0 0 6.6 8.7 3.4 3.4 0 0 0 7 15.5Z"/>',
+  money: '<rect x="2.6" y="6.6" width="18.8" height="10.8" rx="2.2"/><circle cx="12" cy="12" r="2.6"/><path d="M6.2 9.8v4.4M17.8 9.8v4.4"/>',
+  document: '<path d="M14 3.2H7.2a2 2 0 0 0-2 2v13.6a2 2 0 0 0 2 2h9.6a2 2 0 0 0 2-2V8Z"/><path d="M14 3.2V8h4.8"/><path d="M9 13h6M9 16.6h4"/>',
+  clock: '<circle cx="12" cy="12" r="8.2"/><path d="M12 7.6V12l3 1.9"/>',
+  place: '<path d="M12 20.8s6.1-5.4 6.1-10.1a6.1 6.1 0 1 0-12.2 0C5.9 15.4 12 20.8 12 20.8Z"/><circle cx="12" cy="10.5" r="2.2"/>',
+  person: '<circle cx="12" cy="8.2" r="3.4"/><path d="M5.2 20a6.8 6.8 0 0 1 13.6 0"/>',
+  health: '<path d="M12 20.2s-7.2-4.4-7.2-9.1a4.1 4.1 0 0 1 7.2-2.6 4.1 4.1 0 0 1 7.2 2.6c0 4.7-7.2 9.1-7.2 9.1Z"/>',
+  scale: '<path d="M12 4v15.6M8 19.6h8M5.4 8h13.2"/><path d="M5.4 8l-2.2 4.6a2.6 2.6 0 0 0 4.6 0Z"/><path d="M18.6 8l-2.2 4.6a2.6 2.6 0 0 0 4.6 0Z"/>',
+  chart: '<path d="M4.2 19.6V4.4M4.2 19.6h16"/><path d="M8 19.6v-5.8M12.6 19.6V9.2M17.2 19.6v-8.6"/>',
+  code: '<path d="M9 8.2 5 12l4 3.8M15 8.2 19 12l-4 3.8"/>',
+  warning: '<path d="M12 4.4 21 19.4H3Z"/><path d="M12 10v4.1M12 16.8v.1"/>'
+};
+
+function wordsOf(s) {
+  var out = {};
+  String(s == null ? "" : s).toLowerCase().replace(/[^a-z0-9' ]+/g, " ").split(" ").forEach(function (w) {
+    if (w && w.length > 1) out[w] = 1;
+  });
+  return out;
+}
+
+function markOf(c) {
+  if (!c) return null;
+  var pool = wordsOf([c.q, c.a, c.more].join(" "));
+  var best = null, bestHits = 0;
+  for (var i = 0; i < MARKS.length; i++) {
+    var hits = 0;
+    for (var j = 0; j < MARKS[i].w.length; j++) if (pool[MARKS[i].w[j]]) hits++;
+    if (hits > bestHits) { best = MARKS[i]; bestHits = hits; }
+  }
+  return bestHits ? best : null;
+}
+
+function whenWord(pool) {
+  if (pool.tomorrow) return "tomorrow";
+  if (pool.tonight) return "tonight";
+  if (pool.today) return "today";
+  if (pool.week) return "this week";
+  return "";
+}
+
+function markSvg(k) {
+  return '<svg viewBox="0 0 24 24" aria-hidden="true">' + (MARK_PATH[k] || "") + '</svg>';
+}
+
+// Small, quiet, one per card: the subject and when it applies. It never replaces
+// the writing and it never grows into the card.
+function marker(c) {
+  var m = markOf(c);
+  if (!m) return "";
+  var when = whenWord(wordsOf([c.q, c.a].join(" ")));
+  return '<div class="mk">' + markSvg(m.k) + '<span>' + esc(m.k + (when ? " " + when : "")) + '</span></div>';
 }
 
 function readStream(res, onStep) {
@@ -920,7 +1002,7 @@ function cardHTML(c) {
       '<span class="dots" data-tts="' + id + '">' + (S.speaking === c.id ? 'stop' : 'play') + '</span>' +
       (c.more ? '<span class="dots" data-full="' + id + '">' + (c.showFull ? 'short' : 'long') + '</span>' : '') +
       '<span class="dots" data-dots="' + id + '">more</span></span></div>' +
-      '<div class="body card-a">' + md(c.showFull && c.more ? c.more : c.a) + '</div>' + meta(c) + shots(c) + notes(c) + fb(c) + '</div>' +
+      marker(c) + '<div class="body card-a">' + md(c.showFull && c.more ? c.more : c.a) + '</div>' + meta(c) + shots(c) + notes(c) + fb(c) + '</div>' +
     '<div class="via">via ' + esc(c.provider) + '</div></div>';
 }
 function render() {
