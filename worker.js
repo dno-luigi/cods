@@ -2003,8 +2003,14 @@ $('sheet').addEventListener('click', function (e) {
     save.disabled = true;
     fetch(API.templates, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: nm, example: ex }) })
       .then(function (r) {
-        if (!r.ok) throw new Error('save failed (' + r.status + ')');
-        return r.json();
+        if (r.ok) return r.json();
+        // Markdown is not JSON. If the route would not take the envelope, hand
+        // it the pasted text as the text it is, once, before reporting a failure.
+        return fetch(API.templates + '?name=' + encodeURIComponent(nm), {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/markdown; charset=utf-8' },
+          body: ex
+        }).then(function (r2) { return r2.json(); });
       })
       .then(function (d) {
         if (!d || !d.template) { toast('Could not save: ' + ((d && d.error) || 'no reply')); save.disabled = false; return; }
@@ -4480,11 +4486,18 @@ async function handleTemplates(env, request, url) {
     await saveTemplates(env, left);
     return tplJSON({ ok: true, removed: left.length !== list.length });
   }
+  // Pasted writing is markdown, not JSON. If the body does not parse as an
+  // envelope, the whole body is the example and the name rides in the query, so
+  // a paste can never be refused for not being JSON.
+  const raw = await request.text();
   let body = {};
-  try {
-    body = await request.json();
-  } catch (err) {
-    body = {};
+  if (raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw);
+      body = parsed && typeof parsed === "object" ? parsed : { example: raw };
+    } catch (err) {
+      body = { example: raw, name: url.searchParams.get("name") || "" };
+    }
   }
   const name = String(body.name || "").replace(/\s+/g, " ").trim().slice(0, 80);
   const example = String(body.example || "").slice(0, 20000).trim();

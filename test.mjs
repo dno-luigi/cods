@@ -2423,6 +2423,11 @@ function fakeBrowser(pages, opts) {
   check("the page lets him name and paste one", html.indexOf("data-tplsave") > -1 && html.indexOf("function paintTemplates") > -1 && html.indexOf("id=\"tplText\"") > -1, "form");
   check("the sheet posts to the templates route", html.indexOf("templates: '/templates'") > -1, "route");
   check("a failed template load says so", html.indexOf("Could not load your templates: ") > -1, "load error");
+  const rawPaste = "# Statement of claim\n\n1. The claimant says **this**, and \"that\".\n\n```js\nconst x = 1;\n```\n";
+  const rawSave = await worker.fetch(new Request("https://cods.example/templates?name=Pasted%20markdown", { method: "POST", headers: { "Content-Type": "text/markdown; charset=utf-8" }, body: rawPaste }), tplStore);
+  const rawGot = await rawSave.json();
+  check("a pasted document is taken as text, not an envelope", rawSave.status === 200 && !!rawGot.template && rawGot.template.name === "Pasted markdown", rawGot);
+  check("the sheet retries a paste as plain text once", html.indexOf("text/markdown; charset=utf-8") > -1 && html.indexOf("API.templates + '?name='") > -1, "fallback");
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");
