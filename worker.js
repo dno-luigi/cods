@@ -1251,8 +1251,8 @@ function paintModel() {
 function pickFromStore(store, label) {
   store = String(store || '');
   if (store.indexOf('openrouter:') === 0) return { label: label || store.slice(11), store: store, openrouter: true, model: store.slice(11) };
-  if (store.indexOf('preset:') === 0) return { label: label || ('preset · ' + store.slice(7)), store: store, openrouter: true, preset: store.slice(7) };
-  if (store.indexOf('proxy:') === 0) return { label: label || ('proxy · ' + store.slice(6)), store: store, proxy: true, preset: store.slice(6) };
+  if (store.indexOf('preset:') === 0) return { label: label || ('preset: ' + store.slice(7)), store: store, openrouter: true, preset: store.slice(7) };
+  if (store.indexOf('proxy:') === 0) return { label: label || ('preset: ' + store.slice(6)), store: store, proxy: true, preset: store.slice(6) };
   return { label: label || store, store: store, cf: store };
 }
 
@@ -1305,8 +1305,8 @@ function openModels() {
     }
     if (d.proxy && d.proxy.bound) {
       out += '<div class="sect"><h4>Presets</h4><div class="row">';
-      (d.proxy.presets || []).forEach(function (p, i) { out += '<button data-pick="y:' + i + '">preset · ' + esc(p) + '</button>'; });
-      if (d.proxy.default_preset) out += '<button data-pick="p:' + esc(d.proxy.default_preset) + '">default · ' + esc(d.proxy.default_preset) + '</button>';
+      (d.proxy.presets || []).forEach(function (p, i) { out += '<button data-pick="y:' + i + '">preset: ' + esc(p) + '</button>'; });
+      if (d.proxy.default_preset) out += '<button data-pick="p:' + esc(d.proxy.default_preset) + '">preset: ' + esc(d.proxy.default_preset) + ' (default)</button>';
       out += '<button data-pick="x">another preset…</button>';
       out += '</div></div>';
     }
@@ -1342,12 +1342,12 @@ document.addEventListener('click', function (e) {
   if (v.indexOf('y:') === 0) {
     var ppx = ((MODELS && MODELS.proxy && MODELS.proxy.presets) || [])[Number(v.slice(2))];
     if (!ppx) return;
-    return keepModel({ label: 'proxy · ' + ppx, store: 'proxy:' + ppx, proxy: true, preset: ppx });
+    return keepModel({ label: 'preset: ' + ppx, store: 'proxy:' + ppx, proxy: true, preset: ppx });
   }
   if (v.indexOf('p:') === 0) {
     var pslug = v.slice(2);
     if (!pslug) return;
-    return keepModel({ label: 'preset · ' + pslug, store: 'preset:' + pslug, openrouter: true, preset: pslug });
+    return keepModel({ label: 'preset: ' + pslug, store: 'preset:' + pslug, openrouter: true, preset: pslug });
   }
   var m = (MODELS.workers || [])[Number(v) - 1];
   if (!m) return;
@@ -3462,10 +3462,10 @@ async function resolvePick(env, typed) {
   if (raw.indexOf("@cf/") === 0) return { store: raw, label, kind: "cf", known };
   if (/^@preset\//i.test(raw)) {
     const p = raw.slice(8);
-    return { store: "preset:" + p, label: "preset · " + p, kind: "preset", known: true };
+    return { store: "preset:" + p, label: "preset: " + p, kind: "preset", known: true };
   }
   if (raw.indexOf("/") > 0) return { store: "openrouter:" + raw, label, kind: "model", known };
-  return { store: "preset:" + raw, label: "preset · " + raw, kind: "preset", known: known || proxyPresets(env).indexOf(raw) >= 0 };
+  return { store: "preset:" + raw, label: "preset: " + raw, kind: "preset", known: known || proxyPresets(env).indexOf(raw) >= 0 };
 }
 
 async function loadPrefs(env) {
@@ -4615,7 +4615,7 @@ async function handleChat(request, env, emit) {
     );
     const cards = built
       .filter(Boolean)
-      .map((c) => ({ q: prompt, a: c.text, more: c.more || null, provider: c.provider, source: c.source, kind: explicit ? "instruction" : decisionLabel(decision), decision: slimDecision(decision) }));
+      .map((c) => ({ q: prompt, a: c.text, more: c.more || null, provider: c.provider, source: c.source, kind: kindFor(decision, pick), decision: slimDecision(decision) }));
     if (cards.length >= 1) {
       step("cards", cards.length + (cards.length === 1 ? " card" : " cards") + ", one per source");
       return finish(env, key, plan, {
@@ -4657,7 +4657,7 @@ async function handleChat(request, env, emit) {
         a: c.text,
         more: c.more || null,
         provider: c.provider,
-        kind: wanted === 1 ? (explicit ? "instruction" : decisionLabel(decision)) : c.kind,
+        kind: wanted === 1 ? kindFor(decision, pick) : c.kind,
         decision: slimDecision(decision),
       }));
     // Never hand back an answer with no card. The first card is the decision,
@@ -4669,7 +4669,7 @@ async function handleChat(request, env, emit) {
         a: String(answer).trim(),
         more: null,
         provider,
-        kind: explicit ? "instruction" : decisionLabel(decision),
+        kind: kindFor(decision, pick),
         decision: slimDecision(decision),
       });
     }
@@ -4887,6 +4887,13 @@ function uniqueSources(sources) {
 
 // What a single card is titled with: the decision itself, rather than which
 // angle of a three-part spray it happened to be.
+// The card says what actually produced it. A preset answers as "preset: name",
+// because that is the name he gave it; nothing else is made up on the way.
+function kindFor(decision, pick) {
+  if (pick && pick.preset) return "preset: " + pick.preset;
+  return decisionLabel(decision);
+}
+
 function decisionLabel(decision) {
   const d = decision || {};
   return [d.domain, d.intent].filter(Boolean).join(" \u00b7 ") || null;

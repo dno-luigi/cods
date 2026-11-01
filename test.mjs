@@ -1479,7 +1479,9 @@ function fakeBrowser(pages, opts) {
   const d = await (await post("/chat", { prompt: said, use_cache: false }, env)).json();
   check("an explicit instruction is not turned into a question", !d.clarify, d.clarify && d.clarify.questions);
   check("it is passed to the model word for word", aiInputs.some((a) => JSON.stringify(a).indexOf("just leave all the other information") >= 0), aiInputs.length);
-  check("and it comes back as an instruction card", !!(d.cards && d.cards[0] && d.cards[0].a) && d.cards[0].kind === "instruction", d.cards && d.cards.map((c) => c.kind));
+  check("and it comes back as a card, named by the decision, not by an invented label",
+    !!(d.cards && d.cards[0] && d.cards[0].a) && !/instruction/.test(String(d.cards[0].kind || "")),
+    d.cards && d.cards.map((c) => c.kind));
 
   // A vague job is still a job for the decision model: it may ask.
   const vague = await (await post("/chat", { prompt: "sort out the tax question" }, env)).json();
@@ -1501,6 +1503,7 @@ function fakeBrowser(pages, opts) {
   check("an audit runs a preset, not an audit route", hit.length > 0 && hit.every((h) => h.url.indexOf("/v1/audit") === -1), hit.map((h) => h.url));
   check("the preset is named in the request", hit.some((h) => /"model":"(?:@preset\/)?truth"/.test(h.body)), hit[0] && hit[0].body.slice(0, 200));
   check("and the preset answers", /proxy/.test(String(d.provider || "")) && !!d.answer, d.provider);
+  check("the card names the preset that ran", d.cards && d.cards[0] && d.cards[0].kind === "preset: truth", d.cards && d.cards.map((c) => c.kind));
 }
 
 // 28b. no key: presets ride the proxy, model ids say what is missing
