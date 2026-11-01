@@ -205,6 +205,7 @@ const SHAPE_CARD = [
 // cannot run falls through the chain, so the answer still arrives.
 const MODEL_CHOICES = [
   { id: "@cf/deepseek-ai/deepseek-v4-flash-0731", short: "deepseek", label: "DeepSeek V4 Flash — 1M window" },
+  { id: "@cf/ibm-granite/granite-4.0-h-micro", short: "granite micro", label: "Granite 4.0 H Micro — the small assistant" },
   { id: "@cf/qwen/qwen2.5-coder-32b-instruct", short: "qwen 32B", label: "Qwen 2.5 32B — code and maths" },
   { id: "@cf/mistralai/mistral-small-3.1-24b-instruct", short: "mistral 24B", label: "Mistral Small 3.1 24B" },
 ];
