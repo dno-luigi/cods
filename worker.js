@@ -1075,7 +1075,9 @@ function fieldText(v) {
 }
 function shutSheet() { $('sheet').classList.remove('show'); S.editing = null; }
 function learnCardEdit(c, changed) {
-  var a = 'He rewrote ' + changed.join(', ') + ' on this card. It now says: ' + String(c.a || '').slice(0, 200);
+  // His words lead. Whatever else is in the note, the part that has to survive
+  // any shortening is the thing he actually wants done.
+  var a = String(c.a || '').slice(0, 300) + ' [' + changed.join(', ') + ' rewritten by him]';
   if (c.provider) a += ' — how it got there: ' + String(c.provider).slice(0, 90);
   fetch(API.prefs, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1098,6 +1100,12 @@ function saveCardSheet() {
       var txt = String(b.value).trim();
       if (!txt) now = null;
       else { try { now = JSON.parse(txt); } catch (e) { now = String(b.value); } }
+    } else if (typeof was === 'boolean') {
+      var t = String(b.value).trim().toLowerCase();
+      now = /^(true|yes|on|1)$/.test(t) ? true : /^(false|no|off|0)$/.test(t) ? false : String(b.value);
+    } else if (typeof was === 'number') {
+      var n = Number(String(b.value).trim());
+      now = String(b.value).trim() !== '' && isFinite(n) ? n : String(b.value);
     } else {
       now = String(b.value);
     }
@@ -2725,6 +2733,9 @@ function planRoute(decision) {
 // rest" says exactly what it wants, so it is carried out and passed to the
 // model as written. Asking what he wants back when he has just said what he
 // wants is what made the thing argue with him.
+// Asked for something current, the web is the answer even under an instruction.
+const WANTS_FRESH = /\b(latest|today|tonight|current|currently|now|right now|news|live|price|prices|weather|score|scores|recent|this week|this month|this year|2025|2026|2027)\b/i;
+
 const DIRECTIVE_VERBS = /^(?:please\s+|kindly\s+|can you\s+|could you\s+|would you\s+|just\s+|now\s+|also\s+|only\s+|and\s+|i (?:want|need) you to\s+|go ahead and\s+)*(?:extract|strip|remove|delete|drop|replace|rewrite|reformat|format|convert|translate|summari[sz]e|paraphrase|return|output|print|emit|give me|show me|list|split|merge|join|parse|dedupe|capitali[sz]e|anonymi[sz]e|redact|truncate)\b/i;
 
 // He says how long he wants it, so that is the instruction. A long answer is
@@ -3774,7 +3785,7 @@ function prefsHint(prefs) {
       "he told you: " +
         learned
           .slice(-4)
-          .map((x) => String((x && x.q) || "").slice(0, 70) + " -> " + String((x && x.a) || "").slice(0, 90))
+          .map((x) => String((x && x.q) || "").slice(0, 90) + " -> " + String((x && x.a) || "").slice(0, 400))
           .join("; ")
     );
   }
@@ -4760,6 +4771,13 @@ async function handleChat(request, env, emit) {
   step("notes", related.length + " saved notes matched" + (relatedError ? " (notes failed)" : ""));
 
   const plan = planRoute(decision);
+
+  // An instruction to work on what he supplied is not a request to look it up.
+  // His correction said to extract the names from the page he pasted; searching
+  // sent it after strangers and it came back with the wrong person and a
+  // refusal. The material is already in front of it.
+  const supplied = explicit && !WANTS_FRESH.test(String(prompt || ""));
+  if (supplied) plan.search = false;
 
   if (body.decision_only) {
     return json({ decision, decision_error: decisionError, plan: { domain: plan.domain, search: plan.search, care: plan.care, stable: plan.stable } }, decision ? 200 : 502);

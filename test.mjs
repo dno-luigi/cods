@@ -2086,6 +2086,56 @@ function fakeBrowser(pages, opts) {
   check("a clip over the size ceiling is refused", huge.status === 413, huge.status);
 }
 
+// 27a. his correction arrives whole, and an instruction is not sent to the web
+{
+  const env = makeEnv();
+  const tail = "and never search the web for these people ZZTAIL";
+  const said = "Extract the names from the page he pasted, one per line, exactly as written " + tail;
+  const saved = await (await post("/prefs", { action: "add", q: "Card he corrected: names", a: said }, env)).json();
+  check("the whole correction reaches the models, not the first ninety characters",
+    String(saved.hint || "").includes("ZZTAIL"), saved.hint);
+  check("and it is stored under the card it came from",
+    Array.isArray(saved.learned) && saved.learned.some((x) => /names/.test(String(x.q))), saved.learned);
+}
+
+// 27b. what he hands over is not something to go and look up
+{
+  const base = makeEnv();
+  const inner = base.AI.run;
+  const env = makeEnv({
+    AI: { run: async (m, i) => {
+      if (String(m).startsWith("@cf/cloudflare/clef")) {
+        return { answers: {
+          intent: { probabilities: { answer: 0.9 } },
+          domain: { probabilities: { general: 0.9 } },
+          depth: { score: 2 },
+          needs_web: { probability: 0.95 },
+          clarify: { probability: 0.05 },
+          sensitive: { probability: 0.05 },
+        } };
+      }
+      return inner(m, i);
+    } },
+  });
+  const told = await (await post("/chat", {
+    prompt: "Extract the names from the following: Lesly Palacios, Ruby R Palacios, Hector Rivera Palacios",
+    decision_only: true,
+  }, env)).json();
+  check("an instruction about the text he supplied does not go to the web",
+    told.plan && told.plan.search === false, told.plan);
+
+  const fresh = await (await post("/chat", { prompt: "summarise the latest news on that case", decision_only: true }, env)).json();
+  check("but something current still searches even said as an instruction",
+    fresh.plan && fresh.plan.search === true, fresh.plan);
+}
+
+// 27c. saving one field does not report the untouched switches as rewritten
+{
+  const html = await (await worker.fetch(new Request("https://x/"), makeEnv())).text();
+  check("a switch is compared as the switch it is", html.indexOf("typeof was === 'boolean'") >= 0, html.length);
+  check("and a number is not turned into text", html.indexOf("typeof was === 'number'") >= 0, html.length);
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
 
