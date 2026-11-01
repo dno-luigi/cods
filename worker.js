@@ -41,8 +41,9 @@ const CHARS_PER_TOKEN = 3;
 // can hold it, and clef decides on what comes back. Contexts are from the
 // models' own pages. DeepSeek V4 Flash is the coverage layer: its 1M window
 // holds states no clef can, so the rewrite is one model and it is that one.
-// llama-3.2-1b is not a summariser: it is the small assistant that works beside
-// the decision model and DeepSeek, each on what it is good for.
+// granite-4.0-h-micro is not a summariser: it is the small assistant that works
+// beside the decision model and DeepSeek, each on what it is good for. No llama
+// in any ladder or picker: he has said plainly that it is not to be used.
 const COMPRESS_LADDER = [
   { model: "@cf/deepseek-ai/deepseek-v4-flash-0731", context: 1048576 },
 ];
@@ -158,7 +159,6 @@ const OR_CHOICES = [
   { id: "openai/gpt-4o-mini", short: "gpt-4o-mini", label: "GPT-4o mini — dependable" },
   { id: "google/gemini-2.0-flash-001", short: "gemini flash", label: "Gemini 2.0 Flash — very fast" },
   { id: "anthropic/claude-3.5-haiku", short: "haiku", label: "Claude 3.5 Haiku — good writing" },
-  { id: "meta-llama/llama-3.3-70b-instruct", short: "llama 70B", label: "Llama 3.3 70B — open weights" },
 ];
 const WEB_THRESHOLD = 0.5;
 const CARE_THRESHOLD = 0.5;
@@ -177,7 +177,7 @@ const TTL_VOLATILE = 3600; // 1 hour
 // Text layer: Workers AI models in this order, then OpenRouter.
 const CF_TEXT_MODELS = [
   "@cf/deepseek-ai/deepseek-v4-flash-0731",
-  "@cf/meta/llama-3.2-1b-instruct",
+  "@cf/ibm-granite/granite-4.0-h-micro",
 ];
 
 // The shapes: what a call has to look like, not which model answers it. The
@@ -205,7 +205,6 @@ const SHAPE_CARD = [
 // cannot run falls through the chain, so the answer still arrives.
 const MODEL_CHOICES = [
   { id: "@cf/deepseek-ai/deepseek-v4-flash-0731", short: "deepseek", label: "DeepSeek V4 Flash — 1M window" },
-  { id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", short: "llama 70B", label: "Llama 3.3 70B — strongest here" },
   { id: "@cf/qwen/qwen2.5-coder-32b-instruct", short: "qwen 32B", label: "Qwen 2.5 32B — code and maths" },
   { id: "@cf/mistralai/mistral-small-3.1-24b-instruct", short: "mistral 24B", label: "Mistral Small 3.1 24B" },
 ];
@@ -2464,6 +2463,20 @@ function planRoute(decision) {
 // What the decision layer is unsure about, turned into questions a person can
 // answer on a phone. Each answer is sent back with the question, so the next
 // decision is made with more of this person's actual intent.
+// An explicit instruction is an instruction. "Extract any URL and leave the
+// rest" says exactly what it wants, so it is carried out and passed to the
+// model as written. Asking what he wants back when he has just said what he
+// wants is what made the thing argue with him.
+const DIRECTIVE_VERBS = /^(?:please\s+|kindly\s+|can you\s+|could you\s+|would you\s+|just\s+|now\s+|also\s+|only\s+|and\s+|i (?:want|need) you to\s+|go ahead and\s+)*(?:extract|strip|remove|delete|drop|replace|rewrite|reformat|format|convert|translate|summari[sz]e|paraphrase|return|output|print|emit|give me|show me|list|split|merge|join|parse|dedupe|capitali[sz]e|anonymi[sz]e|redact|truncate)\b/i;
+
+function isDirective(prompt) {
+  const p = String(prompt || "").trim();
+  if (!p) return false;
+  // A question is a question: it gets answered, and may be worth clarifying.
+  if (p.indexOf("?") >= 0) return false;
+  return DIRECTIVE_VERBS.test(p.split("\n")[0].slice(0, 200));
+}
+
 function clarifyQuestions(decision, said) {
   const d = decision || {};
   const asked = new Set((said || []).map((s) => String((s && s.id) || "")));
@@ -4273,6 +4286,8 @@ async function handleChat(request, env, emit) {
   // Answers from earlier rounds ride along, so the next decision is made with
   // this person's actual intent rather than another guess.
   const said = Array.isArray(body.clarify) ? body.clarify.filter((c) => c && c.q) : [];
+  // Taken as written: an instruction is obeyed on the first pass.
+  const explicit = isDirective(prompt);
   const told = said.length ? contextCards.concat(said.map((c) => ({ q: c.q, a: c.a }))) : contextCards;
   // Keep what he just told it before anything reads the preferences again.
   const learnedNow = said.length ? prefsHint(await rememberAnswers(env, prompt, said, prefs)) : learned;
@@ -4313,8 +4328,9 @@ async function handleChat(request, env, emit) {
     // Otherwise ask while it is still unsure. It does not stop at a round count:
     // once the fixed questions are used up the model writes the next one from
     // his own answers, and the exchange ends when it has nothing left to ask.
-    let asks = wantsSearch || said.length >= ASK_LIMIT ? [] : clarifyQuestions(decision, said);
-    if (!asks.length && !wantsSearch && said.length < ASK_LIMIT && (said.length > 0 || (typeof decision.clarify === "number" && decision.clarify >= 0.5))) {
+    if (explicit) step("instruction", "taken as written, nothing to ask");
+    let asks = explicit || wantsSearch || said.length >= ASK_LIMIT ? [] : clarifyQuestions(decision, said);
+    if (!explicit && !asks.length && !wantsSearch && said.length < ASK_LIMIT && (said.length > 0 || (typeof decision.clarify === "number" && decision.clarify >= 0.5))) {
       asks = await nextQuestions(env, prompt, said, decision, body);
     }
     if (asks.length) {
@@ -4509,7 +4525,7 @@ async function handleChat(request, env, emit) {
     );
     const cards = built
       .filter(Boolean)
-      .map((c) => ({ q: prompt, a: c.text, more: c.more || null, provider: c.provider, source: c.source, kind: decisionLabel(decision), decision: slimDecision(decision) }));
+      .map((c) => ({ q: prompt, a: c.text, more: c.more || null, provider: c.provider, source: c.source, kind: explicit ? "instruction" : decisionLabel(decision), decision: slimDecision(decision) }));
     if (cards.length >= 1) {
       step("cards", cards.length + (cards.length === 1 ? " card" : " cards") + ", one per source");
       return finish(env, key, plan, {
@@ -4551,7 +4567,7 @@ async function handleChat(request, env, emit) {
         a: c.text,
         more: c.more || null,
         provider: c.provider,
-        kind: wanted === 1 ? decisionLabel(decision) : c.kind,
+        kind: wanted === 1 ? (explicit ? "instruction" : decisionLabel(decision)) : c.kind,
         decision: slimDecision(decision),
       }));
     // Never hand back an answer with no card. The first card is the decision,
@@ -4563,7 +4579,7 @@ async function handleChat(request, env, emit) {
         a: String(answer).trim(),
         more: null,
         provider,
-        kind: decisionLabel(decision),
+        kind: explicit ? "instruction" : decisionLabel(decision),
         decision: slimDecision(decision),
       });
     }

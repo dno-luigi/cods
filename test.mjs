@@ -20,7 +20,7 @@ globalThis.fetch = function (url, opts) {
     return Promise.resolve(
       new Response(
         JSON.stringify({
-          model: "@cf/meta/llama-3.1-8b-instruct-fast",
+          model: "@cf/ibm-granite/granite-4.0-h-micro",
           choices: [{ message: { role: "assistant", content: "notes answer" } }],
           chunks: searchChunks,
         }),
@@ -1058,9 +1058,10 @@ function fakeBrowser(pages, opts) {
   check("the picker lists Cloudflare models", Array.isArray(list.workers) && list.workers.length >= 3, list.workers && list.workers.length);
   check("and starts with the default one", list.workers[0].id === list.default, list.default);
   check("it lists the proxy presets too", list.proxy && list.proxy.bound === true && list.proxy.presets.indexOf("truth") >= 0, list.proxy);
+  check("and offers no llama at all", JSON.stringify(list).toLowerCase().indexOf("llama") === -1, JSON.stringify(list.workers.map((m) => m.id)));
   check("nothing is chosen to begin with", list.chosen === null, list.chosen);
 
-  const pick = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+  const pick = "@cf/mistralai/mistral-small-3.1-24b-instruct";
   await post("/feedback", { action: "model", model: pick, q: "model picker" }, env);
   const after = await (await worker.fetch(new Request("https://cods.example/models"), env)).json();
   check("a pick is remembered", after.chosen === pick, after.chosen);
@@ -1409,6 +1410,39 @@ function fakeBrowser(pages, opts) {
   } finally {
     globalThis.fetch = real;
   }
+}
+
+// 25h. an explicit instruction is obeyed, not interrogated
+{
+  const base = makeEnv();
+  const inner = base.AI.run;
+  const env = makeEnv({
+    AI: { run: async (m, i) => {
+      if (String(m).startsWith("@cf/cloudflare/clef")) {
+        return { answers: {
+          intent: { probabilities: { answer: 0.5, decide: 0.5 } },
+          domain: { probabilities: { general: 0.8 } },
+          tone: { probabilities: { plain: 0.8 } },
+          depth: { score: 2 },
+          needs_web: { probability: 0.2 },
+          cache_ok: { probability: 0.2 },
+          sensitive: { probability: 0.1 },
+          clarify: { probability: 0.9 },
+        } };
+      }
+      return inner(m, i);
+    } },
+  });
+  const said = "extract any URL or web address and just leave all the other information";
+  calls = []; aiInputs = [];
+  const d = await (await post("/chat", { prompt: said, use_cache: false }, env)).json();
+  check("an explicit instruction is not turned into a question", !d.clarify, d.clarify && d.clarify.questions);
+  check("it is passed to the model word for word", aiInputs.some((a) => JSON.stringify(a).indexOf("just leave all the other information") >= 0), aiInputs.length);
+  check("and it comes back as an instruction card", !!(d.cards && d.cards[0] && d.cards[0].a) && d.cards[0].kind === "instruction", d.cards && d.cards.map((c) => c.kind));
+
+  // A vague job is still a job for the decision model: it may ask.
+  const vague = await (await post("/chat", { prompt: "sort out the tax question" }, env)).json();
+  check("but a vague job still gets asked about", !!(vague.clarify && vague.clarify.questions.length), vague.clarify && vague.clarify.questions);
 }
 
 // 28a2. an audit is asked for as an audit, not as another model answer

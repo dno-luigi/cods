@@ -39,15 +39,9 @@ CLOUDFLARE_API_TOKEN   CLOUDFLARE_ID   GITHUB_PAT   OPENROUTER_API_KEY
   decision models; clef-omni also reads audio.
 - **`@cf/deepseek-ai/deepseek-v4-flash-0731` (1,048,576)** is the coverage layer
   and the answer model. It replaces `granite-4.0-h-micro` everywhere.
-- **`@cf/meta/llama-3.2-1b-instruct` (60,000)** is the small assistant working
-  beside the decision model and DeepSeek. It is **not** a summariser and is not in
-  any rewrite ladder.
-- No Kimi, no GLM in the ladders. He never asked for them.
-- ASR: `@cf/deepgram/nova-3`, falling back to `@cf/openai/whisper-large-v3-turbo`.
-  Both input shapes are tried (`{audio:{body,contentType}}`, then `{audio:[bytes]}`)
-  because the accepted shape differs between them.
-- Grounding: OpenRouter `web` plugin, `engine: parallel`, `mode: turbo`
-  ($1/1,000 requests). Never mention the $5/$7 engines to him.
+- **`@cf/ibm-granite/granite-4.0-h-micro`** is the small assistant working
+  beside the decision model and DeepSeek. **No llama anywhere** — he has said
+  plainly that Llama is not to be used, in any ladder or picker.
 
 ## cods — what changed and where
 
