@@ -750,7 +750,8 @@ function fakeBrowser(pages, opts) {
     const page = await (await worker.fetch(new Request("https://cods.example/"), makeEnv())).text();
     check("the modal's Go reads the current callback", page.includes("S.cb = go;"), "S.cb = go");
     check("and is installed exactly once", (page.match(/modalGo'\)\.onclick/g) || []).length === 1, (page.match(/modalGo'\)\.onclick/g) || []).length);
-    check("the picker offers the truth engine's audit", page.includes("truth · audit this answer") && page.includes("d.proxy.presets"), "audit picker");
+    check("the picker offers presets", page.includes("<h4>Presets</h4>") && page.includes("d.proxy.presets"), "preset picker");
+    check("and invents no audit route", !page.includes("v1/audit") && !page.includes("audit:true"), "audit route");
   }
 
   ['id="selbar"', 'data-op="split"', 'data-op="merge"', 'id="menu"', "Continue / refine", "Fullscreen", "/deck"].forEach(function (needle) {
@@ -1413,6 +1414,32 @@ function fakeBrowser(pages, opts) {
   }
 }
 
+// 25g2. "search the web for X" is an instruction: it searches, first time
+{
+  const base = makeEnv();
+  const inner = base.AI.run;
+  const env = makeEnv({
+    AI: { run: async (m, i) => {
+      if (String(m).startsWith("@cf/cloudflare/clef")) {
+        return { answers: {
+          intent: { probabilities: { answer: 0.6 } },
+          domain: { probabilities: { legal: 0.8 } },
+          tone: { probabilities: { plain: 0.8 } },
+          depth: { score: 2 },
+          needs_web: { probability: 0.1 },
+          cache_ok: { probability: 0.2 },
+          sensitive: { probability: 0.3 },
+          clarify: { probability: 0.9 },
+        } };
+      }
+      return inner(m, i);
+    } },
+  });
+  const d = await (await post("/chat", { prompt: "search the web for the latest Court of Appeal judgment on consideration", use_cache: false, cards: [] }, env)).json();
+  check("an asked-for search searches without asking back", !d.clarify && d.answer !== null, d.clarify && d.clarify.questions);
+  check("the decision is told to search", d.decision && d.decision.needs_web >= 0.9, d.decision && d.decision.needs_web);
+}
+
 // 25h. an explicit instruction is obeyed, not interrogated
 {
   const base = makeEnv();
@@ -1446,20 +1473,21 @@ function fakeBrowser(pages, opts) {
   check("but a vague job still gets asked about", !!(vague.clarify && vague.clarify.questions.length), vague.clarify && vague.clarify.questions);
 }
 
-// 28a2. an audit is asked for as an audit, not as another model answer
+// 28a2. an audit is a preset: there is no separate contract to satisfy
 {
   const hit = [];
   const env = makeEnv({
     ORPROXY: {
       fetch: async (url, init) => {
         hit.push({ url: String(url), body: init && init.body ? String(init.body) : "" });
-        return new Response(JSON.stringify({ choices: [{ message: { content: "CONFIDENCE SCORE: 9" } }] }), { status: 200 });
+        return new Response(JSON.stringify({ choices: [{ message: { content: "preset answer" } }] }), { status: 200 });
       },
     },
   });
-  const d = await (await post("/chat", { prompt: "is a promise without consideration enforceable", audit: true, preset: "truth", use_cache: false, cards: [] }, env)).json();
-  check("the audit goes to the proxy's audit route", hit.length > 0 && hit[0].url.indexOf("/v1/audit") >= 0, hit[0] && hit[0].url);
-  check("and says so in the provider", String(d.provider || "").indexOf("audit") >= 0, d.provider);
+  const d = await (await post("/chat", { prompt: "audit this: is a promise without consideration enforceable", audit: true, preset: "truth", use_cache: false, cards: [] }, env)).json();
+  check("an audit runs a preset, not an audit route", hit.length > 0 && hit.every((h) => h.url.indexOf("/v1/audit") === -1), hit.map((h) => h.url));
+  check("the preset is named in the request", hit.some((h) => /"model":"(?:@preset\/)?truth"/.test(h.body)), hit[0] && hit[0].body.slice(0, 200));
+  check("and the preset answers", /proxy/.test(String(d.provider || "")) && !!d.answer, d.provider);
 }
 
 // 28b. no key: presets ride the proxy, model ids say what is missing

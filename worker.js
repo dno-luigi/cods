@@ -1180,7 +1180,6 @@ function askBody(p, ctx) {
   var m = S.model;
   if (!m) return b;
   if (m.openrouter) { b.model = m.preset ? 'preset:' + m.preset : 'openrouter:' + m.model; return b; }
-  if (m.audit) { b.audit = true; b.proxy = true; b.preset = m.preset || 'truth'; return b; }
   if (m.proxy) { b.proxy = true; if (m.preset) b.preset = m.preset; }
   else if (m.cf) { b.model = m.cf; b.cf_models = [m.cf]; }
   return b;
@@ -1280,9 +1279,10 @@ function openModels() {
       out += '<button data-pick="x">type a model or preset…</button></div></div>';
     }
     if (d.proxy && d.proxy.bound) {
-      out += '<div class="sect"><h4>Truth engine</h4><div class="row">';
-      out += '<button data-pick="a:1">truth · audit this answer</button>';
-      (d.proxy.presets || []).forEach(function (p, i) { out += '<button data-pick="y:' + i + '">proxy · ' + esc(p) + '</button>'; });
+      out += '<div class="sect"><h4>Presets</h4><div class="row">';
+      (d.proxy.presets || []).forEach(function (p, i) { out += '<button data-pick="y:' + i + '">preset · ' + esc(p) + '</button>'; });
+      if (d.proxy.default_preset) out += '<button data-pick="p:' + esc(d.proxy.default_preset) + '">default · ' + esc(d.proxy.default_preset) + '</button>';
+      out += '<button data-pick="x">another preset…</button>';
       out += '</div></div>';
     }
     var el = $('modelList');
@@ -1311,9 +1311,6 @@ document.addEventListener('click', function (e) {
     var om = ((MODELS && MODELS.openrouter && MODELS.openrouter.models) || [])[Number(v.slice(2))];
     if (!om) return;
     return keepModel({ label: om.short || om.id, store: 'openrouter:' + om.id, openrouter: true, model: om.id });
-  }
-  if (v.indexOf('a:') === 0) {
-    return keepModel({ label: 'truth · audit', store: 'audit:truth', proxy: true, preset: 'truth', audit: true });
   }
   if (v.indexOf('y:') === 0) {
     var ppx = ((MODELS && MODELS.proxy && MODELS.proxy.presets) || [])[Number(v.slice(2))];
@@ -2224,10 +2221,10 @@ function normalized(s) {
 // What this question should run on: an explicit pick, the model this person
 // chose last time, or nothing so the usual order applies.
 async function pickModel(env, body) {
-  // An audit is not a model answer: it asks the proxy to audit. The flag has to
-  // survive the pick, and the proxy branch below returned before it ever did.
+  // An audit is one of his presets, so "audit" is just "run that preset". There
+  // is no separate audit contract to speak of, and nothing here invents one.
   if (body.audit === true) {
-    return { proxy: true, preset: String(body.preset || "").trim(), audit: true };
+    return { proxy: true, preset: String(body.preset || "").trim() || "truth" };
   }
   if (body.proxy === true || String(body.provider || "") === "orproxy") {
     return { proxy: true, preset: String(body.preset || "").trim() };
@@ -4323,6 +4320,8 @@ async function handleChat(request, env, emit) {
     // searches. No second round, no further questions.
     const wantsSearch =
       String(body.search || "").toLowerCase() === "yes" ||
+      // He asked outright, in the prompt, so it searches. Not a probability.
+      /^\s*(?:please\s+|can you\s+|could you\s+)?(?:search|look up|google|web search|check the web)\b/i.test(prompt) ||
       said.some((s) => String(s.id) === "web" && /search|web|look/i.test(String(s.a)));
     if (wantsSearch) decision.needs_web = 0.95;
 
@@ -4622,19 +4621,6 @@ async function handleChat(request, env, emit) {
   // The proxy answers only when a request asks for it outright, with
   // { proxy: true } (or provider: "orproxy"), optionally naming a preset.
   // An explicit audit is its own thing, not a model answer.
-  if (pick.audit && env.ORPROXY) {
-    try {
-      const audited = await auditCall(env, prompt, body);
-      return respond({
-        answer: audited.text,
-        provider: "clef-flash → audit · truth",
-        trace: [{ source: "orproxy", via: "/v1/audit", model: "truth" }],
-      });
-    } catch (err) {
-      failures.push("audit: " + err.message);
-    }
-  }
-
   if (pick.cf) cfModels.unshift(pick.cf);
 
   if (pick.openrouter) {
@@ -5165,29 +5151,6 @@ async function orProxyCall(env, messages, body) {
   const err = new Error(notes.join(" | ") || "no route answered");
   err.notes = notes;
   throw err;
-}
-
-// The Truth Engine audit lives on the proxy: POST /v1/audit takes the subject
-// as {content} and answers with the audit, either as one envelope or as a
-// stream of server-sent events. Both are reduced to the text of the card.
-async function auditCall(env, content, body) {
-  const binder = env.ORPROXY;
-  if (!binder || typeof binder.fetch !== "function") throw new Error("ORPROXY is not bound");
-  const res = await binder.fetch("https://orproxy/v1/audit", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      content,
-      type: String(body.audit_type || "docket"),
-      stream: false,
-      audit_id: body.audit_id || undefined,
-    }),
-  });
-  const raw = await res.text();
-  if (!res.ok) throw new Error("HTTP " + res.status + " " + raw.slice(0, 200));
-  const text = sseText(raw);
-  if (!text) throw new Error("the audit came back empty");
-  return { text };
 }
 
 // An audit can arrive as an OpenAI envelope or as "data: {...}" lines; both
