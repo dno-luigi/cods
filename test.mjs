@@ -1116,11 +1116,14 @@ function fakeBrowser(pages, opts) {
   check("the answering model is given the edited preference", aiInputs.some((a) => JSON.stringify(a).indexOf("short only if I ask") >= 0), aiInputs.length);
   const renamed = await (await post("/prefs", { action: "edit", from: "Answer length", q: "Length I want", a: "Long unless I ask otherwise" }, env)).json();
   check("a preference can be renamed", !(renamed.learned || []).some((x) => x.q === "Answer length") && (renamed.learned || []).some((x) => x.q === "Length I want" && x.a === "Long unless I ask otherwise"), renamed.learned);
-  const page = await (await worker.fetch(new Request("https://cods.example/"), env)).text();
+  const pageRes = await worker.fetch(new Request("https://cods.example/"), env);
+  const page = await pageRes.text();
   check("the sheet lets him edit the label as well as the words", page.includes("data-pref-q"), "label field");
   check("and the edit box holds a paragraph", /<textarea[^>]*id="modalInput"/.test(page), "textarea");
   check("every field on a card is editable, not just the two", page.includes("function editCardSheet") && page.includes("data-field") && page.includes("data-card-save"), "card sheet");
   check("and the sheet writes back whatever he changed", page.includes("function saveCardSheet") && page.includes("changed.join"), "save path");
+  check("the page is never cached, so a fix is the fix he sees", String(pageRes.headers.get("cache-control") || "").includes("no-store"), pageRes.headers.get("cache-control"));
+  check("edit is on the card itself, not only in the menu", page.includes('data-edit='), "edit affordance");
   const removed = await (await post("/prefs", { action: "delete", q: "Length I want" }, env)).json();
   check("a preference can be removed", !(removed.learned || []).some((x) => x.q === "Length I want"), removed.learned);
 }

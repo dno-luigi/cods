@@ -891,7 +891,7 @@ function cardHTML(c) {
   var sel = S.sel[c.id] ? ' sel' : '';
   return '<div class="card' + flipped + sel + '" data-id="' + id + '">' +
     '<div class="face front"><div class="fh"><span class="lab">req</span>' +
-      '<span class="acts"><span class="dots" data-expand="' + id + '">expand</span><span class="dots" data-dots="' + id + '">more</span></span></div>' +
+      '<span class="acts"><span class="dots" data-edit="' + id + '">edit</span><span class="dots" data-expand="' + id + '">expand</span><span class="dots" data-dots="' + id + '">more</span></span></div>' +
       '<div class="body card-q">' + esc(c.q) + '</div></div>' +
     '<div class="face back"><div class="fh"><span class="lab">answer</span><span class="acts">' +
       '<span class="dots" data-tts="' + id + '">' + (S.speaking === c.id ? 'stop' : 'play') + '</span>' +
@@ -911,6 +911,14 @@ function render() {
   box.innerHTML = S.cards.map(cardHTML).join('');
   updSel();
 }
+document.addEventListener('click', function (ev) {
+  var editBtn = ev.target && ev.target.closest ? ev.target.closest('[data-edit]') : null;
+  if (editBtn) {
+    ev.preventDefault(); ev.stopPropagation();
+    editCardSheet(byId(editBtn.getAttribute('data-edit')));
+    return;
+  }
+}, true);
 document.addEventListener('click', function (ev) {
   var sheetBtn = ev.target && ev.target.closest ? ev.target.closest('[data-card-save],[data-card-cancel]') : null;
   if (sheetBtn) {
@@ -2219,7 +2227,7 @@ export default {
 
     if ((url.pathname === "/" || url.pathname === "/index.html") && request.method === "GET") {
       return new Response(HTML, {
-        headers: { "Content-Type": "text/html; charset=utf-8", ...cH },
+        headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store, must-revalidate", ...cH },
       });
     }
 
