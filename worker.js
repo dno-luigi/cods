@@ -1522,7 +1522,7 @@ function loadPrefs() {
       var held = x.status === 'candidate';
       var tag = held ? 'candidate' : (x.kept ? 'long term' : 'in use');
       return '<div class="row" style="align-items:center;margin:8px 0 2px">' +
-        '<span style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim)">' + tag + (x.fit !== undefined ? ' · fit ' + x.fit : '') + (x.merged ? ' · merged x' + x.merged : '') + (x.hits ? ' · used ' + x.hits : '') + '</span>' +
+        '<span style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim)">' + tag + (x.fit !== undefined ? ' · fit ' + x.fit : '') + (x.same && x.same.length ? ' · shared ' + x.same.join('/') : '') + (x.differs && x.differs.length ? ' · differs ' + x.differs.join('/') : '') + (x.merged ? ' · merged x' + x.merged : '') + (x.hits ? ' · used ' + x.hits : '') + '</span>' +
         '<input data-pref-q="' + q + '" value="' + esc(x.q || '') + '" placeholder="what it should know about you" style="flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);color:var(--dim);border-radius:8px;padding:5px;font-size:11px">' +
         '</div>' +
         (x.why ? '<div style="font-size:10px;color:var(--dim);margin:0 0 2px">' + esc(x.why) + '</div>' : '') +
@@ -3909,6 +3909,10 @@ async function tendPrefs(env, prefs, prompt) {
     const m = prefMatch(x, prompt);
     const fits = m.score >= PREF_USE;
     x.fit = Number(m.score.toFixed(2));
+    // Both halves of the comparison are kept, not just the score: what this
+    // request and this note agree on, and where they part company.
+    x.same = m.same.slice(0, 4);
+    x.differs = m.differ.slice(0, 4);
     if (fits && x.status === "candidate" && x.auto) {
       // A held one that keeps being the right answer is earning its place. Three
       // times is enough to call it known, and it is written down as earned.

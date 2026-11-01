@@ -2188,7 +2188,7 @@ function fakeBrowser(pages, opts) {
 // 28b. the sheet shows both tiers, with the buttons for each
 {
   const html = await (await worker.fetch(new Request("https://x/"), makeEnv())).text();
-  ["data-pref-keep", "data-pref-hold", "data-pref-rephrase", "candidates — held until they fit", "x.why ?"].forEach(function (n) {
+  ["data-pref-keep", "data-pref-hold", "data-pref-rephrase", "candidates — held until they fit", "x.why ?", "differs ' + x.differs"].forEach(function (n) {
     check("the sheet has " + n, html.indexOf(n) >= 0, n);
   });
 }
@@ -2234,6 +2234,8 @@ function fakeBrowser(pages, opts) {
   const once = await (await worker.fetch(new Request("https://cods.example/prefs"), env)).json();
   check("a candidate that fits is used, not thrown away", Number((once.learned[0] || {}).fit) >= 0.5, (once.learned[0] || {}).fit);
   check("and it counts the use", (once.learned[0] || {}).hits === 1, (once.learned[0] || {}).hits);
+  check("what the request and the note share is kept", ((once.learned[0] || {}).same || []).indexOf("name") >= 0, (once.learned[0] || {}).same);
+  check("and where they differ is kept too", ((once.learned[0] || {}).differs || []).indexOf("list") >= 0, (once.learned[0] || {}).differs);
   check("but stays a candidate until it has earned more", (once.learned[0] || {}).status === "candidate", once.learned[0]);
 
   await post("/chat", { prompt: q, use_cache: false }, env);
