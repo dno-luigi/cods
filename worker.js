@@ -1751,6 +1751,11 @@ function openSheet() {
     '<div class="sect"><h4>Approved answers</h4><p id="apprText" style="font-size:12px;color:var(--dim);line-height:1.5">loading...</p>' +
       '<div id="apprList"></div>' +
       '<div class="row" style="margin-top:8px"><button data-set="approved">Refresh</button><button data-appr-clear="1">Remove all</button></div></div>' +
+    '<div class="sect"><h4>Truth engine</h4><p id="truthText" style="font-size:12px;color:var(--dim);line-height:1.5">The curated list: master truths and candidates. It stays shut until the password is entered.</p>' +
+      '<div class="row" style="margin-top:6px;align-items:center">' +
+      '<input id="truthKey" type="password" autocomplete="off" placeholder="password" style="flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px;font-size:12px">' +
+      '<button class="icon" data-truth-open="1">Open</button></div>' +
+      '<div id="truthList"></div></div>' +
     '<div class="sect"><h4>API</h4><p style="font-size:11px;color:var(--dim);line-height:1.6">' + esc(location.origin) + '/chat · /card · /deck · /prefs</p></div>';
   $('sheet').classList.add('show');
   loadPrinciples();
@@ -1897,6 +1902,83 @@ function loadApprovedList() {
     }).join('');
   }).catch(function () {});
 }
+
+// The password is held in this tab only, never in storage: it is sent as the same
+// header the expert routes take, and nothing is read without it.
+var TRUTH_PASS = '';
+function truthAdminFetch(url, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({}, opts.headers || {}, { 'x-truth-key': TRUTH_PASS });
+  return fetch(url, opts);
+}
+function truthRead(r) {
+  return r.json().then(function (d) { return { s: r.status, d: d || {} }; });
+}
+function loadTruthList() {
+  var p = $('truthText');
+  var box = $('truthList');
+  truthAdminFetch('/truths/list').then(truthRead).then(function (got) {
+    var d = got.d || {};
+    if (got.s === 401 && d.needs_setup) {
+      if (p) p.textContent = 'No password yet. Type the one you want and press Open once: it is kept as a hash, and nothing opens this list without it.';
+      return;
+    }
+    if (got.s !== 200) {
+      if (p) p.textContent = d.error || 'Could not open the curated list.';
+      if (box) box.innerHTML = '';
+      return;
+    }
+    if (p) p.textContent = d.count + ' in the curated list' + (d.count > d.truths.length ? ', newest ' + d.truths.length : '') + '. Remove one and it stops being served.';
+    if (!box) return;
+    box.innerHTML = d.truths.length
+      ? d.truths.map(function (t) {
+          var master = t.status === 'master';
+          return '<div style="border-top:1px solid var(--line);padding-top:8px;margin:8px 0">' +
+            '<div class="row" style="align-items:flex-start">' +
+            '<div style="flex:1;min-width:0;font-size:11px;color:var(--text);line-height:1.45">' + esc(t.question || '') +
+            (t.answer ? '<div style="color:var(--dim);margin-top:3px">' + esc(t.answer) + '</div>' : '') +
+            '<div style="font-size:10px;color:var(--dim);margin-top:3px">' + (master ? 'master' : 'candidate') + ' · ' + esc(String(t.confidence)) + ' · seen ' + esc(String(t.seen || 1)) + ' · ' + esc(String(t.sources || 0)) + ' sources' + (t.approver ? ' · ' + esc(t.approver) : '') + '</div>' +
+            '</div>' +
+            '<button class="icon" data-truth-del="' + esc(t.id || '') + '">Remove</button></div></div>';
+        }).join('')
+      : '<p style="font-size:11px;color:var(--dim)">Nothing in the list yet.</p>';
+  }).catch(function (e) { if (p) p.textContent = 'Could not open the curated list: ' + ((e && e.message) || e); });
+}
+document.addEventListener('click', function (e) {
+  var opener = e.target && e.target.closest ? e.target.closest('[data-truth-open]') : null;
+  if (opener) {
+    e.preventDefault();
+    var typed = (($('truthKey') && $('truthKey').value) || '').trim();
+    if (!typed) { toast('Type the password'); return; }
+    TRUTH_PASS = typed;
+    truthAdminFetch('/truths/list').then(truthRead).then(function (got) {
+      if (got.s === 401 && got.d && got.d.needs_setup) {
+        // Nothing is set yet, so the password typed here is the password.
+        return fetch('/truths/key', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: typed })
+        }).then(function (r) { return r.json(); }).then(function (d) {
+          if (d && d.error) { toast(d.error); return; }
+          toast('Password set. Nothing opens this list without it.');
+          loadTruthList();
+        });
+      }
+      if (got.s === 401) { toast('Wrong password'); return; }
+      loadTruthList();
+    }).catch(function (err) { toast('Could not open: ' + ((err && err.message) || err)); });
+    return;
+  }
+  var drop = e.target && e.target.closest ? e.target.closest('[data-truth-del]') : null;
+  if (drop) {
+    e.preventDefault();
+    var tid = drop.getAttribute('data-truth-del');
+    truthAdminFetch('/truths/' + encodeURIComponent(tid), { method: 'DELETE' }).then(truthRead).then(function (got) {
+      if (got.s !== 200) { toast(got.d.error || 'Could not remove it'); return; }
+      toast('Removed from the curated list');
+      loadTruthList();
+    }).catch(function (err) { toast('Could not remove: ' + ((err && err.message) || err)); });
+    return;
+  }
+});
 
 // Removing an approved answer posts the key it was listed under, so the question
 // never has to be retyped and a card that was signed off stays accepted.
@@ -2306,6 +2388,52 @@ export default {
     });
   }
 
+  // The curated list: master truths and candidates together, behind his password.
+  if (url.pathname === "/truths/list" || url.pathname === "/truths/key") {
+    if (url.pathname === "/truths/key") {
+      if (request.method !== "POST") return json({ error: "Use POST" }, 405);
+      if (env.TRUTH_KEY) return json({ error: "TRUTH_KEY is set on the Worker, so that is the password" }, 409);
+      if (await adminStored(env)) return json({ error: "A password is already set" }, 409);
+      const { body, error } = await readBody(request);
+      if (error) return error;
+      const pass = String(body.key || "").trim();
+      if (pass.length < 6) return json({ error: "Use at least six characters" }, 400);
+      const store = ctxStore(env);
+      if (!store) return json({ error: "No store to keep the password in" }, 503);
+      await store.put(ADMIN_SLOT, await hashKey("admin|" + pass));
+      return json({ ok: true, set: true });
+    }
+    if (request.method !== "GET") return json({ error: "Use GET" }, 405);
+    const expert = String(env.TRUTH_KEY || "").trim();
+    const stored = await adminStored(env);
+    if (!expert && !stored) return json({ error: "No password set yet", needs_setup: true }, 401);
+    if (!(await adminOpen(env, request.headers.get("x-truth-key") || ""))) return json({ error: "Wrong password" }, 401);
+    const listBox = truthStore(env);
+    if (!listBox) return json({ error: "No truth store is bound" }, 503);
+    const every = await truthIndex(env, listBox);
+    const show = Math.min(60, Math.max(1, Number(url.searchParams.get("limit")) || 40));
+    const rows = [];
+    for (const row of every.slice(0, show)) {
+      let rec = null;
+      try {
+        const raw = await listBox.get("truth:" + row.id);
+        rec = raw ? JSON.parse(raw) : null;
+      } catch (err) {}
+      rows.push({
+        id: row.id,
+        question: rec ? rec.question : row.question,
+        answer: rec ? String(rec.answer || "").slice(0, 300) : "",
+        status: rec ? rec.status : row.status,
+        confidence: rec ? rec.confidence : row.confidence,
+        seen: rec ? rec.seen : row.seen,
+        sources: rec ? (rec.sources || []).length : row.sources,
+        approver: rec ? rec.approver || null : null,
+        updated: rec ? rec.updated : row.updated,
+      });
+    }
+    return json({ ok: true, password: expert ? "TRUTH_KEY" : "chosen", count: every.length, truths: rows });
+  }
+
   if (url.pathname.indexOf("/truths/") === 0) {
     const box = truthStore(env);
     if (!box) return json({ error: "No truth store is bound" }, 503);
@@ -2318,6 +2446,22 @@ export default {
       rec = raw ? JSON.parse(raw) : null;
     } catch (err) {}
     if (!rec) return json({ error: "No such truth" }, 404);
+    if (parts.length === 1 && request.method === "DELETE") {
+      if (!(await adminOpen(env, request.headers.get("x-truth-key") || ""))) return json({ error: "Wrong password" }, 401);
+      if (typeof box.delete !== "function") return json({ error: "This store cannot remove a record" }, 503);
+      await box.delete("truth:" + id);
+      const left = (await truthIndex(env, box)).filter((r) => r && r.id !== id);
+      await box.put(TRUTH_INDEX_KEY, JSON.stringify(left));
+      if (env.AUDITS) {
+        try {
+          await env.AUDITS.put(
+            "truth:" + id + ":delete:" + Date.now(),
+            JSON.stringify({ action: "delete", id, at: new Date().toISOString() })
+          );
+        } catch (err) {}
+      }
+      return json({ ok: true, deleted: 1, id, count: left.length });
+    }
     if (parts.length === 1) {
       if (request.method !== "GET") return json({ error: "Use GET, or POST /truths/<id>/approve" }, 405);
       return json({ truth: rec });
@@ -4972,6 +5116,7 @@ function truthStore(env) {
   return env.TRUTHS || env.ARCHIVE || env.KV || null;
 }
 const TRUTH_INDEX_KEY = "truths:index";
+const ADMIN_SLOT = "admin:key:v1";
 const TRUTH_LIMIT = 500;
 const TRUTH_MASTER_FLOOR = 0.9;
 
@@ -5108,6 +5253,37 @@ async function touchTruth(env, id) {
   } catch (err) {
     return null;
   }
+}
+
+// One password opens the curated list, and it is his. When TRUTH_KEY is set on
+// the Worker that is the password and nothing stands in for it; when it is not
+// set, the first password he types is kept as a hash, never as itself, so the
+// list is shut until he chooses one.
+function sameSecret(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return !diff;
+}
+
+async function adminStored(env) {
+  const store = ctxStore(env);
+  if (!store) return null;
+  try {
+    return await store.get(ADMIN_SLOT);
+  } catch (err) {
+    return null;
+  }
+}
+
+async function adminOpen(env, given) {
+  const pass = String(given || "");
+  if (!pass) return false;
+  const expert = String(env.TRUTH_KEY || "").trim();
+  if (expert) return sameSecret(pass, expert);
+  const stored = await adminStored(env);
+  if (!stored) return false;
+  return sameSecret(await hashKey("admin|" + pass), stored);
 }
 
 // Only an expert moves the line. Without TRUTH_KEY set, nothing can be signed

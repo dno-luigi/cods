@@ -77,7 +77,7 @@ function makeEnv(extra) {
           throw new Error("no such model: " + model);
         },
       },
-      KV: { get: async (k) => kv.get(k) || null, put: async (k, v) => kv.set(k, v) },
+      KV: { get: async (k) => kv.get(k) || null, put: async (k, v) => kv.set(k, v), delete: async (k) => kv.delete(k) },
     },
     extra || {}
   );
@@ -856,7 +856,7 @@ function fakeBrowser(pages, opts) {
   check("and the edit is kept as a preference the models read",
     html.indexOf("Card he corrected") >= 0 && html.indexOf("saved as a preference") >= 0,
     "edit as preference");
-  ['data-op="approve"', "applyTheme", "PRESETS", "/approve", "loadApprovedList", "data-appr-del", "data-appr-clear", "action: 'clear'", "removeApproved"].forEach(function (needle) {
+  ['data-op="approve"', "applyTheme", "PRESETS", "/approve", "loadApprovedList", "data-appr-del", "data-appr-clear", "action: 'clear'", "removeApproved", "data-truth-open", "data-truth-del", "/truths/list", "/truths/key"].forEach(function (needle) {
     check("page has " + needle, html.indexOf(needle) >= 0, needle);
   });
 }
@@ -1670,6 +1670,51 @@ function fakeBrowser(pages, opts) {
 
   const blocked = await (await post("/chat", { prompt: q, model: "preset:truth", cards: [] }, makeEnv())).json();
   check("without a key nothing is stored as a truth", blocked.truth === null || blocked.truth === undefined, blocked.truth);
+  orOk = false;
+}
+
+// 29b. the curated list is shut, and the password he chooses is what opens it
+{
+  calls = []; aiInputs = []; orOk = true;
+  const env = makeEnv({ OPENROUTER_API_KEY: "k" });
+  const made = await (await post("/chat", { prompt: "what is a reserved matter", model: "preset:truth", cards: [] }, env)).json();
+  check("a truth exists to curate", !!(made.truth && made.truth.id), made.truth && made.truth.id);
+
+  const shut = await worker.fetch(new Request("https://x/truths/list"), env);
+  const shutBody = await shut.json();
+  check("the curated list is shut until a password exists", shut.status === 401 && shutBody.needs_setup === true, shutBody);
+
+  const short = await post("/truths/key", { key: "abc" }, env);
+  check("a password too short is refused", short.status === 400, short.status);
+  const set = await post("/truths/key", { key: "open sesame" }, env);
+  check("the first password typed becomes the password", set.status === 200, set.status);
+
+  const wrong = await worker.fetch(new Request("https://x/truths/list", { headers: { "x-truth-key": "nope" } }), env);
+  check("a wrong password does not open it", wrong.status === 401, wrong.status);
+  const none = await worker.fetch(new Request("https://x/truths/list"), env);
+  check("no password does not open it", none.status === 401, none.status);
+
+  const opened = await (await worker.fetch(new Request("https://x/truths/list", { headers: { "x-truth-key": "open sesame" } }), env)).json();
+  check("the password shows the list with its answers", opened.ok === true && opened.truths.length === 1 && opened.truths[0].answer.length > 0, opened.truths);
+  check("and says which password is in force", opened.password === "chosen", opened.password);
+
+  const delNo = await worker.fetch(new Request("https://x/truths/" + made.truth.id, { method: "DELETE" }), env);
+  check("removing needs the password too", delNo.status === 401, delNo.status);
+  const del = await worker.fetch(new Request("https://x/truths/" + made.truth.id, { method: "DELETE", headers: { "x-truth-key": "open sesame" } }), env);
+  const delBody = await del.json();
+  check("the password removes it", delBody.ok === true && delBody.deleted === 1, delBody);
+  const after = await (await worker.fetch(new Request("https://x/truths"), env)).json();
+  check("and it is gone from the list", after.count === 0, after);
+
+  const twice = await post("/truths/key", { key: "another one" }, env);
+  check("the password cannot be set a second time", twice.status === 409, twice.status);
+
+  // With TRUTH_KEY on the Worker that is the only password.
+  const expertEnv = makeEnv({ TRUTH_KEY: "expert-key" });
+  const refuses = await post("/truths/key", { key: "another one" }, expertEnv);
+  check("an expert key on the Worker cannot be replaced from the page", refuses.status === 409, refuses.status);
+  const byExpert = await worker.fetch(new Request("https://x/truths/list", { headers: { "x-truth-key": "expert-key" } }), expertEnv);
+  check("and it opens the list", byExpert.status === 200, byExpert.status);
   orOk = false;
 }
 // 30. shapes: the card is always answerable, the full catalogue needs the expert key
