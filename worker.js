@@ -839,7 +839,7 @@ function speak(c) {
   if (!('speechSynthesis' in window)) { toast('No voice here'); return; }
   if (S.speaking === c.id) { stopVoice(); toast('Stopped'); return; }
   stopVoice();
-  var text = String(c.a || '').replace(/\\s+/g, ' ').trim();
+  var text = String(c.a || '').replace(/\\\\s+/g, ' ').trim();
   if (!text) return;
   var u = new SpeechSynthesisUtterance(text);
   S.speaking = c.id;
@@ -2005,7 +2005,7 @@ document.addEventListener('click', function (e) {
 // so a long answer is not cut off at the first breath.
 var READ_KEEP = [];
 function readChunks(text, max) {
-  var flat = String(text || '').replace(/\s+/g, ' ').trim();
+  var flat = String(text || '').replace(/\\s+/g, ' ').trim();
   if (!flat) return [];
   var sentences = flat.match(/[^.!?]+[.!?]*/g) || [flat];
   var out = [];
@@ -2025,7 +2025,7 @@ function lastAnswerText() {
   var nodes = document.querySelectorAll('[data-answer], .answer, .card, article');
   var best = '';
   for (var i = 0; i < nodes.length; i++) {
-    var txt = (nodes[i].textContent || '').replace(/\s+/g, ' ').trim();
+    var txt = (nodes[i].textContent || '').replace(/\\s+/g, ' ').trim();
     if (txt.length > best.length) best = txt;
   }
   return best;
@@ -2103,7 +2103,7 @@ function readerRender() {
   var stage = $('readStage');
   if (!stage) return;
   stage.innerHTML = READER.lines.map(function (line, i) {
-    var words = line.split(/\s+/).map(function (word, k) {
+    var words = line.split(/\\s+/).map(function (word, k) {
       return '<span data-w="' + k + '">' + esc(word) + '</span>';
     }).join(' ');
     return '<p data-line="' + i + '" style="margin:0 0 16px;font-size:15px;line-height:1.6;color:var(--dim);opacity:.5;cursor:pointer;transition:opacity .2s,font-size .2s">' + words + '</p>';
@@ -2187,7 +2187,7 @@ function readerSpeakLine(i) {
     READER.audio = audio;
     audio.ontimeupdate = function () {
       if (!audio.duration) return;
-      var count = READER.lines[i].split(/\s+/).length;
+      var count = READER.lines[i].split(/\\s+/).length;
       readerWords(Math.min(count, Math.floor(count * (audio.currentTime / audio.duration)) + 1));
     };
     audio.onended = function () {
@@ -2465,7 +2465,7 @@ $('sheet').addEventListener('click', function (e) {
   if (!e.target || !e.target.closest) return;
   var save = e.target.closest('[data-tplsave]');
   if (save) {
-    var nm = String(($('tplName') && $('tplName').value) || '').replace(/\s+/g, ' ').trim();
+    var nm = String(($('tplName') && $('tplName').value) || '').replace(/\\s+/g, ' ').trim();
     var ex = String(($('tplText') && $('tplText').value) || '').trim();
     if (!nm) return toast('Name it first');
     if (ex.length < 20) return toast('Paste an example of the writing you want');

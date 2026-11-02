@@ -1811,6 +1811,38 @@ function fakeBrowser(pages, opts) {
   });
 }
 
+// 29f. the reader keeps every letter: no rule may eat an s
+{
+  const html = await (await worker.fetch(new Request("https://x/"), makeEnv({}))).text();
+  check("the page does not collapse the letter s", html.indexOf("/s+/") === -1, "s rule");
+
+  function grab(source, name) {
+    const at = source.indexOf("function " + name + "(");
+    if (at < 0) return "";
+    let depth = 0;
+    const open = source.indexOf("{", at);
+    for (let k = open; k < source.length; k++) {
+      if (source[k] === "{") depth++;
+      else if (source[k] === "}") {
+        depth--;
+        if (depth === 0) return source.slice(at, k + 1);
+      }
+    }
+    return "";
+  }
+
+  const sentence = "Corporate risk management executive and insurance defense counsel operating on behalf of large enterprise like Fletcher Jones Motor Car (Mercedes-Benz of Ontario), Select Auto Protect, and California Lien Sale systematically reject initial demand presented at net valuation";
+  const readChunks = new Function(grab(html, "readChunks") + "\nreturn readChunks;")();
+  const pieces = readChunks(sentence, 200);
+  check("every letter survives the split", pieces.join(" ") === sentence, pieces.join(" ").slice(0, 90));
+
+  const src = (await import("node:fs")).readFileSync("worker.js", "utf8");
+  const from = src.indexOf("// speakable:");
+  const to = src.indexOf("// /speakable");
+  const speakable = new Function(src.slice(from, to) + "\nreturn speakable;")();
+  check("and the voice hears the same sentence unchanged", speakable(sentence) === sentence, speakable(sentence).slice(0, 90));
+}
+
 // 30. shapes: the card is always answerable, the full catalogue needs the expert key
 {
   const bucket = new Map();
