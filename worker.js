@@ -3197,32 +3197,41 @@ export default {
       const list = prefs.domainRules && Array.isArray(prefs.domainRules[dom]) ? prefs.domainRules[dom] : [];
       const row = list.find((r) => r && r.text === text);
       if (!row) return json({ error: "Add that rule first" }, 404);
-      let lines = [];
-      try {
-        const r = await askText(
-          env,
-          [
-            {
-              role: "system",
-              content:
-                "His rule for one step of a card answering app is below. Show exactly three examples of what that rule does, one per line. Each line reads: Ask: <a request that step receives> -> it <what it writes or does, quoting part of the words it would actually use>. Every example must turn on the rule itself, not on the name of the step: a rule about bullets shows sentences instead of bullets, a rule about searching shows a search happening. Reply with the three lines and nothing else: no numbering, no quotes around them, no preamble, each line under 140 characters.",
-            },
-            {
-              role: "user",
-              content: "His rule: " + text + "\nThe step it steers: " + dom,
-            },
-          ],
-          { max_tokens: 260 }
-        );
-        lines = String(r.text || "")
-          .split("\n")
+
+      const shape =
+        "Each example is exactly: Ask: <a request that step receives> it: <what it does or writes, quoting part of the words it would actually use>. Every example turns on his rule itself, never on the name of the step: a rule about bullets shows sentences instead of bullets, a rule about searching shows a search happening. No numbering, no quotes around the examples, no preamble, no apology, nothing else.";
+
+      // One reply usually carries one example, so ask again until three are in
+      // hand, telling it what it already said so the next ones differ.
+      function parseExamples(reply) {
+        return String(reply || "")
+          .split(/\|\||\n/)
           .flatMap((line) => line.split(/(?=Ask:)/i))
           .map((x) => x.replace(/^\s*(?:[-*\u2022]|\d+[.)])\s*/, "").trim())
-          .filter(Boolean)
-          .slice(0, 3)
+          .filter((x) => x.length > 8)
           .map((x) => x.slice(0, 200));
+      }
+
+      const lines = [];
+      try {
+        for (let round = 0; round < 3 && lines.length < 3; round++) {
+          const already = lines.length
+            ? "\nAlready shown, do not repeat them: " + lines.join(" | ")
+            : "";
+          const r = await askText(
+            env,
+            [
+              { role: "system", content: "He writes short rules for one step of a card answering app. Show what his rule does in practice. " + shape },
+              { role: "user", content: "His rule: " + text + "\nThe step it steers: " + dom + already },
+            ],
+            { max_tokens: 220 }
+          );
+          for (const one of parseExamples(r.text)) {
+            if (lines.length < 3 && !lines.includes(one)) lines.push(one);
+          }
+        }
       } catch (err) {
-        return json({ error: "Could not show examples: " + err.message }, 502);
+        if (!lines.length) return json({ error: "Could not show examples: " + err.message }, 502);
       }
       if (!lines.length) return json({ error: "The examples came back empty; the rule is saved" }, 502);
       row.eg = lines;
