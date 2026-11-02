@@ -2767,6 +2767,17 @@ function fakeBrowser(pages, opts) {
   check("the guidance is on a hold, not a tap", /addEventListener\('pointerdown'/.test(holdPage) && /\}, 450\);/.test(holdPage), "not a hold");
   check("the tap after a hold does not fill the box", /if \(STG\.fired\)/.test(holdPage), "hold also taps");
   check("all six parts are described", ["decide", "notes", "search", "cards", "cloudflare", "openrouter"].every(function (p) { return new RegExp(p + ": '").test(holdPage); }), "a part left out");
+  const apartEnv = makeEnv({ AI: { run: async () => ({ response: "Ask: " + "please ".repeat(30) + "it: done" }) } });
+  await post("/prefs", { action: "domain", domain: "cards", text: "cards (new): always keep each card under 90 words" }, apartEnv);
+  const egRes = await (await post("/prefs", { action: "domain-examples", domain: "cards", text: "always keep each card under 90 words" }, apartEnv)).json();
+  await post("/prefs", { action: "domain", domain: "cards", text: "never put two questions on one card" }, apartEnv);
+  const apart = await (await worker.fetch(new Request("https://x/prefs"), apartEnv)).json();
+  const cardRules = (apart.domainRules && apart.domainRules.cards) || [];
+  check("the strip sentence is not stored as the rule", cardRules[0] && cardRules[0].text === "always keep each card under 90 words", cardRules.map((r) => r.text));
+  check("a second rule gets its own row", cardRules.length === 2 && cardRules[1].text === "never put two questions on one card", cardRules.map((r) => r.text));
+  const firstEg = (cardRules[0] && cardRules[0].eg) || [];
+  check("three angles that say the same thing are one example", firstEg.length === 1, { eg: firstEg, res: egRes });
+  check("an example stays short", firstEg[0] && firstEg[0].length <= 121, firstEg[0] && firstEg[0].length);
   check("a few letters say nothing", tiny.draft === null, tiny);
   check("nothing replays what he already sent", page.indexOf("you asked before") === -1 && page.indexOf("action: 'suggest'") === -1, "history");
 }

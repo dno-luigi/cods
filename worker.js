@@ -3311,7 +3311,8 @@ export default {
       row.moved = new Date().toISOString();
     } else if (act === "domain" || act === "domain-remove") {
       const dom = String(body.domain || "").trim().toLowerCase().slice(0, 40);
-      const text = String(body.text || body.a || "").trim().slice(0, 300);
+      const rawText = String(body.text || body.a || "").trim().slice(0, 300);
+      const text = cleanRule(rawText);
       if (!dom || !text) return json({ error: "Send domain and text" }, 400);
       prefs.domainRules = prefs.domainRules && typeof prefs.domainRules === "object" ? prefs.domainRules : {};
       if (act === "domain") {
@@ -3320,7 +3321,8 @@ export default {
         prefs.domainRules[dom].push({ text, at: new Date().toISOString() });
       } else {
         if (Array.isArray(prefs.domainRules[dom])) {
-          prefs.domainRules[dom] = prefs.domainRules[dom].filter((r) => !r || r.text !== text);
+          // A row stored before the label was stripped can still be removed.
+          prefs.domainRules[dom] = prefs.domainRules[dom].filter((r) => !r || (r.text !== text && r.text !== rawText));
           // The last rule gone means the domain is gone: no empty heading left
           // on the sheet, and nothing empty handed to a model later.
           if (!prefs.domainRules[dom].length) delete prefs.domainRules[dom];
@@ -3331,14 +3333,15 @@ export default {
       // will follow it says what it would do with it. The examples stay on the
       // rule, so reading them again costs nothing.
       const dom = String(body.domain || "").trim().toLowerCase().slice(0, 40);
-      const text = String(body.text || body.a || "").trim().slice(0, 300);
+      const rawText = String(body.text || body.a || "").trim().slice(0, 300);
+      const text = cleanRule(rawText);
       if (!dom || !text) return json({ error: "Send domain and text" }, 400);
       const list = prefs.domainRules && Array.isArray(prefs.domainRules[dom]) ? prefs.domainRules[dom] : [];
       const row = list.find((r) => r && r.text === text);
       if (!row) return json({ error: "Add that rule first" }, 404);
 
       const shape =
-        "Each example is exactly: Ask: <a request that step receives> it: <what it does or writes, quoting part of the words it would actually use>. Every example turns on his rule itself, never on the name of the step: a rule about bullets shows sentences instead of bullets, a rule about searching shows a search happening. No numbering, no quotes around the examples, no preamble, no apology, nothing else.";
+        "Each example is exactly: Ask: <a request that step receives> it: <what it does or writes, quoting part of the words it would actually use>. One line, each half under 20 words, the rule alone. Every example turns on his rule itself, never on the name of the step: a rule about bullets shows sentences instead of bullets, a rule about searching shows a search happening. No numbering, no quotes around the examples, no preamble, no apology, nothing else.";
 
       // One reply usually carries one example, so ask again until three are in
       // hand, telling it what it already said so the next ones differ.
@@ -3357,7 +3360,7 @@ export default {
         }
         return out
           .map((x) => x.replace(/[|\s]+$/, ""))
-          .map((x) => (x.length > 220 ? x.slice(0, 220).replace(/\s+\S*$/, "") + "\u2026" : x))
+          .map((x) => (x.length > 120 ? x.slice(0, 120).replace(/\s+\S*$/, "") + "\u2026" : x))
           .filter((x) => x.length > 8);
       }
 
@@ -3384,7 +3387,9 @@ export default {
             { max_tokens: 220 }
           );
           for (const one of parseExamples(r.text)) {
-            if (lines.length < 3 && !lines.includes(one)) lines.push(one);
+            // One rule, three ways in: a second angle that comes back as the
+            // first one again is dropped, not stacked on top of it.
+            if (lines.length < 3 && !lines.includes(one) && !lines.some((x) => textAlike(x, one) >= 0.6)) lines.push(one);
           }
         }
       } catch (err) {
@@ -3434,7 +3439,7 @@ export default {
           const verbs = ["read", "reading", "write", "writing", "keep", "keeping", "use", "using", "say", "saying", "speak", "speaking", "search", "searching", "find", "finding", "tell", "telling", "show", "showing", "put", "putting", "end", "ending", "start", "starting", "avoid", "avoiding", "always", "never", "no", "make", "making", "give", "giving"];
           let step = grab("STEP").toLowerCase().replace(/[^a-z0-9 _-]/g, " ").trim().split(/\s+/)[0].slice(0, 24);
           if (verbs.indexOf(step) > -1) step = /card|answer/i.test(said) ? "cards" : "";
-          const rule = grab("RULE").replace(/^["\u201c']|["\u201d'.]$/g, "").slice(0, 160);
+          const rule = cleanRule(grab("RULE")).slice(0, 160);
           // An example that is his own sentence read back to him shows nothing.
           let eg = grab("EXAMPLE").replace(/^["\u201c']|["\u201d']$/g, "").slice(0, 200);
           if (eg && (/[{}"]/.test(eg) || /^(request|example|step)\s*:/i.test(eg) || textAlike(eg, said) >= 0.7)) eg = "";
@@ -3518,6 +3523,22 @@ export default {
         return json({ reset: true, cleared, hint: "" });
       }
       const prefs = await loadPrefs(env);
+      // A rule stored before the strip's sentence was trimmed still carries that
+      // label on the front. It is his rule underneath, so the label comes off
+      // once, here, and is written back: every rule then reads on its own.
+      let tidied = false;
+      if (prefs.domainRules && typeof prefs.domainRules === "object") {
+        for (const k of Object.keys(prefs.domainRules)) {
+          const list = prefs.domainRules[k];
+          if (!Array.isArray(list)) continue;
+          for (const r of list) {
+            if (!r || typeof r.text !== "string") continue;
+            const clean = cleanRule(r.text);
+            if (clean && clean !== r.text) { r.text = clean; tidied = true; }
+          }
+        }
+        if (tidied) await savePrefs(env, prefs);
+      }
       return json({
         kv: !!env.KV,
         actions: prefs.actions,
@@ -5338,6 +5359,25 @@ function stageRules(prefs, stage) {
   return Array.isArray(hit)
     ? hit.map((r) => String((r && r.text) || "").trim()).filter(Boolean)
     : [];
+}
+
+// A rule is his sentence, not the strip that offered it, and not the name of the
+// part stuck on the front. Anything a label put there is taken off before it is
+// stored, so what is kept, shown and followed is the rule alone.
+const PART_NAMES = ["decide", "notes", "search", "cards", "cloudflare", "openrouter"];
+function cleanRule(text) {
+  let out = String(text || "").replace(/\s+/g, " ").trim();
+  const cut = (re) => {
+    const m = out.match(re);
+    if (m && out.length - m[0].length >= 12) out = out.slice(m[0].length).trim();
+  };
+  cut(/^make it a rule for\s+[^:]{1,30}:\s*/i);
+  cut(/^[a-z0-9 _-]{1,24}\s*\((?:new|known)\)\s*[:\u2014-]\s*/i);
+  const head = out.match(/^([a-z0-9 _-]{1,24})\s*[:\u2014-]\s*/i);
+  if (head && PART_NAMES.indexOf(head[1].trim().toLowerCase()) > -1 && out.length - head[0].length >= 12) {
+    out = out.slice(head[0].length).trim();
+  }
+  return out.replace(/^["\u201c']|["\u201d'.]$/g, "").trim().slice(0, 300);
 }
 
 function stageHint(prefs, stage) {
