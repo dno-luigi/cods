@@ -1713,6 +1713,22 @@ function fakeBrowser(pages, opts) {
   orOk = false;
 }
 
+// 29c. speaking is a voice model through the key, never the device alone
+{
+  const noKey = await post("/speak", { text: "hello", model: "elevenlabs/eleven-v4", voice: "george" }, makeEnv({}));
+  check("speaking without a key says so", noKey.status === 503, noKey.status);
+  const empty = await post("/speak", { text: "   " }, makeEnv({ OPENROUTER_API_KEY: "k" }));
+  check("nothing to say is refused", empty.status === 400, empty.status);
+  const bogus = await post("/speak", { text: "hi", model: "not/a-model", voice: "x" }, makeEnv({ OPENROUTER_API_KEY: "k" }));
+  check("an unknown voice model is refused", bogus.status === 400, bogus.status);
+  const nameless = await post("/speak", { text: "hi", model: "elevenlabs/eleven-v4" }, makeEnv({ OPENROUTER_API_KEY: "k" }));
+  check("a voice must be named", nameless.status === 400, nameless.status);
+  const page = await (await worker.fetch(new Request("https://x/"), makeEnv({}))).text();
+  ["readVoice", "/speak", "elevenlabs/eleven-v4", "browserSpeak", "PLAYER"].forEach(function (n) {
+    check("page has " + n, page.indexOf(n) >= 0, n);
+  });
+}
+
 // 30. shapes: the card is always answerable, the full catalogue needs the expert key
 {
   const bucket = new Map();

@@ -1757,6 +1757,22 @@ function openSheet() {
       '<button class="icon" data-read-go="1">Read</button>' +
       '<button class="icon" data-read-stop="1">Stop</button>' +
       '<button class="icon" data-read-last="1">Last answer</button>' +
+      '<select id="readVoice" style="max-width:190px;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px;font-size:12px">' +
+      '<option value="elevenlabs/eleven-v4|george" selected>eleven v4 · george</option>' +
+      '<option value="elevenlabs/eleven-v4|sarah">eleven v4 · sarah</option>' +
+      '<option value="elevenlabs/eleven-v4|brian">eleven v4 · brian</option>' +
+      '<option value="elevenlabs/eleven-flash-v2.5|george">eleven flash · george</option>' +
+      '<option value="minimax/speech-2.8-turbo|English_expressive_narrator">minimax · narrator</option>' +
+      '<option value="minimax/speech-2.8-turbo|English_magnetic_voiced_man">minimax · deep</option>' +
+      '<option value="google/gemini-3.8-flash-tts|Kore">gemini · kore</option>' +
+      '<option value="google/gemini-3.8-flash-tts|Charon">gemini · charon</option>' +
+      '<option value="deepgram/aura-2|aura-2-thalia-en">aura 2 · thalia</option>' +
+      '<option value="deepgram/aura-2|aura-2-apollo-en">aura 2 · apollo</option>' +
+      '<option value="x-ai/grok-voice-tts-1.0|eve">grok · eve</option>' +
+      '<option value="x-ai/grok-voice-tts-1.0|rex">grok · rex</option>' +
+      '<option value="hexgrad/kokoro-82m|af_heart">kokoro · heart</option>' +
+      '<option value="hexgrad/kokoro-82m|am_michael">kokoro · michael</option>' +
+      '<option value="browser">this device</option></select>' +
       '<select id="readRate" style="background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px;font-size:12px">' +
       '<option value="0.85">slower</option><option value="1" selected>normal</option><option value="1.2">faster</option><option value="1.45">fast</option></select></div>' +
       '<p id="readNote" style="font-size:11px;color:var(--dim);margin-top:6px"></p></div>' +
@@ -1983,7 +1999,7 @@ document.addEventListener('click', function (e) {
 // Reading out loud: the browser's own voice, handed to it in sentence-sized parts
 // so a long answer is not cut off at the first breath.
 var READ_KEEP = [];
-function readChunks(text) {
+function readChunks(text, max) {
   var flat = String(text || '').replace(/\s+/g, ' ').trim();
   if (!flat) return [];
   var sentences = flat.match(/[^.!?]+[.!?]*/g) || [flat];
@@ -1992,7 +2008,7 @@ function readChunks(text) {
   sentences.forEach(function (s) {
     var t = s.trim();
     if (!t) return;
-    if (piece && (piece + ' ' + t).length > 220) { out.push(piece); piece = t; }
+    if (piece && (piece + ' ' + t).length > (max || 220)) { out.push(piece); piece = t; }
     else piece = piece ? piece + ' ' + t : t;
   });
   if (piece) out.push(piece);
@@ -2014,7 +2030,7 @@ function readVoice() {
   for (var i = 0; i < voices.length; i++) if (/^en/i.test(voices[i].lang || '')) return voices[i];
   return voices[0] || null;
 }
-function readOut(text, rate) {
+function browserSpeak(text, rate) {
   var note = $('readNote');
   if (!('speechSynthesis' in window) || !window.SpeechSynthesisUtterance) {
     if (note) note.textContent = 'This browser has no voice to read with.';
@@ -2041,6 +2057,66 @@ function readOut(text, rate) {
   });
   if (note) note.textContent = 'Reading ' + parts.length + ' part' + (parts.length === 1 ? '' : 's') + '.';
 }
+// A voice from a model, in pieces the provider will take, played one after the
+// other. If it refuses or will not play, the device voice picks up the rest.
+var PLAYER = null;
+function readOut(text, rate) {
+  var note = $('readNote');
+  var chosen = ($('readVoice') && $('readVoice').value) || '';
+  var parts = readChunks(text, 900);
+  if (!parts.length) {
+    if (note) note.textContent = 'Nothing to read yet.';
+    return;
+  }
+  if (!chosen || chosen === 'browser') {
+    browserSpeak(text, rate);
+    return;
+  }
+  var bits = chosen.split('|');
+  var model = bits[0];
+  var voice = bits[1] || '';
+  if (PLAYER) { try { PLAYER.pause(); } catch (err) {} PLAYER = null; }
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  var queue = parts.slice();
+  var said = 0;
+  if (note) note.textContent = 'Asking ' + model + ' for a voice…';
+  var next = function () {
+    if (!queue.length) { if (note) note.textContent = 'Finished.'; return; }
+    var piece = queue.shift();
+    fetch('/speak', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: piece, model: model, voice: voice })
+    }).then(function (r) {
+      if (!r.ok) throw new Error('refused');
+      return r.blob();
+    }).then(function (blob) {
+      var url = URL.createObjectURL(blob);
+      var audio = new Audio(url);
+      audio.playbackRate = rate || 1;
+      PLAYER = audio;
+      audio.onended = function () {
+        URL.revokeObjectURL(url);
+        PLAYER = null;
+        said++;
+        if (note) note.textContent = 'Reading ' + said + ' of ' + parts.length + '.';
+        next();
+      };
+      audio.onerror = function () { URL.revokeObjectURL(url); };
+      var started = audio.play();
+      if (started && started.catch) started.catch(function () {
+        if (note) note.textContent = 'That voice would not play here, so this device is reading.';
+        browserSpeak([piece].concat(queue).join(' '), rate);
+        queue = [];
+      });
+    }).catch(function () {
+      if (note) note.textContent = 'The voice service did not answer, so this device is reading.';
+      browserSpeak([piece].concat(queue).join(' '), rate);
+      queue = [];
+    });
+  };
+  next();
+}
 document.addEventListener('click', function (e) {
   var closest = e.target && e.target.closest ? e.target.closest.bind(e.target) : null;
   if (!closest) return;
@@ -2054,6 +2130,7 @@ document.addEventListener('click', function (e) {
   }
   if (closest('[data-read-stop]')) {
     e.preventDefault();
+    if (PLAYER) { try { PLAYER.pause(); } catch (err) {} PLAYER = null; }
     if ('speechSynthesis' in window) window.speechSynthesis.cancel();
     READ_KEEP = [];
     var stopped = $('readNote');
@@ -2625,6 +2702,49 @@ export default {
   // long question should never meet a paywall, so this route has no key and no
   // plan check. It is bounded by clip size and by a per-address daily count, so
   // one script cannot spend the account's whole allowance.
+  // Speaking: text in, audio out, from a voice model on OpenRouter.
+  if (url.pathname === "/speak") {
+    if (request.method !== "POST") return json({ error: "Use POST" }, 405);
+    const { body, error } = await readBody(request);
+    if (error) return error;
+    const text = String(body.text || "").replace(/\s+/g, " ").trim().slice(0, SPEAK_MAX_CHARS);
+    if (!text) return json({ error: "Nothing to say" }, 400);
+    const model = String(body.model || "").trim();
+    const voice = String(body.voice || "").trim();
+    if (!Object.prototype.hasOwnProperty.call(SPEAK_MODELS, model)) {
+      return json({ error: "Unknown voice model", models: Object.keys(SPEAK_MODELS) }, 400);
+    }
+    if (!voice) return json({ error: "Name a voice" }, 400);
+    const speakKey = String(env.OPENROUTER_API_KEY || "").trim();
+    if (!speakKey) return json({ error: "OPENROUTER_API_KEY is not set on the Worker" }, 503);
+    let up = null;
+    try {
+      up = await fetch("https://openrouter.ai/api/v1/audio/speech", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + speakKey, "Content-Type": "application/json" },
+        body: JSON.stringify({ model, input: text, voice, response_format: "mp3" }),
+      });
+    } catch (err) {
+      return json({ error: "Could not reach the voice service", detail: String((err && err.message) || err) }, 502);
+    }
+    if (!up.ok) {
+      let detail = "";
+      try {
+        detail = String(await up.text()).slice(0, 400);
+      } catch (err) {}
+      return json({ error: "The voice provider refused", status: up.status, detail, model, voice }, 502);
+    }
+    const audio = await up.arrayBuffer();
+    if (!audio.byteLength) return json({ error: "The provider returned no audio", model, voice }, 502);
+    return new Response(audio, {
+      headers: {
+        "Content-Type": up.headers.get("content-type") || "audio/mpeg",
+        "Cache-Control": "no-store",
+        "X-Voice-Model": model,
+      },
+    });
+  }
+
   if (url.pathname === "/stt") {
     if (request.method !== "POST") {
       return json({ error: "Use POST with the audio as the body" }, 405);
@@ -5194,6 +5314,25 @@ function truthStore(env) {
   return env.TRUTHS || env.ARCHIVE || env.KV || null;
 }
 const TRUTH_INDEX_KEY = "truths:index";
+
+// The voices on OpenRouter, so the reading is not the phone's robot. Each one is
+// billed per character by its provider; the page names them plainly and falls
+// back to the device voice if a request is refused.
+const SPEAK_MODELS = {
+  "elevenlabs/eleven-v4": 1,
+  "elevenlabs/eleven-flash-v2.5": 1,
+  "elevenlabs/eleven-turbo-v2.5": 1,
+  "minimax/speech-2.8-turbo": 1,
+  "minimax/speech-2.8-hd": 1,
+  "google/gemini-3.8-flash-tts": 1,
+  "google/gemini-3.8-flash-lite-tts": 1,
+  "deepgram/aura-2": 1,
+  "x-ai/grok-voice-tts-1.0": 1,
+  "hexgrad/kokoro-82m": 1,
+  "mistralai/voxtral-mini-tts-2603": 1,
+  "qwen/qwen-audio-3.0-tts-flash": 1,
+};
+const SPEAK_MAX_CHARS = 1800;
 const TRUTH_LIMIT = 500;
 const TRUTH_MASTER_FLOOR = 0.9;
 
