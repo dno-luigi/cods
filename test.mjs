@@ -2755,6 +2755,12 @@ function fakeBrowser(pages, opts) {
   const ruleBox = await (await post("/prefs", { action: "draft", text: "read figures as a person says them", rule: true }, env)).json();
   check("a rule typed in the sheet is read even without 'never'", !!(ruleBox.draft && ruleBox.draft.domain), ruleBox);
   const tiny = await (await post("/prefs", { action: "draft", text: "always" }, env)).json();
+  const verbEnv = makeEnv({ AI: { run: async () => ({ response: "STEP: read\nRULE: say figures out loud\nEXAMPLE: Read this total back." }) } });
+  const verb = await (await post("/prefs", { action: "draft", text: "never say figures as digits" }, verbEnv)).json();
+  check("a verb out of his sentence is not taken for a step", verb.draft === null, verb);
+  const echoEnv = makeEnv({ AI: { run: async () => ({ response: "STEP: formatting\nRULE: write in sentences\nEXAMPLE: always write in sentences" }) } });
+  const echo = await (await post("/prefs", { action: "draft", text: "always write in sentences" }, echoEnv)).json();
+  check("an example that is his rule read back is dropped", !!(echo.draft && echo.draft.examples.length === 0), echo.draft);
   check("a few letters say nothing", tiny.draft === null, tiny);
   check("nothing replays what he already sent", page.indexOf("you asked before") === -1 && page.indexOf("action: 'suggest'") === -1, "history");
 }

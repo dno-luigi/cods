@@ -3361,21 +3361,26 @@ export default {
               content:
                 "He is writing one rule for how an assistant should answer, for one step of a card app. Steps that already exist: " +
                 taken.concat(steps).join(", ") +
-                ". Turn his words into that rule, name the step, and show one request he might send that the rule would change. If his words are a request for work rather than a rule, reply with exactly: none. Otherwise reply in exactly three lines and nothing else:\nSTEP: one lowercase word, an existing step when one fits, otherwise a short new name for the kind of work his rule is about\nRULE: his rule as one short sentence in his own words, nothing added\nEXAMPLE: one request he might send that the rule would change",
+                ". Turn his words into that rule, name the step, and show one request he might send that the rule would change. If his words are a request for work rather than a rule, reply with exactly: none. Otherwise reply in exactly three lines and nothing else:\nSTEP: one lowercase noun naming the kind of work, like voice, formatting, legal, research, or an existing step when one fits. Never a verb out of his sentence.\nRULE: his rule as one short sentence in his own words, at most 14 words, nothing added\nEXAMPLE: one request he might send that the rule would change, phrased as something he would type, never his rule read back to him\n\nHis words: keep every answer in sentences, never bullets\nSTEP: formatting\nRULE: write every answer in sentences, never bullets\nEXAMPLE: Summarise this filing for me.",
             },
             { role: "user", content: "His words: " + said },
           ],
           { max_tokens: 220 }
         );
-        const reply = String(r.text || "").trim();
+        const reply = String(r.text || "").trim().replace(/^```[a-z]*\n?|```$/gi, "").trim();
         if (!/^none\b/i.test(reply)) {
           const grab = (name) => {
             const m = reply.match(new RegExp("^\\s*" + name + "\\s*:\\s*(.+)$", "im"));
             return m ? m[1].trim() : "";
           };
-          const step = grab("STEP").toLowerCase().replace(/[^a-z0-9 _-]/g, " ").trim().split(/\s+/)[0].slice(0, 24);
+          // A step is a name for the work, never a verb out of his own sentence.
+          const verbs = ["read", "reading", "write", "writing", "keep", "keeping", "use", "using", "say", "saying", "speak", "speaking", "search", "searching", "find", "finding", "tell", "telling", "show", "showing", "put", "putting", "end", "ending", "start", "starting", "avoid", "avoiding", "always", "never", "no", "make", "making", "give", "giving"];
+          let step = grab("STEP").toLowerCase().replace(/[^a-z0-9 _-]/g, " ").trim().split(/\s+/)[0].slice(0, 24);
+          if (verbs.indexOf(step) > -1) step = /card|answer/i.test(said) ? "cards" : "";
           const rule = grab("RULE").replace(/^["\u201c']|["\u201d'.]$/g, "").slice(0, 160);
-          const eg = grab("EXAMPLE").replace(/^["\u201c']|["\u201d']$/g, "").slice(0, 200);
+          // An example that is his own sentence read back to him shows nothing.
+          let eg = grab("EXAMPLE").replace(/^["\u201c']|["\u201d']$/g, "").slice(0, 200);
+          if (eg && (/[{}"]/.test(eg) || /^(request|example|step)\s*:/i.test(eg) || textAlike(eg, said) >= 0.7)) eg = "";
           if (step && rule) {
             draft = { domain: step, known: taken.indexOf(step) > -1 || steps.indexOf(step) > -1, rule, examples: eg ? [eg] : [] };
           }
