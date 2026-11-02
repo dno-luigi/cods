@@ -2693,6 +2693,10 @@ function fakeBrowser(pages, opts) {
   check("and the rule itself is untouched", row.text === "keep it short", row.text);
   check("the examples still reach the part that follows it", (back.hint || "") === "" || true, "stored");
 
+  await post("/prefs", { action: "domain-remove", domain: "cards", text: "keep it short" }, env);
+  const pruned = await read();
+  check("the last rule takes its empty domain with it", !("cards" in (pruned.domainRules || {})), pruned.domainRules);
+
   const missing = await (await post("/prefs", { action: "domain-examples", domain: "cards", text: "never added" }, env)).json();
   check("examples are only for a rule he has", !!missing.error, missing.error);
 

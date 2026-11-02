@@ -3182,6 +3182,9 @@ export default {
       } else {
         if (Array.isArray(prefs.domainRules[dom])) {
           prefs.domainRules[dom] = prefs.domainRules[dom].filter((r) => !r || r.text !== text);
+          // The last rule gone means the domain is gone: no empty heading left
+          // on the sheet, and nothing empty handed to a model later.
+          if (!prefs.domainRules[dom].length) delete prefs.domainRules[dom];
         }
       }
     } else if (act === "domain-examples") {
@@ -3202,11 +3205,11 @@ export default {
             {
               role: "system",
               content:
-                "He writes short rules for one step of a card answering app. Show what his rule does in practice: three short examples, one per line, each shaped as 'Ask: ... -> it ...'. Stay in the subject he named, be concrete, no preamble, no numbering, no quotes, and keep each line under 140 characters. Every example has to be about his rule and nothing else.",
+                "His rule for one step of a card answering app is below. Write three short examples of what that rule changes, one per line, each shaped as 'Ask: <a request that step receives> -> it <what it does because of his rule>'. Every example must turn on the rule itself, not on the name of the step: a rule about bullets shows bullets, a rule about searching shows a search. No preamble, no numbering, no quotes, each line under 140 characters.",
             },
             {
               role: "user",
-              content: "The step: " + dom + "\nHis rule: " + text,
+              content: "His rule: " + text + "\nThe step it steers: " + dom,
             },
           ],
           { max_tokens: 260 }
