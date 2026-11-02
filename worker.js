@@ -2789,8 +2789,12 @@ export default {
     if (onWorkersAi) {
       const said = await speakOnWorkersAi(env, model, text, voice);
       if (said.error) return json({ error: said.error, detail: said.detail || null, model, voice }, said.status || 502);
+      // Aura answers in MPEG, MeloTTS in a RIFF wave whatever the header says, and a
+      // browser plays what it is told it is.
+      const head = said.bytes.length > 3 ? String.fromCharCode(said.bytes[0], said.bytes[1], said.bytes[2], said.bytes[3]) : "";
+      const kind = head === "RIFF" ? "audio/wav" : "audio/mpeg";
       return new Response(said.bytes, {
-        headers: { "Content-Type": said.type || "audio/mpeg", "Cache-Control": "no-store", "X-Voice-Model": model },
+        headers: { "Content-Type": kind, "Cache-Control": "no-store", "X-Voice-Model": model },
       });
     }
     const speakKey = String(env.OPENROUTER_API_KEY || "").trim();

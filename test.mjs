@@ -1757,6 +1757,10 @@ function fakeBrowser(pages, opts) {
   const meloOut = await post("/speak", { text: "hi", model: "@cf/myshell-ai/melotts", voice: "en" }, cheap);
   check("melotts is asked with a prompt", meloOut.status === 200 && melo[0].prompt === "hi" && melo[0].lang === "en", melo[0]);
 
+  const wave = makeEnv({ AI: { run: async () => ({ audio: Buffer.from("RIFF....WAVEfmt").toString("base64") }) } });
+  const asWave = await post("/speak", { text: "hi", model: "@cf/myshell-ai/melotts", voice: "en" }, wave);
+  check("a wave is labelled a wave", asWave.headers.get("content-type") === "audio/wav", asWave.headers.get("content-type"));
+
   const refused = makeEnv({ AI: { run: async () => { throw new Error("no such model"); } } });
   const dead = await post("/speak", { text: "hi", model: "@cf/deepgram/aura-2-en", voice: "thalia" }, refused);
   check("a failing voice is reported, not faked", dead.status === 502, dead.status);
