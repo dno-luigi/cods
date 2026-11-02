@@ -541,8 +541,8 @@ code{font-size:12.5px;background:#00000044;padding:1px 4px;border-radius:4px}
 .shot{width:104px;height:74px;flex:none;display:block;border:1px solid var(--line);border-radius:8px;background:#000;object-fit:cover;object-position:50% 20%}
 .shotcap{min-width:0;font-size:11px;color:var(--dim);line-height:1.35;overflow:hidden}
 .shotcap b{display:block;font-size:11px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#sugg{display:none;padding:8px 12px;background:var(--panel);border-top:1px solid var(--line);font-size:11px;line-height:1.5;color:var(--text)}
-#sugg.show{display:block}
+#sugg,#domDraft{display:none;padding:8px 12px;background:var(--panel);border-top:1px solid var(--line);font-size:11px;line-height:1.5;color:var(--text)}
+#sugg.show,#domDraft.show{display:block}
 #sugg b{font-weight:600}
 </style>
 </head>
@@ -1757,6 +1757,7 @@ function openSheet() {
       '<input id="domNewD" placeholder="domain" style="width:90px;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px;font-size:12px">' +
       '<input id="domNewT" placeholder="principles for that domain" style="flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px;font-size:12px">' +
       '<button class="icon" data-dom-add="1">Add rule</button></div>' +
+      '<div id="domDraft"></div>' +
       '<div style="font-size:10px;color:var(--dim);margin-top:8px;line-height:1.9">Every part reads rules under its own name. Press one to fill the domain box: ' +
         ['decide', 'notes', 'search', 'cards', 'cloudflare', 'openrouter'].map(function (p) {
           return '<button class="icon" data-stage="' + p + '" style="margin:2px 4px 2px 0">' + p + '</button>';
@@ -1899,38 +1900,81 @@ function loadPrefs() {
 }
 
 var SU = { timer: null, last: '' };
-function suggPaint(d) {
+function draftPaint(d) {
   var b = $('sugg');
   if (!b) return;
-  var doms = (d && d.domains) || [];
-  var ex = (d && d.examples) || [];
-  if (!doms.length && !ex.length) { b.innerHTML = ''; b.classList.remove('show'); return; }
-  var html = doms.map(function (x) {
-    return '<div style="margin:0 0 3px"><b>' + esc(x.name) + '</b>' +
-      (x.rules && x.rules.length ? ' \\u00b7 your rules: ' + esc(x.rules.join('; ')) : ' \\u00b7 no rules for it yet') +
-      (x.example ? '<span style="color:var(--dim)"> \\u00b7 you asked: ' + esc(x.example) + '</span>' : '') +
-      (x.eg && x.eg[0] ? '<span style="display:block;color:var(--dim)">for example: ' + esc(x.eg[0]) + '</span>' : '') +
-      '</div>';
-  }).join('');
-  if (ex.length) html += '<div style="color:var(--dim)">you asked before: ' + ex.map(esc).join(' \\u00b7 ') + '</div>';
-  b.innerHTML = html;
+  var x = d && d.draft;
+  if (!x) { b.innerHTML = ''; b.classList.remove('show'); return; }
+  b.innerHTML = 'make it a rule for <b>' + esc(x.domain) + '</b>' + (x.known ? '' : ' (new)') +
+    ': <b>' + esc(x.rule) + '</b> ' +
+    '<button class="icon" data-draft-keep="' + encodeURIComponent(x.domain) + '|' + encodeURIComponent(x.rule) + '">Keep it</button>' +
+    (x.examples && x.examples[0] ? '<div style="color:var(--dim)">for example: ' + esc(x.examples[0]) + '</div>' : '');
   b.classList.add('show');
 }
-function suggAsk(text) {
+function draftAsk(text) {
   var said = String(text || '').trim();
-  if (said.length < 4) { SU.last = ''; suggPaint(null); return; }
+  if (said.length < 12) { SU.last = ''; draftPaint(null); return; }
   if (said === SU.last) return;
   SU.last = said;
   fetch(API.prefs, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'suggest', text: said })
-  }).then(function (r) { return r.json(); }).then(suggPaint).catch(function () {});
+    body: JSON.stringify({ action: 'draft', text: said })
+  }).then(function (r) { return r.json(); }).then(draftPaint).catch(function () {});
 }
 document.addEventListener('input', function (e) {
   if (!e.target || e.target.id !== 'prompt') return;
   clearTimeout(SU.timer);
   var v = e.target.value;
-  SU.timer = setTimeout(function () { suggAsk(v); }, 350);
+  SU.timer = setTimeout(function () { draftAsk(v); }, 800);
+});
+var DD = { timer: null, last: '' };
+function domDraftPaint(d) {
+  var b = $('domDraft');
+  if (!b) return;
+  var x = d && d.draft;
+  if (!x) { b.innerHTML = ''; b.classList.remove('show'); return; }
+  var box = $('domNewD');
+  var empty = !!(box && !String(box.value || '').trim());
+  if (empty) box.value = x.domain;
+  b.innerHTML = (empty ? 'named that step <b>' : 'that reads as <b>') + esc(x.domain) + '</b>' + (x.known ? '' : ' (new)') +
+    ': <b>' + esc(x.rule) + '</b>' +
+    (x.examples && x.examples[0] ? '<div style="color:var(--dim)">for example: ' + esc(x.examples[0]) + '</div>' : '');
+  b.classList.add('show');
+}
+function domDraftAsk(text) {
+  var said = String(text || '').trim();
+  if (said.length < 12) { DD.last = ''; domDraftPaint(null); return; }
+  if (said === DD.last) return;
+  DD.last = said;
+  fetch(API.prefs, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'draft', text: said, rule: true })
+  }).then(function (r) { return r.json(); }).then(domDraftPaint).catch(function () {});
+}
+document.addEventListener('input', function (e) {
+  if (!e.target || e.target.id !== 'domNewT') return;
+  clearTimeout(DD.timer);
+  var v = e.target.value;
+  DD.timer = setTimeout(function () { domDraftAsk(v); }, 800);
+});
+document.addEventListener('click', function (e) {
+  var keep = e.target && e.target.closest ? e.target.closest('[data-draft-keep]') : null;
+  if (!keep) return;
+  e.preventDefault();
+  var bits = String(keep.getAttribute('data-draft-keep') || '').split('|');
+  var dom = decodeURIComponent(bits[0] || '');
+  var rule = decodeURIComponent(bits.slice(1).join('|') || '');
+  if (!dom || !rule) return;
+  toast('Saving that rule');
+  fetch(API.prefs, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'domain', domain: dom, text: rule })
+  }).then(function (r) { return r.json(); }).then(function (res) {
+    if (res && res.error) { toast(res.error); return; }
+    SU.last = '';
+    draftPaint(null);
+    return domExamples(dom, rule);
+  }).catch(function (err) { toast('Could not save: ' + ((err && err.message) || err)); });
 });
 function domExamples(domain, text) {
   toast('Showing how that rule gets used');
@@ -3295,59 +3339,51 @@ export default {
       prefs.updated = new Date().toISOString();
       await store.put(PREFS_KEY, JSON.stringify(prefs));
       return json({ ok: true, action: act, domain: dom, text, examples: lines });
-    } else if (act === "suggest") {
-      // While he types, the page asks what step the words look like, so the rules
-      // he wrote for that step come up before he has sent anything.
+    } else if (act === "draft") {
+      // He is writing a rule, not asking for a card. Read his words as one rule,
+      // name the step it belongs to, and show one request it would change, so
+      // making a domain rule is a press and not a blank page. A rule typed into
+      // the sheet is already a rule; a sentence typed at the prompt has to read
+      // like one before it is worth asking the model.
       const said = String(body.text || "").trim().slice(0, 300);
-      const skip = ["that", "this", "with", "from", "have", "what", "when", "will", "your", "about", "into", "them", "they", "then", "than", "there", "here", "just", "like", "make", "need", "want", "give", "tell", "show", "also", "should", "would", "could", "please", "does", "been", "some", "more", "very", "much", "card", "cards"];
-      const words = Array.from(new Set((said.toLowerCase().match(/[a-z][a-z'-]{3,}/g) || []).filter((x) => skip.indexOf(x) < 0)));
-      if (said.length < 4 || !words.length) return json({ ok: true, action: act, domains: [], examples: [] });
-      const low = said.toLowerCase();
-      const found = {};
-      const bump = (name, hits, prompt) => {
-        const key = String(name || "").toLowerCase().trim();
-        if (!key || key === "unknown") return;
-        const row = found[key] || (found[key] = { name: key, hits: 0, best: 0, example: "" });
-        row.hits += hits;
-        if (prompt && hits >= row.best) {
-          row.best = hits;
-          row.example = String(prompt).slice(0, 120);
+      const asRule = body.rule === true;
+      const ruleish = /(?:^|\s)(?:always|never|don'?t|do not|avoid|instead|must|should|every|each|no)\s/i.test(said);
+      if (said.length < 12 || (!asRule && !ruleish)) return json({ ok: true, action: act, draft: null });
+      const steps = ["decide", "notes", "search", "cards", "cloudflare", "openrouter"];
+      const taken = Object.keys(prefs.domainRules && typeof prefs.domainRules === "object" ? prefs.domainRules : {});
+      let draft = null;
+      try {
+        const r = await askText(
+          env,
+          [
+            {
+              role: "system",
+              content:
+                "He is writing one rule for how an assistant should answer, for one step of a card app. Steps that already exist: " +
+                taken.concat(steps).join(", ") +
+                ". Turn his words into that rule, name the step, and show one request he might send that the rule would change. If his words are a request for work rather than a rule, reply with exactly: none. Otherwise reply in exactly three lines and nothing else:\nSTEP: one lowercase word, an existing step when one fits, otherwise a short new name for the kind of work his rule is about\nRULE: his rule as one short sentence in his own words, nothing added\nEXAMPLE: one request he might send that the rule would change",
+            },
+            { role: "user", content: "His words: " + said },
+          ],
+          { max_tokens: 220 }
+        );
+        const reply = String(r.text || "").trim();
+        if (!/^none\b/i.test(reply)) {
+          const grab = (name) => {
+            const m = reply.match(new RegExp("^\\s*" + name + "\\s*:\\s*(.+)$", "im"));
+            return m ? m[1].trim() : "";
+          };
+          const step = grab("STEP").toLowerCase().replace(/[^a-z0-9 _-]/g, " ").trim().split(/\s+/)[0].slice(0, 24);
+          const rule = grab("RULE").replace(/^["\u201c']|["\u201d'.]$/g, "").slice(0, 160);
+          const eg = grab("EXAMPLE").replace(/^["\u201c']|["\u201d']$/g, "").slice(0, 200);
+          if (step && rule) {
+            draft = { domain: step, known: taken.indexOf(step) > -1 || steps.indexOf(step) > -1, rule, examples: eg ? [eg] : [] };
+          }
         }
-      };
-      for (const e of (prefs.events || [])) {
-        if (!e || !e.q) continue;
-        const asked = String(e.q).toLowerCase();
-        let hits = 0;
-        for (const w of words) if (asked.indexOf(w) > -1) hits++;
-        if (hits) bump(e.domain, hits, e.q);
+      } catch (err) {
+        draft = null;
       }
-      for (const name of Object.keys(prefs.domainRules || {})) {
-        const list = prefs.domainRules[name];
-        const blob = (Array.isArray(list) ? list : []).map((r) => String((r && r.text) || "")).join(" ").toLowerCase();
-        let hits = 0;
-        for (const w of words) if (blob.indexOf(w) > -1) hits++;
-        const named = low.indexOf(String(name).toLowerCase()) > -1;
-        if (hits || named) bump(name, hits + (named ? 2 : 0), "");
-      }
-      const domains = Object.values(found).sort((a, b) => b.hits - a.hits).slice(0, 2).map((d) => {
-        const list = (prefs.domainRules && prefs.domainRules[d.name]) || [];
-        const rows = Array.isArray(list) ? list : [];
-        const rules = rows.map((r) => String((r && r.text) || "")).filter(Boolean);
-        const eg = rows.map((r) => (r && Array.isArray(r.eg) ? String(r.eg[0] || "") : "")).filter(Boolean);
-        return { name: d.name, hits: d.hits, rules: rules.slice(0, 3), eg: eg.slice(0, 1), example: d.example || "" };
-      });
-      // Both the words he typed and what the page filed it under, never the
-      // "set by him" placeholder the settings sheet writes.
-      const examples = [];
-      for (const x of (prefs.learned || [])) {
-        for (const cand of [String((x && x.prompt) || "").trim(), String((x && x.q) || "").trim()]) {
-          if (cand.length < 9 || cand === "set by him" || examples.indexOf(cand) > -1) continue;
-          if (!words.some((w) => cand.toLowerCase().indexOf(w) > -1)) continue;
-          examples.push(cand.slice(0, 120));
-        }
-      }
-      examples.splice(2);
-      return json({ ok: true, action: act, domains, examples });
+      return json({ ok: true, action: act, draft });
     } else if (act === "rephrase") {
       if (!q) return json({ error: "Send q" }, 400);
       const row = prefs.learned.find((x) => x && x.q === q);

@@ -2727,24 +2727,36 @@ function fakeBrowser(pages, opts) {
   });
 }
 
-// While he types, the page asks what step his words look like, so his own rules
-// for that step and his own earlier prompts come up before he sends.
+// While he writes a rule, the page works out the step it belongs to and turns
+// his words into a rule he can keep in one press — not a replay of what he sent.
 {
-  const env = makeEnv();
+  const reply = "STEP: voice\nRULE: read figures the way a person says them\nEXAMPLE: Read this back: damages were 750000 over 1.35 million.";
+  const env = makeEnv({ AI: { run: async () => ({ response: reply }) } });
   const page = await (await worker.fetch(new Request("https://x/"), env)).text();
-  check("the page has a place for the suggestions", /id="sugg"/.test(page), "sugg");
-  check("and asks the worker as he types", page.indexOf("action: 'suggest'") > -1 && page.indexOf("e.target.id !== 'prompt'") > -1, "wiring");
-  await post("/prefs", { action: "domain", domain: "cards", text: "never use bullet points" }, env);
-  await post("/prefs", { action: "add", q: "write my card without bullet points", a: "sentences" }, env);
-  const near = await (await post("/prefs", { action: "suggest", text: "write the card without bullet points" }, env)).json();
-  const first = (near.domains || [])[0] || {};
-  check("it names the step his rule is for", (near.domains || []).some((d) => d.name === "cards"), near.domains);
-  check("and brings the rule with it", String((first.rules || []).join(" ")).indexOf("bullet points") > -1, first.rules);
-  check("and one of his own earlier prompts", (near.examples || []).length > 0 && /bullet points/.test(near.examples[0]), near.examples);
-  const tiny = await (await post("/prefs", { action: "suggest", text: "ca" }, env)).json();
-  check("a few letters say nothing", (tiny.domains || []).length === 0 && (tiny.examples || []).length === 0, tiny);
-  const nothing = await (await post("/prefs", { action: "suggest", text: "zzzz qqqq" }, env)).json();
-  check("and words he never used say nothing", (nothing.domains || []).length === 0, nothing.domains);
+  check("the page has a place for a drafted rule", /id="sugg"/.test(page), "sugg");
+  check("and one beside the boxes where he writes rules", /id="domDraft"/.test(page), "domDraft");
+  check(
+    "and it asks while he writes",
+    page.indexOf("action: 'draft'") > -1 && page.indexOf("e.target.id !== 'domNewT'") > -1 && page.indexOf("e.target.id !== 'prompt'") > -1,
+    "wiring"
+  );
+  const made = await (await post("/prefs", { action: "draft", text: "read figures the way a person says them, never as digits" }, env)).json();
+  check("his words come back as a rule for a step", !!(made.draft && made.draft.domain === "voice" && /figures/.test(made.draft.rule)), made.draft);
+  check("with one example of it in use", !!(made.draft && made.draft.examples.length === 1 && /750000/.test(made.draft.examples[0])), made.draft && made.draft.examples);
+  check("and the step is new while he has no rule for it", !!(made.draft && made.draft.known === false), made.draft && made.draft.known);
+  await post("/prefs", { action: "domain", domain: "voice", text: "speak figures out loud" }, env);
+  const again = await (await post("/prefs", { action: "draft", text: "read figures the way a person says them, never as digits" }, env)).json();
+  check("and known once he has one", !!(again.draft && again.draft.known === true), again.draft && again.draft.known);
+  const task = await (await post("/prefs", { action: "draft", text: "search awards under California Civil Code 3345" }, env)).json();
+  check("a request for a card is not taken for a rule", task.draft === null, task);
+  const anyEnv = makeEnv({ AI: { run: async () => ({ response: "none" }) } });
+  const none = await (await post("/prefs", { action: "draft", text: "always keep it short please" }, anyEnv)).json();
+  check("and the model can say it is not a rule", none.draft === null, none);
+  const ruleBox = await (await post("/prefs", { action: "draft", text: "read figures as a person says them", rule: true }, env)).json();
+  check("a rule typed in the sheet is read even without 'never'", !!(ruleBox.draft && ruleBox.draft.domain), ruleBox);
+  const tiny = await (await post("/prefs", { action: "draft", text: "always" }, env)).json();
+  check("a few letters say nothing", tiny.draft === null, tiny);
+  check("nothing replays what he already sent", page.indexOf("you asked before") === -1 && page.indexOf("action: 'suggest'") === -1, "history");
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");
