@@ -3217,6 +3217,7 @@ export default {
           else out[out.length - 1] += " " + piece;
         }
         return out
+          .map((x) => x.replace(/[|\s]+$/, ""))
           .map((x) => (x.length > 220 ? x.slice(0, 220).replace(/\s+\S*$/, "") + "\u2026" : x))
           .filter((x) => x.length > 8);
       }
