@@ -2727,6 +2727,26 @@ function fakeBrowser(pages, opts) {
   });
 }
 
+// While he types, the page asks what step his words look like, so his own rules
+// for that step and his own earlier prompts come up before he sends.
+{
+  const env = makeEnv();
+  const page = await (await worker.fetch(new Request("https://x/"), env)).text();
+  check("the page has a place for the suggestions", /id="sugg"/.test(page), "sugg");
+  check("and asks the worker as he types", page.indexOf("action: 'suggest'") > -1 && page.indexOf("e.target.id !== 'prompt'") > -1, "wiring");
+  await post("/prefs", { action: "domain", domain: "cards", text: "never use bullet points" }, env);
+  await post("/prefs", { action: "add", q: "write my card without bullet points", a: "sentences" }, env);
+  const near = await (await post("/prefs", { action: "suggest", text: "write the card without bullet points" }, env)).json();
+  const first = (near.domains || [])[0] || {};
+  check("it names the step his rule is for", (near.domains || []).some((d) => d.name === "cards"), near.domains);
+  check("and brings the rule with it", String((first.rules || []).join(" ")).indexOf("bullet points") > -1, first.rules);
+  check("and one of his own earlier prompts", (near.examples || []).length > 0 && /bullet points/.test(near.examples[0]), near.examples);
+  const tiny = await (await post("/prefs", { action: "suggest", text: "ca" }, env)).json();
+  check("a few letters say nothing", (tiny.domains || []).length === 0 && (tiny.examples || []).length === 0, tiny);
+  const nothing = await (await post("/prefs", { action: "suggest", text: "zzzz qqqq" }, env)).json();
+  check("and words he never used say nothing", (nothing.domains || []).length === 0, nothing.domains);
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
 

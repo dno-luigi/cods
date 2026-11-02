@@ -541,6 +541,9 @@ code{font-size:12.5px;background:#00000044;padding:1px 4px;border-radius:4px}
 .shot{width:104px;height:74px;flex:none;display:block;border:1px solid var(--line);border-radius:8px;background:#000;object-fit:cover;object-position:50% 20%}
 .shotcap{min-width:0;font-size:11px;color:var(--dim);line-height:1.35;overflow:hidden}
 .shotcap b{display:block;font-size:11px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#sugg{display:none;padding:8px 12px;background:var(--panel);border-top:1px solid var(--line);font-size:11px;line-height:1.5;color:var(--text)}
+#sugg.show{display:block}
+#sugg b{font-weight:600}
 </style>
 </head>
 <body>
@@ -557,6 +560,7 @@ code{font-size:12.5px;background:#00000044;padding:1px 4px;border-radius:4px}
   <button class="icon" data-sel="del">Delete</button>
   <button class="icon" data-sel="clear">Close</button>
 </div>
+<div id="sugg"></div>
 <div class="input"><button class="chip" id="modelBtn" title="Model">auto</button><input id="prompt" placeholder="Type a prompt..." autocomplete="off"><button class="chip" id="mic" title="Speak your question" aria-label="Speak your question">mic</button><button id="send">Send</button></div>
 <div class="menu" id="menu"></div>
 <div class="sheet" id="sheet"><div class="sheet-body" id="sheetBody"></div></div>
@@ -1894,6 +1898,40 @@ function loadPrefs() {
   }).catch(function () {});
 }
 
+var SU = { timer: null, last: '' };
+function suggPaint(d) {
+  var b = $('sugg');
+  if (!b) return;
+  var doms = (d && d.domains) || [];
+  var ex = (d && d.examples) || [];
+  if (!doms.length && !ex.length) { b.innerHTML = ''; b.classList.remove('show'); return; }
+  var html = doms.map(function (x) {
+    return '<div style="margin:0 0 3px"><b>' + esc(x.name) + '</b>' +
+      (x.rules && x.rules.length ? ' \\u00b7 your rules: ' + esc(x.rules.join('; ')) : ' \\u00b7 no rules for it yet') +
+      (x.example ? '<span style="color:var(--dim)"> \\u00b7 you asked: ' + esc(x.example) + '</span>' : '') +
+      (x.eg && x.eg[0] ? '<span style="display:block;color:var(--dim)">for example: ' + esc(x.eg[0]) + '</span>' : '') +
+      '</div>';
+  }).join('');
+  if (ex.length) html += '<div style="color:var(--dim)">you asked before: ' + ex.map(esc).join(' \\u00b7 ') + '</div>';
+  b.innerHTML = html;
+  b.classList.add('show');
+}
+function suggAsk(text) {
+  var said = String(text || '').trim();
+  if (said.length < 4) { SU.last = ''; suggPaint(null); return; }
+  if (said === SU.last) return;
+  SU.last = said;
+  fetch(API.prefs, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'suggest', text: said })
+  }).then(function (r) { return r.json(); }).then(suggPaint).catch(function () {});
+}
+document.addEventListener('input', function (e) {
+  if (!e.target || e.target.id !== 'prompt') return;
+  clearTimeout(SU.timer);
+  var v = e.target.value;
+  SU.timer = setTimeout(function () { suggAsk(v); }, 350);
+});
 function domExamples(domain, text) {
   toast('Showing how that rule gets used');
   return fetch(API.prefs, {
@@ -3257,6 +3295,59 @@ export default {
       prefs.updated = new Date().toISOString();
       await store.put(PREFS_KEY, JSON.stringify(prefs));
       return json({ ok: true, action: act, domain: dom, text, examples: lines });
+    } else if (act === "suggest") {
+      // While he types, the page asks what step the words look like, so the rules
+      // he wrote for that step come up before he has sent anything.
+      const said = String(body.text || "").trim().slice(0, 300);
+      const skip = ["that", "this", "with", "from", "have", "what", "when", "will", "your", "about", "into", "them", "they", "then", "than", "there", "here", "just", "like", "make", "need", "want", "give", "tell", "show", "also", "should", "would", "could", "please", "does", "been", "some", "more", "very", "much", "card", "cards"];
+      const words = Array.from(new Set((said.toLowerCase().match(/[a-z][a-z'-]{3,}/g) || []).filter((x) => skip.indexOf(x) < 0)));
+      if (said.length < 4 || !words.length) return json({ ok: true, action: act, domains: [], examples: [] });
+      const low = said.toLowerCase();
+      const found = {};
+      const bump = (name, hits, prompt) => {
+        const key = String(name || "").toLowerCase().trim();
+        if (!key || key === "unknown") return;
+        const row = found[key] || (found[key] = { name: key, hits: 0, best: 0, example: "" });
+        row.hits += hits;
+        if (prompt && hits >= row.best) {
+          row.best = hits;
+          row.example = String(prompt).slice(0, 120);
+        }
+      };
+      for (const e of (prefs.events || [])) {
+        if (!e || !e.q) continue;
+        const asked = String(e.q).toLowerCase();
+        let hits = 0;
+        for (const w of words) if (asked.indexOf(w) > -1) hits++;
+        if (hits) bump(e.domain, hits, e.q);
+      }
+      for (const name of Object.keys(prefs.domainRules || {})) {
+        const list = prefs.domainRules[name];
+        const blob = (Array.isArray(list) ? list : []).map((r) => String((r && r.text) || "")).join(" ").toLowerCase();
+        let hits = 0;
+        for (const w of words) if (blob.indexOf(w) > -1) hits++;
+        const named = low.indexOf(String(name).toLowerCase()) > -1;
+        if (hits || named) bump(name, hits + (named ? 2 : 0), "");
+      }
+      const domains = Object.values(found).sort((a, b) => b.hits - a.hits).slice(0, 2).map((d) => {
+        const list = (prefs.domainRules && prefs.domainRules[d.name]) || [];
+        const rows = Array.isArray(list) ? list : [];
+        const rules = rows.map((r) => String((r && r.text) || "")).filter(Boolean);
+        const eg = rows.map((r) => (r && Array.isArray(r.eg) ? String(r.eg[0] || "") : "")).filter(Boolean);
+        return { name: d.name, hits: d.hits, rules: rules.slice(0, 3), eg: eg.slice(0, 1), example: d.example || "" };
+      });
+      // Both the words he typed and what the page filed it under, never the
+      // "set by him" placeholder the settings sheet writes.
+      const examples = [];
+      for (const x of (prefs.learned || [])) {
+        for (const cand of [String((x && x.prompt) || "").trim(), String((x && x.q) || "").trim()]) {
+          if (cand.length < 9 || cand === "set by him" || examples.indexOf(cand) > -1) continue;
+          if (!words.some((w) => cand.toLowerCase().indexOf(w) > -1)) continue;
+          examples.push(cand.slice(0, 120));
+        }
+      }
+      examples.splice(2);
+      return json({ ok: true, action: act, domains, examples });
     } else if (act === "rephrase") {
       if (!q) return json({ error: "Send q" }, 400);
       const row = prefs.learned.find((x) => x && x.q === q);
