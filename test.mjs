@@ -1843,6 +1843,36 @@ function fakeBrowser(pages, opts) {
   check("and the voice hears the same sentence unchanged", speakable(sentence) === sentence, speakable(sentence).slice(0, 90));
 }
 
+// 29g. the output length dial in the settings
+{
+  const env = makeEnv();
+  const read = async () => (await worker.fetch(new Request("https://x/prefs"), env)).json();
+
+  check("no length is set to begin with", (await read()).output === null, (await read()).output);
+
+  const saved = await (await post("/prefs", { action: "output", words: 300 }, env)).json();
+  check("the dial stores a word count", saved.output && saved.output.words === 300, saved.output);
+  check("and it reads back", (await read()).output.words === 300, (await read()).output);
+
+  aiInputs.length = 0;
+  const d = await (await post("/chat", { prompt: "how should I answer this", cards: [] }, env)).json();
+  const sent = aiInputs.map((a) => JSON.stringify(a.input)).join(" ");
+  check("the answer model is told the length", sent.indexOf("at most 300 words") > -1, sent.slice(0, 140));
+  check("and an answer still comes back", !!(d.answer || d.cards), d.answer);
+
+  await post("/prefs", { action: "output", words: 0 }, env);
+  check("all the way left clears it", (await read()).output === null, null);
+
+  const clamped = await (await post("/prefs", { action: "output", words: 99999 }, env)).json();
+  check("the dial cannot ask for a book", clamped.output && clamped.output.words === 4000, clamped.output);
+
+  const html = await (await worker.fetch(new Request("https://x/"), env)).text();
+  ["id=\"outLen\"", "id=\"outLenLabel\"", "data-out-preset", "function outLenSet", "action: 'output'"].forEach(function (n) {
+    check("the sheet has " + n, html.indexOf(n) >= 0, n);
+  });
+  check("the slider runs from no limit to 1200 words", html.indexOf('min="0" max="1200"') >= 0, "range");
+}
+
 // 30. shapes: the card is always answerable, the full catalogue needs the expert key
 {
   const bucket = new Map();

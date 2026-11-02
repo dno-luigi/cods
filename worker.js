@@ -1735,6 +1735,15 @@ function openSheet() {
       '<button data-set="tts">Voice ' + (S.tts ? 'on' : 'off') + '</button>' +
       '<button data-set="think">Thought process ' + (S.think ? 'on' : 'off') + '</button>' +
     '</div></div>' +
+    '<div class="sect"><h4>Length</h4><p style="font-size:11px;color:var(--dim);line-height:1.5">How long an answer runs before it turns into cards. Pull it left for short, right for full. All the way left is no limit, and then a length written under the cards rules still applies.</p>' +
+      '<div class="row" style="align-items:center;margin-top:8px">' +
+      '<input id="outLen" type="range" min="0" max="1200" step="25" value="0" style="flex:1;min-width:0">' +
+      '<span id="outLenLabel" style="font-size:11px;color:var(--text);min-width:78px;text-align:right">no limit</span></div>' +
+      '<div class="row" style="margin-top:6px">' +
+      '<button class="icon" data-out-preset="150">short</button>' +
+      '<button class="icon" data-out-preset="400">medium</button>' +
+      '<button class="icon" data-out-preset="800">long</button>' +
+      '<button class="icon" data-out-preset="0">no limit</button></div></div>' +
     '<div class="sect"><h4>Principles</h4><p style="font-size:11px;color:var(--dim);line-height:1.5">Unchanging. Every model is given these before anything else, and nothing learned or asked can put itself above them.</p><div id="prinList">loading...</div></div>' +
     '<div class="sect"><h4>What it learned</h4><p style="font-size:11px;color:var(--dim);line-height:1.5">These are read from KV and given to the model that answers. Edit them, add your own, or remove one.</p>' +
       '<div id="prefList">loading...</div>' +
@@ -1802,8 +1811,37 @@ function loadPrinciples() {
       : '<p style="font-size:11px;color:var(--dim)">Not set.</p>';
   }).catch(function () {});
 }
+function outLenText(n) {
+  return n ? '~' + n + ' words' : 'no limit';
+}
+function outLenSet(n) {
+  var r = $('outLen');
+  var l = $('outLenLabel');
+  if (r) r.value = String(n || 0);
+  if (l) l.textContent = outLenText(n || 0);
+}
+document.addEventListener('input', function (e) {
+  var r = e.target;
+  if (!r || r.id !== 'outLen') return;
+  var l = $('outLenLabel');
+  if (l) l.textContent = outLenText(Number(r.value));
+});
+document.addEventListener('change', function (e) {
+  var r = e.target;
+  if (!r || r.id !== 'outLen') return;
+  prefsWrite({ action: 'output', words: Number(r.value) });
+});
+document.addEventListener('click', function (e) {
+  var b = e.target && e.target.closest ? e.target.closest('[data-out-preset]') : null;
+  if (!b) return;
+  e.preventDefault();
+  var n = Number(b.getAttribute('data-out-preset')) || 0;
+  outLenSet(n);
+  prefsWrite({ action: 'output', words: n });
+});
 function loadPrefs() {
   fetch(API.prefs).then(function (r) { return r.json(); }).then(function (d) {
+    outLenSet((d && d.output && d.output.words) || 0);
     var box = $('prefList');
     if (!box) return;
     function prefRow(x) {
@@ -3054,6 +3092,14 @@ export default {
 
     const a = String(body.a || "").trim().slice(0, 200);
 
+    if (act === "output") {
+      const words = Math.max(0, Math.min(4000, Number(body.words) || 0));
+      prefs.output = words ? { words, at: new Date().toISOString() } : null;
+      prefs.updated = new Date().toISOString();
+      await store.put(PREFS_KEY, JSON.stringify(prefs));
+      return json({ ok: true, action: act, output: prefs.output, hint: prefsHint(prefs), learned: prefs.learned });
+    }
+
     if (act === "add" || act === "edit") {
 
       if (!q || !a) return json({ error: "Send what it should know (q) and the preference (a)" }, 400);
@@ -3190,6 +3236,7 @@ export default {
         events: (prefs.events || []).slice(-10),
         hint: prefsHint(prefs),
         model: prefs.model || null,
+        output: prefs.output || null,
         updated: prefs.updated,
       });
     }
@@ -4858,6 +4905,8 @@ async function loadPrefs(env) {
           : x
       ),
       model: parsed.model || null,
+      // The length dial has to survive the read, or the slider forgets it.
+      output: parsed.output && Number(parsed.output.words) > 0 ? { words: Number(parsed.output.words) } : null,
       updated: parsed.updated || null,
     };
   } catch (err) {
@@ -5033,6 +5082,14 @@ function lengthLimit(prefs, stage) {
   if (s) lim.sentences = numOf(s[1], 40);
   if (p) lim.paragraphs = numOf(p[1], 9);
   return lim.words || lim.sentences || lim.paragraphs ? lim : null;
+}
+
+// The length dial on the settings sheet: he sets it once and every answer is
+// written to it. All the way left stores nothing, and then a length written in
+// the cards rules stands as before.
+function outputLimit(prefs) {
+  const words = Number(prefs && prefs.output && prefs.output.words) || 0;
+  return words > 0 ? { words: Math.min(4000, Math.max(20, words)) } : null;
 }
 
 function lengthLine(lim) {
@@ -6499,7 +6556,7 @@ async function handleChat(request, env, emit) {
   const instructionLine = explicit
     ? "He gave an explicit instruction. Carry it out exactly as written: do not ask what he wants, do not reinterpret it, do not add advice he did not ask for."
     : "";
-  const cardsLimit = lengthLimit(prefs, "cards");
+  const cardsLimit = outputLimit(prefs) || lengthLimit(prefs, "cards");
   // The answer call hands each provider the rules written under its own name, so
   // cloudflare reads cloudflare and openrouter reads openrouter, whichever runs.
   Object.assign(body, { hints: { cloudflare: stageHint(prefs, "cloudflare"), openrouter: stageHint(prefs, "openrouter") } });
