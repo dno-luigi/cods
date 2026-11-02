@@ -2761,6 +2761,12 @@ function fakeBrowser(pages, opts) {
   const echoEnv = makeEnv({ AI: { run: async () => ({ response: "STEP: formatting\nRULE: write in sentences\nEXAMPLE: always write in sentences" }) } });
   const echo = await (await post("/prefs", { action: "draft", text: "always write in sentences" }, echoEnv)).json();
   check("an example that is his rule read back is dropped", !!(echo.draft && echo.draft.examples.length === 0), echo.draft);
+  const holdPage = await (await worker.fetch(new Request("https://x/"), makeEnv({}))).text();
+  check("every part in the menu carries a hold mark", /class="icon stage" data-stage=/.test(holdPage) && /\.sect button\.stage:after\{content:'\?'/.test(holdPage), "no mark");
+  check("a part says what it does and how a rule reads", /id="stageNote"/.test(holdPage) && /var STAGE_NOTE = \{/.test(holdPage) && /var STAGE_RULE = \{/.test(holdPage) && /what this part does/.test(holdPage), "no guidance");
+  check("the guidance is on a hold, not a tap", /addEventListener\('pointerdown'/.test(holdPage) && /\}, 450\);/.test(holdPage), "not a hold");
+  check("the tap after a hold does not fill the box", /if \(STG\.fired\)/.test(holdPage), "hold also taps");
+  check("all six parts are described", ["decide", "notes", "search", "cards", "cloudflare", "openrouter"].every(function (p) { return new RegExp(p + ": '").test(holdPage); }), "a part left out");
   check("a few letters say nothing", tiny.draft === null, tiny);
   check("nothing replays what he already sent", page.indexOf("you asked before") === -1 && page.indexOf("action: 'suggest'") === -1, "history");
 }

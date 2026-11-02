@@ -507,6 +507,15 @@ code{font-size:12.5px;background:#00000044;padding:1px 4px;border-radius:4px}
 .sect{margin-bottom:14px;border-top:1px solid var(--line);padding-top:10px}
 .sect h4{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);margin-bottom:8px}
 .row{display:flex;flex-wrap:wrap;gap:6px}
+.stages{display:inline-flex;flex-wrap:wrap;gap:6px;vertical-align:middle}
+.sect button.stage{position:relative;padding-right:19px}
+.sect button.stage:after{content:'?';position:absolute;top:3px;right:4px;width:11px;height:11px;line-height:9px;text-align:center;font-size:8px;color:var(--dim);border:1px solid var(--line);border-radius:999px}
+.sect button.stage.on{color:var(--p);border-color:var(--p)}
+.sect button.stage.on:after{color:var(--p);border-color:var(--p)}
+#stageNote{display:none;margin-top:8px;padding:9px 11px;border:1px solid var(--line);border-radius:9px;font-size:11px;line-height:1.55;color:var(--text);background:var(--card)}
+#stageNote.show{display:block}
+#stageNote b{display:block;font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--p);margin-bottom:3px}
+#stageNote i{display:block;color:var(--dim);font-style:normal;margin-top:5px}
 .sect button{background:var(--card);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px 10px;font-size:12px}
 .modal{position:fixed;inset:0;background:#000b;display:none;z-index:80;align-items:center;justify-content:center;padding:18px}
 .modal.show{display:flex}
@@ -1758,10 +1767,11 @@ function openSheet() {
       '<input id="domNewT" placeholder="principles for that domain" style="flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px;font-size:12px">' +
       '<button class="icon" data-dom-add="1">Add rule</button></div>' +
       '<div id="domDraft"></div>' +
-      '<div style="font-size:10px;color:var(--dim);margin-top:8px;line-height:1.9">Every part reads rules under its own name. Press one to fill the domain box: ' +
-        ['decide', 'notes', 'search', 'cards', 'cloudflare', 'openrouter'].map(function (p) {
-          return '<button class="icon" data-stage="' + p + '" style="margin:2px 4px 2px 0">' + p + '</button>';
-        }).join('') + '</div>' +
+      '<div style="font-size:10px;color:var(--dim);margin-top:8px;line-height:1.9">Every part reads rules under its own name. Press one to fill the domain box, hold one to see what it does: ' +
+        '<span class="stages">' + ['decide', 'notes', 'search', 'cards', 'cloudflare', 'openrouter'].map(function (p) {
+          return '<button class="icon stage" data-stage="' + p + '" title="Hold to see what this part does">' + p + '</button>';
+        }).join('') + '</span></div>' +
+      '<div id="stageNote"></div>' +
       '<div class="row" style="margin-top:8px"><button data-set="prefs">Refresh</button><button data-set="forget">Forget it all</button></div></div>' +
     '<div class="sect"><h4>Approved answers</h4><p id="apprText" style="font-size:12px;color:var(--dim);line-height:1.5">loading...</p>' +
       '<div id="apprList"></div>' +
@@ -1957,6 +1967,50 @@ document.addEventListener('input', function (e) {
   var v = e.target.value;
   DD.timer = setTimeout(function () { domDraftAsk(v); }, 800);
 });
+// Each part is a card in the menu. Hold one and it says what that part does and
+// what a rule written under its name reads like, so the name is never a guess.
+var STAGE_NOTE = {
+  decide: 'Reads the question and decides what to do before anything is answered: what kind of request it is, how far to go, whether the web is needed.',
+  notes: 'Looks through the notes you saved and matches them to the question, so an answer can stand on what you already have.',
+  search: 'Goes out to the web only when the decision asks for it, then keeps what it found as the sources behind the cards.',
+  cards: 'Writes the answer as cards you can flip, and sets how long each one runs and in what voice it comes back.',
+  cloudflare: 'Runs on your own account: models, data and bindings. Rules under this name are read by that call alone.',
+  openrouter: 'Calls the models through OpenRouter. Rules under this name are read by that call alone, whichever model answers.'
+};
+var STAGE_RULE = {
+  decide: 'always decide before searching',
+  notes: 'never use a note older than a year',
+  search: 'only trust primary sources',
+  cards: 'keep every card under 90 words',
+  cloudflare: 'never write to a binding I did not name',
+  openrouter: 'never send legal questions to a cheap model'
+};
+var STG = { timer: null, fired: '' };
+function stageNote(name) {
+  Array.prototype.forEach.call(document.querySelectorAll('[data-stage]'), function (el) {
+    if (name && el.getAttribute('data-stage') === name) el.classList.add('on'); else el.classList.remove('on');
+  });
+  var b = $('stageNote');
+  if (!b) return;
+  if (!name || !STAGE_NOTE[name]) { b.innerHTML = ''; b.classList.remove('show'); return; }
+  b.innerHTML = '<b>' + esc(name) + ' \u2014 what this part does</b>' + esc(STAGE_NOTE[name]) +
+    (STAGE_RULE[name] ? '<i>a rule for it reads like: ' + esc(STAGE_RULE[name]) + '</i>' : '');
+  b.classList.add('show');
+}
+document.addEventListener('pointerdown', function (e) {
+  var s = e.target && e.target.closest ? e.target.closest('[data-stage]') : null;
+  if (!s) return;
+  var name = String(s.getAttribute('data-stage') || '');
+  clearTimeout(STG.timer);
+  STG.timer = setTimeout(function () {
+    STG.fired = name;
+    if (navigator.vibrate) navigator.vibrate(25);
+    stageNote(name);
+  }, 450);
+});
+['pointerup', 'pointercancel', 'pointerleave', 'scroll'].forEach(function (ev) {
+  document.addEventListener(ev, function () { clearTimeout(STG.timer); }, true);
+});
 document.addEventListener('click', function (e) {
   var keep = e.target && e.target.closest ? e.target.closest('[data-draft-keep]') : null;
   if (!keep) return;
@@ -2028,10 +2082,13 @@ document.addEventListener('click', function (e) {
 document.addEventListener('click', function (e) {
   var stage = e.target && e.target.closest ? e.target.closest('[data-stage]') : null;
   if (stage) {
+    if (STG.fired) { STG.fired = ''; return; }
+    stageNote('');
     var dbx = $('domNewD');
     if (dbx) { dbx.value = stage.getAttribute('data-stage'); dbx.focus(); }
     return;
   }
+  if (e.target && e.target.closest && e.target.closest('#stageNote')) { stageNote(''); return; }
   var add = e.target && e.target.closest ? e.target.closest('[data-dom-add]') : null;
   if (add) {
     var dEl = $('domNewD');
