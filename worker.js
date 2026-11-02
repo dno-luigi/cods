@@ -1751,7 +1751,16 @@ function openSheet() {
     '<div class="sect"><h4>Approved answers</h4><p id="apprText" style="font-size:12px;color:var(--dim);line-height:1.5">loading...</p>' +
       '<div id="apprList"></div>' +
       '<div class="row" style="margin-top:8px"><button data-set="approved">Refresh</button><button data-appr-clear="1">Remove all</button></div></div>' +
-    '<div class="sect"><h4>Truth engine</h4><p id="truthText" style="font-size:12px;color:var(--dim);line-height:1.5">The curated list: master truths and candidates. It stays shut until the password is entered.</p>' +
+    '<div class="sect"><h4>Read aloud</h4><p style="font-size:12px;color:var(--dim);line-height:1.5">Paste anything here and it is read out. Nothing is sent anywhere: the browser speaks it.</p>' +
+      '<textarea id="readText" rows="4" style="width:100%;margin-top:6px;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px;font-size:12px;line-height:1.5;resize:vertical" placeholder="paste text to read out"></textarea>' +
+      '<div class="row" style="margin-top:8px;align-items:center">' +
+      '<button class="icon" data-read-go="1">Read</button>' +
+      '<button class="icon" data-read-stop="1">Stop</button>' +
+      '<button class="icon" data-read-last="1">Last answer</button>' +
+      '<select id="readRate" style="background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px;font-size:12px">' +
+      '<option value="0.85">slower</option><option value="1" selected>normal</option><option value="1.2">faster</option><option value="1.45">fast</option></select></div>' +
+      '<p id="readNote" style="font-size:11px;color:var(--dim);margin-top:6px"></p></div>' +
+    '<div class="sect"><h4>Truth engine</h4><p id="truthText" style="font-size:12px;color:var(--dim);line-height:1.5">The curated list: master truths and candidates. It opens with the password set on the Worker, and nothing on this page can create it.</p>' +
       '<div class="row" style="margin-top:6px;align-items:center">' +
       '<input id="truthKey" type="password" autocomplete="off" placeholder="password" style="flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px;font-size:12px">' +
       '<button class="icon" data-truth-open="1">Open</button></div>' +
@@ -1919,8 +1928,9 @@ function loadTruthList() {
   var box = $('truthList');
   truthAdminFetch('/truths/list').then(truthRead).then(function (got) {
     var d = got.d || {};
-    if (got.s === 401 && d.needs_setup) {
-      if (p) p.textContent = 'No password yet. Type the one you want and press Open once: it is kept as a hash, and nothing opens this list without it.';
+    if (d.needs_key) {
+      if (p) p.textContent = 'No password on the Worker yet. Set TRUTH_KEY in the dashboard and nothing opens this list until it matches.';
+      if (box) box.innerHTML = '';
       return;
     }
     if (got.s !== 200) {
@@ -1952,17 +1962,7 @@ document.addEventListener('click', function (e) {
     if (!typed) { toast('Type the password'); return; }
     TRUTH_PASS = typed;
     truthAdminFetch('/truths/list').then(truthRead).then(function (got) {
-      if (got.s === 401 && got.d && got.d.needs_setup) {
-        // Nothing is set yet, so the password typed here is the password.
-        return fetch('/truths/key', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: typed })
-        }).then(function (r) { return r.json(); }).then(function (d) {
-          if (d && d.error) { toast(d.error); return; }
-          toast('Password set. Nothing opens this list without it.');
-          loadTruthList();
-        });
-      }
-      if (got.s === 401) { toast('Wrong password'); return; }
+      if (got.s !== 200) { toast(got.d.error || 'Wrong password'); return; }
       loadTruthList();
     }).catch(function (err) { toast('Could not open: ' + ((err && err.message) || err)); });
     return;
@@ -1976,6 +1976,98 @@ document.addEventListener('click', function (e) {
       toast('Removed from the curated list');
       loadTruthList();
     }).catch(function (err) { toast('Could not remove: ' + ((err && err.message) || err)); });
+    return;
+  }
+});
+
+// Reading out loud: the browser's own voice, handed to it in sentence-sized parts
+// so a long answer is not cut off at the first breath.
+var READ_KEEP = [];
+function readChunks(text) {
+  var flat = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!flat) return [];
+  var sentences = flat.match(/[^.!?]+[.!?]*/g) || [flat];
+  var out = [];
+  var piece = '';
+  sentences.forEach(function (s) {
+    var t = s.trim();
+    if (!t) return;
+    if (piece && (piece + ' ' + t).length > 220) { out.push(piece); piece = t; }
+    else piece = piece ? piece + ' ' + t : t;
+  });
+  if (piece) out.push(piece);
+  return out;
+}
+// The biggest block of text on the page is the answer that was just written, so
+// that is what "Last answer" picks up without knowing the markup.
+function lastAnswerText() {
+  var nodes = document.querySelectorAll('[data-answer], .answer, .card, article');
+  var best = '';
+  for (var i = 0; i < nodes.length; i++) {
+    var txt = (nodes[i].textContent || '').replace(/\s+/g, ' ').trim();
+    if (txt.length > best.length) best = txt;
+  }
+  return best;
+}
+function readVoice() {
+  var voices = (window.speechSynthesis && window.speechSynthesis.getVoices()) || [];
+  for (var i = 0; i < voices.length; i++) if (/^en/i.test(voices[i].lang || '')) return voices[i];
+  return voices[0] || null;
+}
+function readOut(text, rate) {
+  var note = $('readNote');
+  if (!('speechSynthesis' in window) || !window.SpeechSynthesisUtterance) {
+    if (note) note.textContent = 'This browser has no voice to read with.';
+    return;
+  }
+  var parts = readChunks(text);
+  if (!parts.length) { if (note) note.textContent = 'Nothing to read yet.'; return; }
+  window.speechSynthesis.cancel();
+  READ_KEEP = [];
+  var voice = readVoice();
+  var done = 0;
+  parts.forEach(function (part) {
+    var u = new SpeechSynthesisUtterance(part);
+    u.rate = rate || 1;
+    if (voice) u.voice = voice;
+    u.onend = function () {
+      done++;
+      if (done === parts.length) { if (note) note.textContent = 'Finished.'; }
+      else if (note) note.textContent = 'Reading ' + done + ' of ' + parts.length + '.';
+    };
+    u.onerror = function () { if (note) note.textContent = 'The voice stopped.'; };
+    READ_KEEP.push(u);
+    window.speechSynthesis.speak(u);
+  });
+  if (note) note.textContent = 'Reading ' + parts.length + ' part' + (parts.length === 1 ? '' : 's') + '.';
+}
+document.addEventListener('click', function (e) {
+  var closest = e.target && e.target.closest ? e.target.closest.bind(e.target) : null;
+  if (!closest) return;
+  var go = closest('[data-read-go]');
+  if (go) {
+    e.preventDefault();
+    var field = $('readText');
+    var rate = Number(($('readRate') && $('readRate').value) || 1);
+    readOut(field ? field.value : '', rate);
+    return;
+  }
+  if (closest('[data-read-stop]')) {
+    e.preventDefault();
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+    READ_KEEP = [];
+    var stopped = $('readNote');
+    if (stopped) stopped.textContent = 'Stopped.';
+    return;
+  }
+  if (closest('[data-read-last]')) {
+    e.preventDefault();
+    var field2 = $('readText');
+    var got2 = lastAnswerText();
+    if (!field2) return;
+    if (!got2) { toast('No answer on the page yet'); return; }
+    field2.value = got2;
+    toast('Last answer is in the box');
     return;
   }
 });
@@ -2389,24 +2481,9 @@ export default {
   }
 
   // The curated list: master truths and candidates together, behind his password.
-  if (url.pathname === "/truths/list" || url.pathname === "/truths/key") {
-    if (url.pathname === "/truths/key") {
-      if (request.method !== "POST") return json({ error: "Use POST" }, 405);
-      if (env.TRUTH_KEY) return json({ error: "TRUTH_KEY is set on the Worker, so that is the password" }, 409);
-      if (await adminStored(env)) return json({ error: "A password is already set" }, 409);
-      const { body, error } = await readBody(request);
-      if (error) return error;
-      const pass = String(body.key || "").trim();
-      if (pass.length < 6) return json({ error: "Use at least six characters" }, 400);
-      const store = ctxStore(env);
-      if (!store) return json({ error: "No store to keep the password in" }, 503);
-      await store.put(ADMIN_SLOT, await hashKey("admin|" + pass));
-      return json({ ok: true, set: true });
-    }
+  if (url.pathname === "/truths/list") {
     if (request.method !== "GET") return json({ error: "Use GET" }, 405);
-    const expert = String(env.TRUTH_KEY || "").trim();
-    const stored = await adminStored(env);
-    if (!expert && !stored) return json({ error: "No password set yet", needs_setup: true }, 401);
+    if (!adminGate(env)) return json({ error: "No password on the Worker yet", needs_key: true }, 503);
     if (!(await adminOpen(env, request.headers.get("x-truth-key") || ""))) return json({ error: "Wrong password" }, 401);
     const listBox = truthStore(env);
     if (!listBox) return json({ error: "No truth store is bound" }, 503);
@@ -2431,7 +2508,7 @@ export default {
         updated: rec ? rec.updated : row.updated,
       });
     }
-    return json({ ok: true, password: expert ? "TRUTH_KEY" : "chosen", count: every.length, truths: rows });
+    return json({ ok: true, password: "TRUTH_KEY", count: every.length, truths: rows });
   }
 
   if (url.pathname.indexOf("/truths/") === 0) {
@@ -2447,6 +2524,7 @@ export default {
     } catch (err) {}
     if (!rec) return json({ error: "No such truth" }, 404);
     if (parts.length === 1 && request.method === "DELETE") {
+      if (!adminGate(env)) return json({ error: "No password on the Worker yet", needs_key: true }, 503);
       if (!(await adminOpen(env, request.headers.get("x-truth-key") || ""))) return json({ error: "Wrong password" }, 401);
       if (typeof box.delete !== "function") return json({ error: "This store cannot remove a record" }, 503);
       await box.delete("truth:" + id);
@@ -5116,7 +5194,6 @@ function truthStore(env) {
   return env.TRUTHS || env.ARCHIVE || env.KV || null;
 }
 const TRUTH_INDEX_KEY = "truths:index";
-const ADMIN_SLOT = "admin:key:v1";
 const TRUTH_LIMIT = 500;
 const TRUTH_MASTER_FLOOR = 0.9;
 
@@ -5255,10 +5332,9 @@ async function touchTruth(env, id) {
   }
 }
 
-// One password opens the curated list, and it is his. When TRUTH_KEY is set on
-// the Worker that is the password and nothing stands in for it; when it is not
-// set, the first password he types is kept as a hash, never as itself, so the
-// list is shut until he chooses one.
+// One password opens the curated list: TRUTH_KEY, set on the Worker by him and
+// by nobody else. Nothing on the page can create or replace it, so until that
+// secret exists the list stays shut.
 function sameSecret(a, b) {
   if (!a || !b || a.length !== b.length) return false;
   let diff = 0;
@@ -5266,24 +5342,14 @@ function sameSecret(a, b) {
   return !diff;
 }
 
-async function adminStored(env) {
-  const store = ctxStore(env);
-  if (!store) return null;
-  try {
-    return await store.get(ADMIN_SLOT);
-  } catch (err) {
-    return null;
-  }
+function adminGate(env) {
+  return String(env.TRUTH_KEY || "").trim();
 }
 
 async function adminOpen(env, given) {
-  const pass = String(given || "");
-  if (!pass) return false;
-  const expert = String(env.TRUTH_KEY || "").trim();
-  if (expert) return sameSecret(pass, expert);
-  const stored = await adminStored(env);
-  if (!stored) return false;
-  return sameSecret(await hashKey("admin|" + pass), stored);
+  const expert = adminGate(env);
+  if (!expert) return false;
+  return sameSecret(String(given || ""), expert);
 }
 
 // Only an expert moves the line. Without TRUTH_KEY set, nothing can be signed

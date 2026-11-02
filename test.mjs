@@ -856,7 +856,7 @@ function fakeBrowser(pages, opts) {
   check("and the edit is kept as a preference the models read",
     html.indexOf("Card he corrected") >= 0 && html.indexOf("saved as a preference") >= 0,
     "edit as preference");
-  ['data-op="approve"', "applyTheme", "PRESETS", "/approve", "loadApprovedList", "data-appr-del", "data-appr-clear", "action: 'clear'", "removeApproved", "data-truth-open", "data-truth-del", "/truths/list", "/truths/key"].forEach(function (needle) {
+  ['data-op="approve"', "applyTheme", "PRESETS", "/approve", "loadApprovedList", "data-appr-del", "data-appr-clear", "action: 'clear'", "removeApproved", "data-truth-open", "data-truth-del", "/truths/list", "data-read-go", "speechSynthesis", "readChunks"].forEach(function (needle) {
     check("page has " + needle, html.indexOf(needle) >= 0, needle);
   });
 }
@@ -1673,7 +1673,7 @@ function fakeBrowser(pages, opts) {
   orOk = false;
 }
 
-// 29b. the curated list is shut, and the password he chooses is what opens it
+// 29b. the curated list opens only on the password set on the Worker
 {
   calls = []; aiInputs = []; orOk = true;
   const env = makeEnv({ OPENROUTER_API_KEY: "k" });
@@ -1682,41 +1682,37 @@ function fakeBrowser(pages, opts) {
 
   const shut = await worker.fetch(new Request("https://x/truths/list"), env);
   const shutBody = await shut.json();
-  check("the curated list is shut until a password exists", shut.status === 401 && shutBody.needs_setup === true, shutBody);
+  check("with no password on the Worker the list is shut", shut.status === 503 && shutBody.needs_key === true, shutBody);
 
-  const short = await post("/truths/key", { key: "abc" }, env);
-  check("a password too short is refused", short.status === 400, short.status);
-  const set = await post("/truths/key", { key: "open sesame" }, env);
-  check("the first password typed becomes the password", set.status === 200, set.status);
-
-  const wrong = await worker.fetch(new Request("https://x/truths/list", { headers: { "x-truth-key": "nope" } }), env);
-  check("a wrong password does not open it", wrong.status === 401, wrong.status);
-  const none = await worker.fetch(new Request("https://x/truths/list"), env);
-  check("no password does not open it", none.status === 401, none.status);
-
-  const opened = await (await worker.fetch(new Request("https://x/truths/list", { headers: { "x-truth-key": "open sesame" } }), env)).json();
-  check("the password shows the list with its answers", opened.ok === true && opened.truths.length === 1 && opened.truths[0].answer.length > 0, opened.truths);
-  check("and says which password is in force", opened.password === "chosen", opened.password);
+  const trySet = await post("/truths/key", { key: "open sesame" }, env);
+  check("and the page cannot create one", trySet.status !== 200, trySet.status);
+  const stillShut = await worker.fetch(new Request("https://x/truths/list", { headers: { "x-truth-key": "open sesame" } }), env);
+  check("a password typed on the page opens nothing", stillShut.status === 503, stillShut.status);
 
   const delNo = await worker.fetch(new Request("https://x/truths/" + made.truth.id, { method: "DELETE" }), env);
-  check("removing needs the password too", delNo.status === 401, delNo.status);
-  const del = await worker.fetch(new Request("https://x/truths/" + made.truth.id, { method: "DELETE", headers: { "x-truth-key": "open sesame" } }), env);
+  check("removing is refused until the password exists", delNo.status === 503, delNo.status);
+
+  // With TRUTH_KEY on the Worker, that and only that opens it.
+  const env2 = makeEnv({ TRUTH_KEY: "expert-key", OPENROUTER_API_KEY: "k" });
+  const made2 = await (await post("/chat", { prompt: "what is a reserved matter", model: "preset:truth", cards: [] }, env2)).json();
+  const wrong = await worker.fetch(new Request("https://x/truths/list", { headers: { "x-truth-key": "nope" } }), env2);
+  check("a wrong password does not open it", wrong.status === 401, wrong.status);
+  const none = await worker.fetch(new Request("https://x/truths/list"), env2);
+  check("no password does not open it", none.status === 401, none.status);
+  const opened = await (await worker.fetch(new Request("https://x/truths/list", { headers: { "x-truth-key": "expert-key" } }), env2)).json();
+  check("the password shows the list with its answers", opened.ok === true && opened.truths.length === 1 && opened.truths[0].answer.length > 0, opened.truths);
+  check("and names the password in force", opened.password === "TRUTH_KEY", opened.password);
+
+  const del = await worker.fetch(new Request("https://x/truths/" + made2.truth.id, { method: "DELETE", headers: { "x-truth-key": "expert-key" } }), env2);
   const delBody = await del.json();
-  check("the password removes it", delBody.ok === true && delBody.deleted === 1, delBody);
-  const after = await (await worker.fetch(new Request("https://x/truths"), env)).json();
+  check("the password removes a record", delBody.ok === true && delBody.deleted === 1, delBody);
+  const after = await (await worker.fetch(new Request("https://x/truths"), env2)).json();
   check("and it is gone from the list", after.count === 0, after);
-
-  const twice = await post("/truths/key", { key: "another one" }, env);
-  check("the password cannot be set a second time", twice.status === 409, twice.status);
-
-  // With TRUTH_KEY on the Worker that is the only password.
-  const expertEnv = makeEnv({ TRUTH_KEY: "expert-key" });
-  const refuses = await post("/truths/key", { key: "another one" }, expertEnv);
-  check("an expert key on the Worker cannot be replaced from the page", refuses.status === 409, refuses.status);
-  const byExpert = await worker.fetch(new Request("https://x/truths/list", { headers: { "x-truth-key": "expert-key" } }), expertEnv);
-  check("and it opens the list", byExpert.status === 200, byExpert.status);
+  const gone = await worker.fetch(new Request("https://x/truths/" + made2.truth.id), env2);
+  check("the record itself is gone", gone.status === 404, gone.status);
   orOk = false;
 }
+
 // 30. shapes: the card is always answerable, the full catalogue needs the expert key
 {
   const bucket = new Map();
