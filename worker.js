@@ -3222,16 +3222,24 @@ export default {
       }
 
       const lines = [];
+      // A second reply to the same question tends to be the first one again, so
+      // each round comes at the rule from a different kind of request.
+      const angles = [
+        "a plain question he asks himself",
+        "a follow-up that quotes a document, a figure or a date",
+        "a request that asks what to do next",
+      ];
       try {
         for (let round = 0; round < 3 && lines.length < 3; round++) {
           const already = lines.length
             ? "\nAlready shown, do not repeat them: " + lines.join(" | ")
             : "";
+          const angle = "\nThis example should come from " + angles[round] + ".";
           const r = await askText(
             env,
             [
               { role: "system", content: "He writes short rules for one step of a card answering app. Show what his rule does in practice. " + shape },
-              { role: "user", content: "His rule: " + text + "\nThe step it steers: " + dom + already },
+              { role: "user", content: "His rule: " + text + "\nThe step it steers: " + dom + angle + already },
             ],
             { max_tokens: 220 }
           );
