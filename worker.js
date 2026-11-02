@@ -2035,7 +2035,7 @@ function readVoice() {
   for (var i = 0; i < voices.length; i++) if (/^en/i.test(voices[i].lang || '')) return voices[i];
   return voices[0] || null;
 }
-function browserSpeak(text, rate) {
+function browserSpeak(text, rate, finished) {
   var note = $('readNote');
   if (!('speechSynthesis' in window) || !window.SpeechSynthesisUtterance) {
     if (note) note.textContent = 'This browser has no voice to read with.';
@@ -2046,15 +2046,17 @@ function browserSpeak(text, rate) {
   window.speechSynthesis.cancel();
   READ_KEEP = [];
   var voice = readVoice();
-  var done = 0;
+  var spoke = 0;
   parts.forEach(function (part) {
     var u = new SpeechSynthesisUtterance(part);
     u.rate = rate || 1;
     if (voice) u.voice = voice;
     u.onend = function () {
-      done++;
-      if (done === parts.length) { if (note) note.textContent = 'Finished.'; }
-      else if (note) note.textContent = 'Reading ' + done + ' of ' + parts.length + '.';
+      spoke++;
+      if (spoke === parts.length) {
+        if (note) note.textContent = 'Finished.';
+        if (finished) finished();
+      } else if (note) note.textContent = 'Reading ' + spoke + ' of ' + parts.length + '.';
     };
     u.onerror = function () { if (note) note.textContent = 'The voice stopped.'; };
     READ_KEEP.push(u);
@@ -2062,66 +2064,237 @@ function browserSpeak(text, rate) {
   });
   if (note) note.textContent = 'Reading ' + parts.length + ' part' + (parts.length === 1 ? '' : 's') + '.';
 }
-// A voice from a model, in pieces the provider will take, played one after the
-// other. If it refuses or will not play, the device voice picks up the rest.
-var PLAYER = null;
-function readOut(text, rate) {
-  var note = $('readNote');
-  var chosen = ($('readVoice') && $('readVoice').value) || '';
-  var parts = readChunks(text, 900);
-  if (!parts.length) {
-    if (note) note.textContent = 'Nothing to read yet.';
-    return;
+// The reader: the text on its own screen, a line at a time, spoken as it comes.
+// Lines stay short so the picture keeps up with the voice, the words already said
+// darken as their sound passes, and the screen follows itself down the page.
+var READER = { lines: [], i: 0, playing: false, audio: null, cache: {}, rate: 1, model: '', voice: '' };
+var READER_HTML = '<div id="reader" style="position:fixed;inset:0;z-index:70;background:var(--bg);display:none;flex-direction:column">' +
+  '<div style="display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line)">' +
+  '<button class="icon" data-read-close="1">Close</button>' +
+  '<span id="readWhere" style="flex:1;min-width:0;font-size:12px;color:var(--dim);text-align:center"></span>' +
+  '<button class="icon" data-read-pause="1">Pause</button></div>' +
+  '<div id="readStage" style="flex:1;overflow-y:auto;padding:26px 18px 45vh;scroll-behavior:smooth"></div>' +
+  '<div style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-top:1px solid var(--line)">' +
+  '<button class="icon" data-read-prev="1">Back</button>' +
+  '<select id="readRate2" style="background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px;font-size:12px">' +
+  '<option value="0.85">slower</option><option value="1" selected>normal</option><option value="1.2">faster</option><option value="1.45">fast</option></select>' +
+  '<button class="icon" data-read-next="1">Next</button></div></div>' +
+  '<div id="readBar" style="position:fixed;left:10px;right:10px;bottom:10px;z-index:69;display:none;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px 10px;align-items:center;gap:8px;box-shadow:0 6px 20px rgba(0,0,0,.28)">' +
+  '<div id="readBarText" data-read-open="1" style="flex:1;min-width:0;font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>' +
+  '<button class="icon" data-read-pause="1">Pause</button><button class="icon" data-read-stopall="1">Stop</button></div>';
+
+function readerEnsure() {
+  if (document.getElementById('reader')) return;
+  document.body.insertAdjacentHTML('beforeend', READER_HTML);
+}
+function readerStatus(words) {
+  var where = $('readWhere');
+  if (where) where.textContent = words;
+}
+function readerShow(on) {
+  readerEnsure();
+  var box = $('reader');
+  if (box) box.style.display = on ? 'flex' : 'none';
+  var bar = $('readBar');
+  if (bar) bar.style.display = !on && READER.playing ? 'flex' : 'none';
+  document.body.style.overflow = on ? 'hidden' : '';
+}
+function readerRender() {
+  var stage = $('readStage');
+  if (!stage) return;
+  stage.innerHTML = READER.lines.map(function (line, i) {
+    var words = line.split(/\s+/).map(function (word, k) {
+      return '<span data-w="' + k + '">' + esc(word) + '</span>';
+    }).join(' ');
+    return '<p data-line="' + i + '" style="margin:0 0 16px;font-size:15px;line-height:1.6;color:var(--dim);opacity:.5;cursor:pointer;transition:opacity .2s,font-size .2s">' + words + '</p>';
+  }).join('');
+}
+function readerWords(count) {
+  var stage = $('readStage');
+  if (!stage) return;
+  var line = stage.querySelector('[data-line="' + READER.i + '"]');
+  if (!line) return;
+  var words = line.querySelectorAll('[data-w]');
+  for (var i = 0; i < words.length; i++) {
+    words[i].style.color = i < count ? 'var(--text)' : 'var(--dim)';
   }
-  if (!chosen || chosen === 'browser') {
-    browserSpeak(text, rate);
-    return;
+}
+function readerMark() {
+  var stage = $('readStage');
+  if (!stage) return;
+  var lines = stage.querySelectorAll('[data-line]');
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    var here = Number(line.getAttribute('data-line')) === READER.i;
+    line.style.opacity = here ? '1' : '.5';
+    line.style.fontSize = here ? '21px' : '15px';
+    line.style.color = here ? 'var(--text)' : 'var(--dim)';
+    if (here) {
+      var y = line.offsetTop - stage.clientHeight / 2 + line.offsetHeight / 2;
+      stage.scrollTo({ top: y < 0 ? 0 : y, behavior: 'smooth' });
+    }
   }
-  var bits = chosen.split('|');
-  var model = bits[0];
-  var voice = bits[1] || '';
-  if (PLAYER) { try { PLAYER.pause(); } catch (err) {} PLAYER = null; }
-  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
-  var queue = parts.slice();
-  var said = 0;
-  if (note) note.textContent = 'Asking ' + model + ' for a voice…';
-  var next = function () {
-    if (!queue.length) { if (note) note.textContent = 'Finished.'; return; }
-    var piece = queue.shift();
-    fetch('/speak', {
+  readerWords(0);
+}
+function readerBlob(i) {
+  if (!READER.cache[i]) {
+    READER.cache[i] = fetch('/speak', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: piece, model: model, voice: voice })
+      body: JSON.stringify({ text: READER.lines[i], model: READER.model, voice: READER.voice })
     }).then(function (r) {
       if (!r.ok) throw new Error('refused');
       return r.blob();
     }).then(function (blob) {
-      var url = URL.createObjectURL(blob);
-      var audio = new Audio(url);
-      audio.playbackRate = rate || 1;
-      PLAYER = audio;
-      audio.onended = function () {
-        URL.revokeObjectURL(url);
-        PLAYER = null;
-        said++;
-        if (note) note.textContent = 'Reading ' + said + ' of ' + parts.length + '.';
-        next();
-      };
-      audio.onerror = function () { URL.revokeObjectURL(url); };
-      var started = audio.play();
-      if (started && started.catch) started.catch(function () {
-        if (note) note.textContent = 'That voice would not play here, so this device is reading.';
-        browserSpeak([piece].concat(queue).join(' '), rate);
-        queue = [];
-      });
+      return URL.createObjectURL(blob);
     }).catch(function () {
-      if (note) note.textContent = 'The voice service did not answer, so this device is reading.';
-      browserSpeak([piece].concat(queue).join(' '), rate);
-      queue = [];
+      READER.cache[i] = null;
+      return null;
     });
-  };
-  next();
+  }
+  return READER.cache[i];
 }
+function readerSpeakLine(i) {
+  if (i >= READER.lines.length) {
+    READER.playing = false;
+    readerStatus('Finished.');
+    readerShow(false);
+    return;
+  }
+  READER.i = i;
+  READER.playing = true;
+  readerMark();
+  readerStatus(i + 1 + ' of ' + READER.lines.length);
+  var barText = $('readBarText');
+  if (barText) barText.textContent = READER.lines[i];
+  readerBlob(i + 1);
+  readerBlob(i + 2);
+  if (!READER.model || READER.model === 'browser') {
+    browserSpeak(READER.lines[i], READER.rate, function () {
+      if (READER.playing) readerSpeakLine(READER.i + 1);
+    });
+    return;
+  }
+  readerBlob(i).then(function (url) {
+    if (!READER.playing) return;
+    if (!url) {
+      readerStatus('No sound for that line, going on.');
+      readerSpeakLine(i + 1);
+      return;
+    }
+    var audio = new Audio(url);
+    audio.playbackRate = READER.rate;
+    READER.audio = audio;
+    audio.ontimeupdate = function () {
+      if (!audio.duration) return;
+      var count = READER.lines[i].split(/\s+/).length;
+      readerWords(Math.min(count, Math.floor(count * (audio.currentTime / audio.duration)) + 1));
+    };
+    audio.onended = function () {
+      if (READER.playing) readerSpeakLine(i + 1);
+    };
+    var started = audio.play();
+    if (started && started.catch) started.catch(function () {
+      READER.model = 'browser';
+      readerStatus('That voice would not play here, so this device is reading.');
+      readerSpeakLine(i);
+    });
+  });
+}
+function readerToggle() {
+  if (!READER.playing) {
+    if (READER.audio && READER.audio.paused && READER.audio.currentTime > 0) {
+      READER.playing = true;
+      readerStatus(READER.i + 1 + ' of ' + READER.lines.length);
+      READER.audio.play();
+      return;
+    }
+    readerSpeakLine(READER.i);
+    return;
+  }
+  READER.playing = false;
+  if (READER.audio) { try { READER.audio.pause(); } catch (err) {} }
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  readerStatus('Paused.');
+}
+function readerStop() {
+  READER.playing = false;
+  if (READER.audio) { try { READER.audio.pause(); } catch (err) {} }
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  Object.keys(READER.cache || {}).forEach(function (key) {
+    var held = READER.cache[key];
+    if (held && held.then) held.then(function (url) { if (url) URL.revokeObjectURL(url); });
+  });
+  READER.cache = {};
+  readerShow(false);
+  var bar = $('readBar');
+  if (bar) bar.style.display = 'none';
+  readerStatus('Stopped.');
+}
+function readerStart(text) {
+  var body = String(text || '').trim();
+  var lines = readChunks(body, 200);
+  if (!lines.length) { toast('Nothing to read yet'); return; }
+  var chosen = ($('readVoice') && $('readVoice').value) || 'browser';
+  var bits = chosen.split('|');
+  READER = {
+    lines: lines,
+    i: 0,
+    playing: false,
+    audio: null,
+    cache: {},
+    rate: Number(($('readRate') && $('readRate').value) || 1),
+    model: bits[0],
+    voice: bits[1] || ''
+  };
+  readerEnsure();
+  readerRender();
+  readerShow(true);
+  var rate2 = $('readRate2');
+  if (rate2) rate2.value = String(READER.rate);
+  readerSpeakLine(0);
+}
+function readOut(text) {
+  readerStart(text);
+}
+document.addEventListener('click', function (e) {
+  var closest = e.target && e.target.closest ? e.target.closest.bind(e.target) : null;
+  if (!closest) return;
+  if (closest('[data-read-pause]')) { e.preventDefault(); readerToggle(); return; }
+  if (closest('[data-read-next]')) {
+    e.preventDefault();
+    if (READER.audio) { try { READER.audio.pause(); } catch (err) {} }
+    READER.playing = false;
+    readerSpeakLine(Math.min(READER.lines.length - 1, READER.i + 1));
+    return;
+  }
+  if (closest('[data-read-prev]')) {
+    e.preventDefault();
+    if (READER.audio) { try { READER.audio.pause(); } catch (err) {} }
+    READER.playing = false;
+    readerSpeakLine(Math.max(0, READER.i - 1));
+    return;
+  }
+  if (closest('[data-read-close]')) { e.preventDefault(); readerShow(false); return; }
+  if (closest('[data-read-stopall]')) { e.preventDefault(); readerStop(); return; }
+  if (closest('[data-read-open]')) { e.preventDefault(); readerShow(true); readerMark(); return; }
+  var line = closest('[data-line]');
+  if (line && line.getAttribute('data-line') !== null) {
+    e.preventDefault();
+    if (READER.audio) { try { READER.audio.pause(); } catch (err) {} }
+    READER.playing = false;
+    readerSpeakLine(Number(line.getAttribute('data-line')));
+    return;
+  }
+});
+document.addEventListener('change', function (e) {
+  var target = e.target;
+  if (!target || target.id !== 'readRate2') return;
+  READER.rate = Number(target.value) || 1;
+  if (READER.audio) READER.audio.playbackRate = READER.rate;
+  var sheetRate = $('readRate');
+  if (sheetRate) sheetRate.value = target.value;
+});
 document.addEventListener('click', function (e) {
   var closest = e.target && e.target.closest ? e.target.closest.bind(e.target) : null;
   if (!closest) return;
@@ -2129,15 +2302,12 @@ document.addEventListener('click', function (e) {
   if (go) {
     e.preventDefault();
     var field = $('readText');
-    var rate = Number(($('readRate') && $('readRate').value) || 1);
-    readOut(field ? field.value : '', rate);
+    readOut(field ? field.value : '');
     return;
   }
   if (closest('[data-read-stop]')) {
     e.preventDefault();
-    if (PLAYER) { try { PLAYER.pause(); } catch (err) {} PLAYER = null; }
-    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
-    READ_KEEP = [];
+    readerStop();
     var stopped = $('readNote');
     if (stopped) stopped.textContent = 'Stopped.';
     return;
@@ -2774,7 +2944,7 @@ export default {
     if (request.method !== "POST") return json({ error: "Use POST" }, 405);
     const { body, error } = await readBody(request);
     if (error) return error;
-    const text = String(body.text || "").replace(/\s+/g, " ").trim().slice(0, SPEAK_MAX_CHARS);
+    const text = speakable(String(body.text || "")).replace(/\s+/g, " ").trim().slice(0, SPEAK_MAX_CHARS);
     if (!text) return json({ error: "Nothing to say" }, 400);
     const model = String(body.model || "").trim();
     const voice = String(body.voice || "").trim();
@@ -5415,6 +5585,63 @@ const SPEAK_MODELS = {
   "qwen/qwen-audio-3.0-tts-flash": 1,
 };
 const SPEAK_MAX_CHARS = 1800;
+
+// speakable: the words a voice should say, not the marks a page shows. Money is
+// named in dollars, a suffix is spelled out, a range becomes "to", and the marks
+// that a reader would stumble over are taken away.
+function speakable(text) {
+  let s = String(text || "")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/[*_`>#]+/g, " ")
+    .replace(/§\s*/g, "section ")
+    .replace(/¶\s*/g, "paragraph ")
+    .replace(/\bNos\.\s*(?=[0-9])/g, "Numbers ")
+    .replace(/\bNo\.\s*(?=[0-9])/g, "Number ");
+
+  // $10-15 million, $500-750 thousand: a range of money, named once.
+  s = s.replace(/\$\s?([0-9][0-9,]*(?:\.[0-9]+)?)\s*[-–—]\s*([0-9][0-9,]*(?:\.[0-9]+)?)(\s*(?:thousand|million|billion|trillion|[kmb]n?)(?![A-Za-z]))?/gi, function (all, low, high, unit) {
+    const word = String(unit || "").trim().toLowerCase();
+    const size = !word ? "" :
+      word.indexOf("thousand") === 0 ? " thousand" :
+      word.indexOf("trillion") === 0 ? " trillion" :
+      word.charAt(0) === "k" ? " thousand" :
+      word.charAt(0) === "b" ? " billion" :
+      word.charAt(0) === "m" ? " million" : "";
+    return low + " to " + high + size + " dollars";
+  });
+
+  // $1.35M, $750K, $2.4bn: spell the size, then the currency.
+  s = s.replace(/\$\s?([0-9][0-9,]*(?:\.[0-9]+)?)\s*([Mm][Nn]?|[Bb][Nn]?|[Kk])(?![A-Za-z])/g, function (all, amount, unit) {
+    const head = unit.toLowerCase().charAt(0);
+    const size = head === "k" ? "thousand" : head === "m" ? "million" : "billion";
+    return amount + " " + size + " dollars";
+  });
+
+  // $1,250.50 is dollars and cents, not a decimal read aloud.
+  s = s.replace(/\$\s?([0-9][0-9,]*)\.([0-9]{2})(?![0-9])/g, function (all, whole, cents) {
+    const c = cents.replace(/^0+/, "");
+    return whole + " dollars and " + (c || "zero") + " cents";
+  });
+
+  // $750,000 and $3.50 are dollars.
+  s = s.replace(/\$\s?([0-9][0-9,]*(?:\.[0-9]+)?)/g, "$1 dollars");
+  s = s.replace(/£\s?([0-9][0-9,]*(?:\.[0-9]+)?)/g, "$1 pounds");
+  s = s.replace(/€\s?([0-9][0-9,]*(?:\.[0-9]+)?)/g, "$1 euros");
+
+  // percentages, including a range.
+  s = s.replace(/([0-9][0-9,]*(?:\.[0-9]+)?)\s*[-–—]\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*%/g, "$1 to $2 percent");
+  s = s.replace(/%/g, " percent");
+
+  // a plain range reads as "to".
+  s = s.replace(/\b([0-9][0-9,]*)\s*[-–—]\s*([0-9][0-9,]*)\b/g, "$1 to $2");
+
+  s = s.replace(/\s*&\s*/g, " and ");
+  s = s.replace(/[ \t]+/g, " ");
+  s = s.replace(/ ?\n ?/g, "\n");
+  return s.trim();
+}
+// /speakable
 
 // The same thing on Workers AI, where the neurons are already his: Aura-2 is the
 // expressive one, MeloTTS is the cheap one (a fraction of a cent per audio minute).

@@ -1724,7 +1724,7 @@ function fakeBrowser(pages, opts) {
   const nameless = await post("/speak", { text: "hi", model: "elevenlabs/eleven-v4" }, makeEnv({ OPENROUTER_API_KEY: "k" }));
   check("a voice must be named", nameless.status === 400, nameless.status);
   const page = await (await worker.fetch(new Request("https://x/"), makeEnv({}))).text();
-  ["readVoice", "/speak", "elevenlabs/eleven-v4", "browserSpeak", "PLAYER"].forEach(function (n) {
+  ["readVoice", "/speak", "elevenlabs/eleven-v4", "browserSpeak", "readerStart"].forEach(function (n) {
     check("page has " + n, page.indexOf(n) >= 0, n);
   });
 }
@@ -1770,6 +1770,43 @@ function fakeBrowser(pages, opts) {
 
   const page = await (await worker.fetch(new Request("https://x/"), makeEnv({}))).text();
   ["@cf/deepgram/aura-2-en", "@cf/myshell-ai/melotts", "aura 2 · thalia"].forEach(function (n) {
+    check("page has " + n, page.indexOf(n) >= 0, n);
+  });
+}
+
+// 29e. figures are said the way a person says them, and the picture follows
+{
+  const src = (await import("node:fs")).readFileSync("worker.js", "utf8");
+  const from = src.indexOf("// speakable:");
+  const to = src.indexOf("// /speakable");
+  check("the speakable rules can be read on their own", from > 0 && to > from, from + "/" + to);
+  const speakable = new Function(src.slice(from, to) + "\nreturn speakable;")();
+  [
+    ["$750,000", "750,000 dollars"],
+    ["$1.35M", "1.35 million dollars"],
+    ["$2.5bn", "2.5 billion dollars"],
+    ["$750K", "750 thousand dollars"],
+    ["$1,250.50", "1,250 dollars and 50 cents"],
+    ["12.5%", "12.5 percent"],
+    ["10-15%", "10 to 15 percent"],
+    ["$10-15 million", "10 to 15 million dollars"],
+    ["$500-750 thousand", "500 to 750 thousand dollars"],
+    ["2019-2023", "2019 to 2023"],
+    ["**bold**", "bold"],
+    ["No. 5", "Number 5"],
+    ["A & B", "A and B"],
+  ].forEach(function (pair) {
+    const got = speakable(pair[0]);
+    check("speakable " + pair[0] + " is " + pair[1], got === pair[1], got);
+  });
+
+  const heard = [];
+  const env = makeEnv({ AI: { run: async (model, input) => { heard.push(input.text); return { audio: Buffer.from("ID3x").toString("base64") }; } } });
+  await post("/speak", { text: "$750,000 and $1.35M at 12%", model: "@cf/deepgram/aura-2-en", voice: "thalia" }, env);
+  check("the voice is handed words, not signs", heard[0] === "750,000 dollars and 1.35 million dollars at 12 percent", heard[0]);
+
+  const page = await (await worker.fetch(new Request("https://x/"), makeEnv({}))).text();
+  ["readStage", "data-read-pause", "readerSpeakLine", "readBar", "data-read-close", "readerWords"].forEach(function (n) {
     check("page has " + n, page.indexOf(n) >= 0, n);
   });
 }
