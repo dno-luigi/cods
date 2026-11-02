@@ -1748,6 +1748,7 @@ function openSheet() {
     '<div class="sect"><h4>What it learned</h4><p style="font-size:11px;color:var(--dim);line-height:1.5">These are read from KV and given to the model that answers. Edit them, add your own, or remove one.</p>' +
       '<div id="prefList">loading...</div>' +
       '<div id="domList" style="margin-top:14px">loading...</div>' +
+      '<p style="font-size:11px;color:var(--dim);line-height:1.5;margin:8px 0 0">Write it in your own few words. It comes back with examples of what it does, so you can see it read the way you meant.</p>' +
       '<div class="row" style="margin-top:6px;align-items:center">' +
       '<input id="domNewD" placeholder="domain" style="width:90px;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px;font-size:12px">' +
       '<input id="domNewT" placeholder="principles for that domain" style="flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px;font-size:12px">' +
@@ -1880,7 +1881,11 @@ function loadPrefs() {
         ? '<div style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);margin:0 0 4px">domain principles</div>' + names.map(function (k) {
             return '<div style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);margin:8px 0 2px">' + esc(k) + '</div>' +
               dom[k].map(function (r) {
-                return '<div class="row" style="align-items:center;margin:4px 0"><div style="flex:1;min-width:0;font-size:11px;color:var(--text);line-height:1.45">' + esc(r.text) + '</div>' +
+                var eg = (r.eg || []).map(function (x) {
+                  return '<div style="font-size:10px;color:var(--dim);line-height:1.5;margin:2px 0 0">for example: ' + esc(x) + '</div>';
+                }).join('');
+                return '<div class="row" style="align-items:flex-start;margin:4px 0"><div style="flex:1;min-width:0;font-size:11px;color:var(--text);line-height:1.45">' + esc(r.text) + eg + '</div>' +
+                  '<button class="icon" data-dom-eg="' + esc(k) + '|' + esc(r.text) + '">' + (eg ? 'More examples' : 'Examples') + '</button>' +
                   '<button class="icon" data-dom-del="' + esc(k) + '|' + esc(r.text) + '">Remove</button></div>';
               }).join('');
           }).join('')
@@ -1889,6 +1894,17 @@ function loadPrefs() {
   }).catch(function () {});
 }
 
+function domExamples(domain, text) {
+  toast('Showing how that rule gets used');
+  return fetch(API.prefs, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'domain-examples', domain: domain, text: text })
+  }).then(function (r) { return r.json(); }).then(function (d) {
+    loadPrefs();
+    if (d && d.error) toast(d.error);
+    else if (d && d.examples && d.examples.length) toast('Those are examples of it.');
+  }).catch(function (e) { toast('Could not show examples: ' + ((e && e.message) || e)); });
+}
 function prefsWrite(b) {
   fetch(API.prefs, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b)
@@ -1941,7 +1957,20 @@ document.addEventListener('click', function (e) {
     var d = ((dEl && dEl.value) || '').trim();
     var tx = ((tEl && tEl.value) || '').trim();
     if (!d || !tx) { toast('Name the domain and the rule'); return; }
-    return prefsWrite({ action: 'domain', domain: d, text: tx });
+    fetch(API.prefs, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'domain', domain: d, text: tx })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      if (res && res.error) { toast(res.error); return; }
+      if (tEl) tEl.value = '';
+      return domExamples(d, tx);
+    }).catch(function (e) { toast('Could not save: ' + ((e && e.message) || e)); });
+    return;
+  }
+  var egBtn = e.target && e.target.closest ? e.target.closest('[data-dom-eg]') : null;
+  if (egBtn) {
+    var eb = String(egBtn.getAttribute('data-dom-eg') || '').split('|');
+    return domExamples(eb[0], eb.slice(1).join('|'));
   }
   var del = e.target && e.target.closest ? e.target.closest('[data-dom-del]') : null;
   if (del) {
@@ -3155,6 +3184,48 @@ export default {
           prefs.domainRules[dom] = prefs.domainRules[dom].filter((r) => !r || r.text !== text);
         }
       }
+    } else if (act === "domain-examples") {
+      // A rule written in a few words can be read two ways, so the model that
+      // will follow it says what it would do with it. The examples stay on the
+      // rule, so reading them again costs nothing.
+      const dom = String(body.domain || "").trim().toLowerCase().slice(0, 40);
+      const text = String(body.text || body.a || "").trim().slice(0, 300);
+      if (!dom || !text) return json({ error: "Send domain and text" }, 400);
+      const list = prefs.domainRules && Array.isArray(prefs.domainRules[dom]) ? prefs.domainRules[dom] : [];
+      const row = list.find((r) => r && r.text === text);
+      if (!row) return json({ error: "Add that rule first" }, 404);
+      let lines = [];
+      try {
+        const r = await askText(
+          env,
+          [
+            {
+              role: "system",
+              content:
+                "He writes short rules for one step of a card answering app. Show what his rule does in practice: three short examples, one per line, each shaped as 'Ask: ... -> it ...'. Stay in the subject he named, be concrete, no preamble, no numbering, no quotes, and keep each line under 140 characters. Every example has to be about his rule and nothing else.",
+            },
+            {
+              role: "user",
+              content: "The step: " + dom + "\nHis rule: " + text,
+            },
+          ],
+          { max_tokens: 260 }
+        );
+        lines = String(r.text || "")
+          .split("\n")
+          .map((x) => x.replace(/^\s*(?:[-*]|\d+[.)])\s*/, "").trim())
+          .filter(Boolean)
+          .slice(0, 3)
+          .map((x) => x.slice(0, 200));
+      } catch (err) {
+        return json({ error: "Could not show examples: " + err.message }, 502);
+      }
+      if (!lines.length) return json({ error: "The examples came back empty; the rule is saved" }, 502);
+      row.eg = lines;
+      row.egAt = new Date().toISOString();
+      prefs.updated = new Date().toISOString();
+      await store.put(PREFS_KEY, JSON.stringify(prefs));
+      return json({ ok: true, action: act, domain: dom, text, examples: lines });
     } else if (act === "rephrase") {
       if (!q) return json({ error: "Send q" }, 400);
       const row = prefs.learned.find((x) => x && x.q === q);

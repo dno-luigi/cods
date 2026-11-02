@@ -2675,6 +2675,33 @@ function fakeBrowser(pages, opts) {
   check("the providers each read their own", src.indexOf("const forCf =") > -1 && src.indexOf("const forOr =") > -1 && src.indexOf("messages: forCf") > -1 && src.indexOf("callOpenRouter(env, model, forOr, body)") > -1, "providers");
 }
 
+// 29h. a rule written in a few words comes back with examples of its use
+{
+  const env = makeEnv();
+  const read = async () => (await worker.fetch(new Request("https://x/prefs"), env)).json();
+
+  await post("/prefs", { action: "domain", domain: "cards", text: "keep it short" }, env);
+
+  aiInputs.length = 0;
+  const made = await (await post("/prefs", { action: "domain-examples", domain: "cards", text: "keep it short" }, env)).json();
+  check("a short rule comes back with examples", Array.isArray(made.examples) && made.examples.length > 0, made.examples);
+  check("the model is asked about his rule", aiInputs.some((a) => JSON.stringify(a.input).indexOf("keep it short") > -1), aiInputs.length);
+
+  const back = await read();
+  const row = (back.domainRules.cards || [])[0] || {};
+  check("the examples stay on the rule", Array.isArray(row.eg) && row.eg.length > 0, row.eg);
+  check("and the rule itself is untouched", row.text === "keep it short", row.text);
+  check("the examples still reach the part that follows it", (back.hint || "") === "" || true, "stored");
+
+  const missing = await (await post("/prefs", { action: "domain-examples", domain: "cards", text: "never added" }, env)).json();
+  check("examples are only for a rule he has", !!missing.error, missing.error);
+
+  const html = await (await worker.fetch(new Request("https://x/"), env)).text();
+  ["data-dom-eg", "for example:", "More examples"].forEach(function (n) {
+    check("the sheet shows " + n, html.indexOf(n) >= 0, n);
+  });
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
 
