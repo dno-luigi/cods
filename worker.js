@@ -3204,12 +3204,21 @@ export default {
       // One reply usually carries one example, so ask again until three are in
       // hand, telling it what it already said so the next ones differ.
       function parseExamples(reply) {
-        return String(reply || "")
+        const pieces = String(reply || "")
           .split(/\|\||\n/)
           .flatMap((line) => line.split(/(?=Ask:)/i))
           .map((x) => x.replace(/^\s*(?:[-*\u2022]|\d+[.)])\s*/, "").trim())
-          .filter((x) => x.length > 8)
-          .map((x) => x.slice(0, 200));
+          .filter(Boolean);
+        // A reply that breaks between the request and the answer is still one
+        // example, not two: only an Ask: starts a new one.
+        const out = [];
+        for (const piece of pieces) {
+          if (/^ask:/i.test(piece) || !out.length) out.push(piece);
+          else out[out.length - 1] += " " + piece;
+        }
+        return out
+          .map((x) => (x.length > 220 ? x.slice(0, 220).replace(/\s+\S*$/, "") + "\u2026" : x))
+          .filter((x) => x.length > 8);
       }
 
       const lines = [];

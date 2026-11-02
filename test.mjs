@@ -2708,6 +2708,16 @@ function fakeBrowser(pages, opts) {
   const three = await (await post("/prefs", { action: "domain-examples", domain: "search", text: "prefer primary sources" }, packed)).json();
   check("three examples on one line are still three", (three.examples || []).length === 3, three.examples);
 
+  // a reply that breaks between the request and the answer is one example
+  const split = makeEnv({
+    AI: { run: async (model) => (String(model).indexOf("deepseek") > -1
+      ? { response: "Ask: one\nit: a\nAsk: two\nit: b" }
+      : { answers: {} }) },
+  });
+  await post("/prefs", { action: "domain", domain: "notes", text: "one idea per line" }, split);
+  const pairs = await (await post("/prefs", { action: "domain-examples", domain: "notes", text: "one idea per line" }, split)).json();
+  check("a broken line stays one example", (pairs.examples || []).length === 2 && pairs.examples[0] === "Ask: one it: a", pairs.examples);
+
   const missing = await (await post("/prefs", { action: "domain-examples", domain: "cards", text: "never added" }, env)).json();
   check("examples are only for a rule he has", !!missing.error, missing.error);
 
