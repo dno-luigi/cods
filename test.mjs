@@ -2697,6 +2697,17 @@ function fakeBrowser(pages, opts) {
   const pruned = await read();
   check("the last rule takes its empty domain with it", !("cards" in (pruned.domainRules || {})), pruned.domainRules);
 
+  // three on one line still come back as three: a model that ignores the line
+  // break is not a reason to lose two of his examples
+  const packed = makeEnv({
+    AI: { run: async (model) => (String(model).indexOf("deepseek") > -1
+      ? { response: "Ask: one -> it a Ask: two -> it b Ask: three -> it c" }
+      : { answers: {} }) },
+  });
+  await post("/prefs", { action: "domain", domain: "search", text: "prefer primary sources" }, packed);
+  const three = await (await post("/prefs", { action: "domain-examples", domain: "search", text: "prefer primary sources" }, packed)).json();
+  check("three examples on one line are still three", (three.examples || []).length === 3, three.examples);
+
   const missing = await (await post("/prefs", { action: "domain-examples", domain: "cards", text: "never added" }, env)).json();
   check("examples are only for a rule he has", !!missing.error, missing.error);
 

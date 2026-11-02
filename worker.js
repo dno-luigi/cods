@@ -3205,7 +3205,7 @@ export default {
             {
               role: "system",
               content:
-                "His rule for one step of a card answering app is below. Write three short examples of what that rule changes, one per line, each shaped as 'Ask: <a request that step receives> -> it <what it does because of his rule>'. Every example must turn on the rule itself, not on the name of the step: a rule about bullets shows bullets, a rule about searching shows a search. No preamble, no numbering, no quotes, each line under 140 characters.",
+                "His rule for one step of a card answering app is below. Show exactly three examples of what that rule does, one per line. Each line reads: Ask: <a request that step receives> -> it <what it writes or does, quoting part of the words it would actually use>. Every example must turn on the rule itself, not on the name of the step: a rule about bullets shows sentences instead of bullets, a rule about searching shows a search happening. Reply with the three lines and nothing else: no numbering, no quotes around them, no preamble, each line under 140 characters.",
             },
             {
               role: "user",
@@ -3216,7 +3216,8 @@ export default {
         );
         lines = String(r.text || "")
           .split("\n")
-          .map((x) => x.replace(/^\s*(?:[-*]|\d+[.)])\s*/, "").trim())
+          .flatMap((line) => line.split(/(?=Ask:)/i))
+          .map((x) => x.replace(/^\s*(?:[-*\u2022]|\d+[.)])\s*/, "").trim())
           .filter(Boolean)
           .slice(0, 3)
           .map((x) => x.slice(0, 200));
