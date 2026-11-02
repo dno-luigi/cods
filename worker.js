@@ -1758,7 +1758,12 @@ function openSheet() {
       '<button class="icon" data-read-stop="1">Stop</button>' +
       '<button class="icon" data-read-last="1">Last answer</button>' +
       '<select id="readVoice" style="max-width:190px;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px;font-size:12px">' +
-      '<option value="elevenlabs/eleven-v4|george" selected>eleven v4 · george</option>' +
+      '<option value="@cf/deepgram/aura-2-en|thalia" selected>aura 2 · thalia · workers ai</option>' +
+      '<option value="@cf/deepgram/aura-2-en|apollo">aura 2 · apollo · workers ai</option>' +
+      '<option value="@cf/deepgram/aura-2-en|athena">aura 2 · athena · workers ai</option>' +
+      '<option value="@cf/deepgram/aura-2-en|orion">aura 2 · orion · workers ai</option>' +
+      '<option value="@cf/myshell-ai/melotts|en">melotts · cheapest</option>' +
+      '<option value="elevenlabs/eleven-v4|george">eleven v4 · george</option>' +
       '<option value="elevenlabs/eleven-v4|sarah">eleven v4 · sarah</option>' +
       '<option value="elevenlabs/eleven-v4|brian">eleven v4 · brian</option>' +
       '<option value="elevenlabs/eleven-flash-v2.5|george">eleven flash · george</option>' +
@@ -2702,6 +2707,68 @@ export default {
   // long question should never meet a paywall, so this route has no key and no
   // plan check. It is bounded by clip size and by a per-address daily count, so
   // one script cannot spend the account's whole allowance.
+  // Speaking: text in, audio out. Workers AI first when the model says @cf/, the
+  // voice models on OpenRouter otherwise.
+  async function collectStream(stream) {
+    const reader = stream.getReader();
+    const chunks = [];
+    let total = 0;
+    for (;;) {
+      const step = await reader.read();
+      if (step.done) break;
+      const value = step.value;
+      chunks.push(value);
+      total += value.length;
+    }
+    const out = new Uint8Array(total);
+    let at = 0;
+    for (const chunk of chunks) {
+      out.set(chunk, at);
+      at += chunk.length;
+    }
+    return out;
+  }
+
+  function decodeAudioBase64(value) {
+    const raw = String(value || "").replace(/^data:audio\/[^;]+;base64,/, "");
+    const bin = atob(raw);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+
+  async function audioFromWorkersAi(out) {
+    if (!out) return null;
+    if (out instanceof Response) {
+      return { bytes: new Uint8Array(await out.arrayBuffer()), type: out.headers.get("content-type") || "audio/mpeg" };
+    }
+    if (out instanceof ArrayBuffer) return { bytes: new Uint8Array(out), type: "audio/mpeg" };
+    if (ArrayBuffer.isView(out)) return { bytes: new Uint8Array(out.buffer, out.byteOffset, out.byteLength), type: "audio/mpeg" };
+    if (typeof out.getReader === "function") return { bytes: await collectStream(out), type: "audio/mpeg" };
+    if (typeof out.audio === "string") return { bytes: decodeAudioBase64(out.audio), type: "audio/mpeg" };
+    if (out.audio instanceof ArrayBuffer) return { bytes: new Uint8Array(out.audio), type: "audio/mpeg" };
+    if (out.audio && typeof out.audio.getReader === "function") return { bytes: await collectStream(out.audio), type: "audio/mpeg" };
+    return null;
+  }
+
+  async function speakOnWorkersAi(env, model, text, voice) {
+    if (!env.AI || typeof env.AI.run !== "function") return { error: "The AI binding is not on this Worker", status: 503 };
+    const tries = model === "@cf/myshell-ai/melotts"
+      ? [{ prompt: text, lang: voice || "en" }]
+      : [{ text, speaker: voice || "thalia" }, { text, speaker: voice || "thalia", encoding: "mp3" }];
+    let last = "no audio";
+    for (const input of tries) {
+      try {
+        const got = await audioFromWorkersAi(await env.AI.run(model, input));
+        if (got && got.bytes.length) return got;
+        last = "the model returned no audio";
+      } catch (err) {
+        last = String((err && err.message) || err).slice(0, 300);
+      }
+    }
+    return { error: "The Workers AI voice did not answer", detail: last, status: 502 };
+  }
+
   // Speaking: text in, audio out, from a voice model on OpenRouter.
   if (url.pathname === "/speak") {
     if (request.method !== "POST") return json({ error: "Use POST" }, 405);
@@ -2711,10 +2778,21 @@ export default {
     if (!text) return json({ error: "Nothing to say" }, 400);
     const model = String(body.model || "").trim();
     const voice = String(body.voice || "").trim();
-    if (!Object.prototype.hasOwnProperty.call(SPEAK_MODELS, model)) {
-      return json({ error: "Unknown voice model", models: Object.keys(SPEAK_MODELS) }, 400);
+    const onWorkersAi = /^@cf\//.test(model);
+    if (onWorkersAi && !Object.prototype.hasOwnProperty.call(CF_SPEAK_MODELS, model)) {
+      return json({ error: "Unknown voice model", models: Object.keys(CF_SPEAK_MODELS).concat(Object.keys(SPEAK_MODELS)) }, 400);
+    }
+    if (!onWorkersAi && !Object.prototype.hasOwnProperty.call(SPEAK_MODELS, model)) {
+      return json({ error: "Unknown voice model", models: Object.keys(CF_SPEAK_MODELS).concat(Object.keys(SPEAK_MODELS)) }, 400);
     }
     if (!voice) return json({ error: "Name a voice" }, 400);
+    if (onWorkersAi) {
+      const said = await speakOnWorkersAi(env, model, text, voice);
+      if (said.error) return json({ error: said.error, detail: said.detail || null, model, voice }, said.status || 502);
+      return new Response(said.bytes, {
+        headers: { "Content-Type": said.type || "audio/mpeg", "Cache-Control": "no-store", "X-Voice-Model": model },
+      });
+    }
     const speakKey = String(env.OPENROUTER_API_KEY || "").trim();
     if (!speakKey) return json({ error: "OPENROUTER_API_KEY is not set on the Worker" }, 503);
     let up = null;
@@ -5333,6 +5411,14 @@ const SPEAK_MODELS = {
   "qwen/qwen-audio-3.0-tts-flash": 1,
 };
 const SPEAK_MAX_CHARS = 1800;
+
+// The same thing on Workers AI, where the neurons are already his: Aura-2 is the
+// expressive one, MeloTTS is the cheap one (a fraction of a cent per audio minute).
+const CF_SPEAK_MODELS = {
+  "@cf/deepgram/aura-2-en": ["thalia", "apollo", "athena", "aurora", "orion", "hera", "zeus", "iris"],
+  "@cf/deepgram/aura-1": ["thalia", "asteria", "luna", "orion", "orac" ],
+  "@cf/myshell-ai/melotts": ["en"],
+};
 const TRUTH_LIMIT = 500;
 const TRUTH_MASTER_FLOOR = 0.9;
 

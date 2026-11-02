@@ -1729,6 +1729,47 @@ function fakeBrowser(pages, opts) {
   });
 }
 
+// 29d. the same voice from Workers AI, where the neurons are already his
+{
+  const bare = makeEnv({});
+  delete bare.AI;
+  const noAi = await post("/speak", { text: "hello", model: "@cf/deepgram/aura-2-en", voice: "thalia" }, bare);
+  check("without the AI binding it says so", noAi.status === 503, noAi.status);
+
+  const seen = [];
+  const audio = Buffer.from("ID3fake-mp3-bytes").toString("base64");
+  const env = makeEnv({
+    AI: { run: async (model, input) => { seen.push({ model, input }); return { audio }; } },
+  });
+  const said = await post("/speak", { text: "the chair decides", model: "@cf/deepgram/aura-2-en", voice: "thalia" }, env);
+  const bytes = new Uint8Array(await said.arrayBuffer());
+  check("workers ai speaks without an OpenRouter key", said.status === 200 && said.headers.get("content-type") === "audio/mpeg", said.status);
+  check("and the audio comes back whole", bytes.length === 17 && Buffer.from(bytes).toString() === "ID3fake-mp3-bytes", bytes.length);
+  check("the model and speaker are passed through", seen.length === 1 && seen[0].model === "@cf/deepgram/aura-2-en" && seen[0].input.speaker === "thalia", seen[0]);
+  check("the text is what is spoken", seen[0].input.text === "the chair decides", seen[0].input);
+
+  const streamed = makeEnv({ AI: { run: async () => new Response("ID3stream", { headers: { "content-type": "audio/mpeg" } }) } });
+  const asStream = await post("/speak", { text: "hi", model: "@cf/deepgram/aura-2-en", voice: "apollo" }, streamed);
+  check("a streamed answer is passed on", asStream.status === 200 && (await asStream.text()) === "ID3stream", asStream.status);
+
+  const melo = [];
+  const cheap = makeEnv({ AI: { run: async (model, input) => { melo.push(input); return { audio }; } } });
+  const meloOut = await post("/speak", { text: "hi", model: "@cf/myshell-ai/melotts", voice: "en" }, cheap);
+  check("melotts is asked with a prompt", meloOut.status === 200 && melo[0].prompt === "hi" && melo[0].lang === "en", melo[0]);
+
+  const refused = makeEnv({ AI: { run: async () => { throw new Error("no such model"); } } });
+  const dead = await post("/speak", { text: "hi", model: "@cf/deepgram/aura-2-en", voice: "thalia" }, refused);
+  check("a failing voice is reported, not faked", dead.status === 502, dead.status);
+
+  const unknown = await post("/speak", { text: "hi", model: "@cf/nope/nope", voice: "x" }, makeEnv({}));
+  check("an unknown workers ai voice is refused", unknown.status === 400, unknown.status);
+
+  const page = await (await worker.fetch(new Request("https://x/"), makeEnv({}))).text();
+  ["@cf/deepgram/aura-2-en", "@cf/myshell-ai/melotts", "aura 2 · thalia"].forEach(function (n) {
+    check("page has " + n, page.indexOf(n) >= 0, n);
+  });
+}
+
 // 30. shapes: the card is always answerable, the full catalogue needs the expert key
 {
   const bucket = new Map();
