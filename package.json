@@ -17,6 +17,6 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@cloudflare/puppeteer": "^1.4.0"
+    "@cloudflare/puppeteer": "^2.0.0"
   }
 }
