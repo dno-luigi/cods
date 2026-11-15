@@ -803,7 +803,9 @@ function fakeBrowser(pages, opts) {
   calls = []; aiInputs = [];
   const c = await (await post("/chat", { prompt: "  What is a trading journal  " }, env)).json();
   check("the same question returns the approved answer", c.approved === true && /^APPROVED/.test(c.cards[0].a), c.cards && c.cards[0].a);
-  check("and no model is woken up", aiInputs.length === 0, aiInputs.length);
+  const judged = aiInputs.filter((x) => /clef/.test(x.model));
+  check("the decision is made again, on the signed-off answer", judged.length === 1, aiInputs);
+  check("and no writer model is woken for words it already has", aiInputs.length === judged.length, aiInputs.length);
   const list = await (await worker.fetch(new Request("https://cods.example/approved"), env)).json();
   check("the admin list shows it with its rank", list.count === 1 && list.items[0].rank === 4, list);
   await post("/approve", { q: "what is a trading journal", rank: 0 }, env);
@@ -945,7 +947,9 @@ function fakeBrowser(pages, opts) {
   calls = []; aiInputs = [];
   const again = await (await post("/chat", { prompt: "What is position sizing" }, env)).json();
   check("a repeat question comes back from R2", again.route === "ltm" && again.cached === true, again.route);
-  check("without waking a model", aiInputs.length === 0, aiInputs.length);
+  const judgedAgain = aiInputs.filter((x) => /clef/.test(x.model));
+  check("the decision is made again, even from R2", judgedAgain.length === 1, aiInputs);
+  check("without waking a writer model", aiInputs.length === judgedAgain.length, aiInputs.length);
   check("and it explains itself", (again.thinking || []).some((s) => s.step === "memory"), again.thinking);
   const arc = await (await worker.fetch(new Request("https://cods.example/archive"), env)).json();
   check("what was asked is logged", arc.count >= 1 && arc.log[0].q.indexOf("position sizing") > 0, arc.log[0]);
@@ -2944,6 +2948,63 @@ function fakeBrowser(pages, opts) {
   } finally {
     globalThis.fetch = realFetch;
   }
+}
+
+// 33. the decision runs every time, and the thread is what the cards continue
+{
+  const ctx = new Map();
+  const bucket = new Map();
+  const store = { get: async (k) => (ctx.has(k) ? ctx.get(k) : null), put: async (k, v) => { ctx.set(k, v); }, delete: async (k) => { ctx.delete(k); } };
+  const env = makeEnv({
+    CONTEXT: store,
+    LTM: { put: async (k, v) => { bucket.set(k, v); }, get: async (k) => (bucket.has(k) ? { text: async () => bucket.get(k) } : null) },
+  });
+
+  const keptNote = await (await post("/thread", { note: "the letter to the council about the fence" }, env)).json();
+  check("the thread is kept with the app", keptNote.ok === true && /council/.test(keptNote.note), keptNote);
+  const readBack = await (await worker.fetch(new Request("https://x/thread"), env)).json();
+  check("and read back from the store", /council/.test(readBack.note), readBack);
+
+  calls = []; aiInputs = [];
+  const first = await (await post("/chat", { prompt: "write the letter", thread_note: "the letter to the council about the fence" }, env)).json();
+  check("the answer comes back as a card", !!(first.cards && first.cards[0] && first.cards[0].a), first.provider);
+  const judged = aiInputs.filter((x) => /clef/.test(x.model));
+  check("the decision is made on the thread, not the question alone", judged.length === 1 && JSON.stringify(judged[0].input).indexOf("council") > -1, judged.length);
+  const after = await (await worker.fetch(new Request("https://x/thread"), env)).json();
+  check("the exchange is remembered in the thread", (after.exchanges || []).some((x) => /letter/.test(x.q)), after.exchanges);
+  check("and the thread note survives the exchange", /council/.test(after.note), after.note);
+
+  // What the screenshot showed: a stored question served back as the card.
+  const key = [...bucket.keys()].find((k) => k.indexOf("q/") === 0);
+  bucket.set(key, JSON.stringify({ prompt: "write the letter", answer: "What do you want me to do with this HTML?", cards: [], provider: "store" }));
+  calls = []; aiInputs = [];
+  const again = await (await post("/chat", { prompt: "write the letter", thread_note: "the letter to the council about the fence" }, env)).json();
+  check("a kept question is not served as an answer", again.route !== "ltm", again.route);
+  check("it is decided fresh instead", (again.thinking || []).some((s) => s.step === "memory" && /question, not an answer/.test(s.detail)), again.thinking);
+  check("and a card still comes back", !!(again.cards && again.cards[0] && again.cards[0].a), again.route);
+
+  // The store answers before the model, and it is decided like every other path.
+  const heldKV = new Map();
+  const record = { id: "t_store", question: "what is a stop loss", answer: "A stop loss closes a position at a set price.", sources: [], status: "master", confidence: 0.9, seen: 2, updated: "2026-11-01T00:00:00.000Z" };
+  heldKV.set("truths:index", JSON.stringify([{ id: record.id, question: record.question, status: record.status, confidence: record.confidence, sources: 0, seen: record.seen, updated: record.updated }]));
+  heldKV.set("truth:" + record.id, JSON.stringify(record));
+  const storeEnv = makeEnv({ KV: { get: async (k) => heldKV.get(k) || null, put: async (k, v) => heldKV.set(k, v), delete: async (k) => heldKV.delete(k) } });
+  calls = []; aiInputs = [];
+  const fromStore = await (await post("/chat", { prompt: "what is a stop loss" }, storeEnv)).json();
+  check("a stored answer is decided too", fromStore.provider === "store" && !!fromStore.decision && !!fromStore.cards[0].decision, fromStore.decision);
+  check("and the decision is the only model it wakes", aiInputs.filter((x) => /clef/.test(x.model)).length === 1 && aiInputs.length === 1, aiInputs.length);
+
+  record.answer = "What do you want me to do with this HTML?";
+  heldKV.set("truth:" + record.id, JSON.stringify(record));
+  const askedBack = await (await post("/chat", { prompt: "what is a stop loss" }, storeEnv)).json();
+  check("a stored question is not the card either", askedBack.provider !== "store" && !(askedBack.cards && /^What do you want me to do/.test(askedBack.cards[0].a)), askedBack.provider);
+
+  const page = await (await worker.fetch(new Request("https://x/"), makeEnv({}))).text();
+  check("the page has a place for the thread", /id="threadBtn"/.test(page) && /id="threadLine"/.test(page), "thread spot");
+  check("and the thread goes with the question", page.indexOf("b.thread_note = S.threadNote") > -1, "thread sent");
+  check("the working steps never become the card body", page.indexOf("cur.a = cur.thinking") === -1 && page.indexOf("cur.step = String(ev.step") > -1, "trace in body");
+  check("a request cut off says so instead of showing its log", page.indexOf("stopped before it answered") > -1, "stale working card");
+  check("the thread keeps every letter", page.indexOf("/s+/") === -1, "s rule");
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");

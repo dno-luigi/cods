@@ -535,6 +535,8 @@ code{font-size:12.5px;background:#00000044;padding:1px 4px;border-radius:4px}
 #stageNote.show{display:block}
 #stageNote b{display:block;font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--p);margin-bottom:3px}
 #stageNote i{display:block;color:var(--dim);font-style:normal;margin-top:5px}
+#threadLine{display:none;margin:8px 12px 0;padding:6px 10px;border:1px solid var(--line);border-radius:9px;font-size:11px;line-height:1.45;color:var(--dim);background:var(--card);cursor:pointer}
+#threadLine.show{display:block}
 .sect button{background:var(--card);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px 10px;font-size:12px}
 .modal{position:fixed;inset:0;background:#000b;display:none;z-index:80;align-items:center;justify-content:center;padding:18px}
 .modal.show{display:flex}
@@ -577,9 +579,11 @@ code{font-size:12.5px;background:#00000044;padding:1px 4px;border-radius:4px}
 <body>
 <div class="top">
   <h1>kards</h1><span class="badge" id="count">0</span><span class="grow"></span>
+  <button class="icon" id="threadBtn" title="What we are working on">thread</button>
   <button class="icon" id="selBtn" title="Select">select</button>
   <button class="icon" id="gear" title="Settings">menu</button>
 </div>
+<div id="threadLine"></div>
 <div class="cards" id="cards"></div>
 <div class="selbar" id="selbar">
   <span id="selCount" style="font-size:12px">0</span><span class="grow"></span>
@@ -605,7 +609,7 @@ code{font-size:12.5px;background:#00000044;padding:1px 4px;border-radius:4px}
 var API = { chat: '/chat', feedback: '/feedback', card: '/card', deck: '/deck', prefs: '/prefs', templates: '/templates' };
 var NL = String.fromCharCode(10);
 var LS = 'cods:deck:v1';
-var S = { cards: [], flip: {}, sel: {}, ctx: null, fs: null, tts: false, light: false, deck: '', cb: null, theme: null, speaking: null, think: false, model: null, tpl: null };
+var S = { cards: [], flip: {}, sel: {}, ctx: null, fs: null, tts: false, light: false, deck: '', cb: null, theme: null, speaking: null, think: false, model: null, tpl: null, threadNote: '' };
 var MK = 'cods:model:v1';
 var MODELS = null;
 var LP = null;
@@ -829,7 +833,7 @@ function applyTheme(t) {
 
 function save() {
   try {
-    localStorage.setItem(LS, JSON.stringify({ cards: S.cards.slice(0, 80), tts: S.tts, light: S.light, deck: S.deck, theme: S.theme, think: S.think }));
+    localStorage.setItem(LS, JSON.stringify({ cards: S.cards.slice(0, 80), tts: S.tts, light: S.light, deck: S.deck, theme: S.theme, think: S.think, threadNote: S.threadNote }));
   } catch (e) {}
   queueDeck();
 }
@@ -1077,7 +1081,7 @@ function cardHTML(c) {
       (c.more ? '<span class="dots" data-full="' + id + '">' + (c.showFull ? 'short' : 'long') + '</span>' : '') +
       '<span class="dots" data-dots="' + id + '">more</span></span></div>' +
       marker(c) + '<div class="body card-a">' + answerHTML(c.showFull && c.more ? c.more : c.a) + '</div>' + meta(c) + shots(c) + notes(c) + fb(c) + '</div>' +
-    '<div class="via">via ' + esc(c.provider) + '</div></div>';
+    '<div class="via">via ' + esc(c.provider) + (c.provider === 'working' && c.step ? ' · ' + esc(c.step) : '') + '</div></div>';
 }
 // Flip with the slip. The old path toggled the state and re-rendered, which
 // replaced the node before it could move, so the card only ever popped.
@@ -1514,7 +1518,10 @@ function sendPrompt(p, extra) {
     var cur = byId(pid);
     if (!cur) return;
     cur.thinking.push({ step: ev.step, detail: ev.detail, ms: ev.ms });
-    cur.a = cur.thinking.map(function (s) { return s.step + ' — ' + (s.detail || ''); }).join(NL);
+    // The steps are working, not an answer. They ride under the card until the
+    // answer lands: written into the body they turn the card into a log, and a
+    // request that stops mid-flight leaves that log on screen for good.
+    cur.step = String(ev.step || '') + (ev.detail ? ' — ' + ev.detail : '');
     render(); scrollBottom();
   }
 
@@ -1603,6 +1610,8 @@ function sendPrompt(p, extra) {
     .then(function () {
       btn.disabled = false;
       btn.textContent = 'Send';
+      var settled = byId(pid);
+      if (settled && settled.provider !== 'working') settled.step = '';
       if (!fresh.length) render();
       save();
       scrollBottom();
@@ -1613,6 +1622,7 @@ function sendPrompt(p, extra) {
 // a proxy pick rides the binding with its preset.
 function askBody(p, ctx) {
   var b = { prompt: p, cards: ctx, stream: true };
+  if (S.threadNote) b.thread_note = S.threadNote;
   var m = S.model;
   if (!m) return b;
   if (m.off) { b.preset = 'none'; b.off = true; return b; }
@@ -2870,6 +2880,35 @@ document.addEventListener('keydown', function (e) {
   if (e.key === 'Escape') { closeMenu(); closeFs(); $('modal').classList.remove('show'); $('sheet').classList.remove('show'); }
 });
 
+// What we are working on. One line, kept with the app, read before every
+// decision and every answer, so each card continues the one before it instead
+// of arriving as a fresh question with no history.
+function paintThread() {
+  var line = $('threadLine');
+  if (!line) return;
+  var t = String(S.threadNote || '').trim();
+  line.textContent = t ? 'in this thread: ' + t : '';
+  line.classList.toggle('show', !!t);
+}
+function setThread(note) {
+  S.threadNote = String(note || '').replace(/\\s+/g, ' ').trim().slice(0, 1200);
+  paintThread();
+  save();
+  fetch('/thread', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note: S.threadNote })
+  }).then(function (r) { return r.json(); }).then(function (d) {
+    if (d && d.error) toast(d.error); else toast('Kept with the app');
+  }).catch(function () { toast('Kept on this device only'); });
+}
+$('threadBtn').onclick = function () {
+  ask('What we are working on', 'Kept with the app and read before every decision and every answer, so the cards continue each other.', 'e.g. the letter to the council about the fence', function (v) { setThread(v); }, S.threadNote);
+};
+$('threadLine').onclick = function () {
+  ask('What we are working on', 'One line the whole thread is read against.', 'what we are working on', function (v) { setThread(v); }, S.threadNote);
+};
+paintThread();
+
 (function boot() {
   var had = false;
   try {
@@ -2877,15 +2916,31 @@ document.addEventListener('keydown', function (e) {
     try { var picked = JSON.parse(localStorage.getItem(MK) || 'null'); if (picked) S.model = picked; } catch (e) {}
     paintModel();
     if (d && Array.isArray(d.cards)) {
-      S.cards = d.cards;
+      // A request cut off (tab closed, network gone) left its card mid-flight.
+      // It cannot resume, so it says so instead of standing there as a log.
+      S.cards = d.cards.map(function (c) {
+        if (!c) return c;
+        c.step = '';
+        if (c.provider === 'working') {
+          c.provider = 'stopped';
+          c.a = 'That request stopped before it answered. Send it again to get the answer.';
+        }
+        return c;
+      });
       S.tts = !!d.tts;
       S.light = !!d.light;
       S.deck = d.deck || '';
       S.theme = d.theme || null;
       S.think = !!d.think;
+      S.threadNote = String(d.threadNote || '');
       had = S.cards.length > 0;
     }
   } catch (e) {}
+  if (!S.threadNote) {
+    fetch('/thread').then(function (r) { return r.json(); }).then(function (d) {
+      if (d && d.note && !S.threadNote) { S.threadNote = d.note; paintThread(); }
+    }).catch(function () {});
+  }
   if (!S.deck) S.deck = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
   if (S.theme) applyTheme(S.theme);
   render();
@@ -3628,6 +3683,8 @@ export default {
       });
     }
 
+    if (url.pathname === "/thread") return handleThread(request, env);
+
     if (url.pathname === "/route") {
       if (request.method !== "POST") return json({ error: "Use POST" }, 405);
       return handleRoute(request, env);
@@ -3994,7 +4051,7 @@ async function readBody(request) {
 function buildState(prompt, contextCards) {
   if (!contextCards.length) return prompt;
   const history = contextCards
-    .map((c) => "User: " + c.q + "\nAssistant: " + (c.r || "(no reply)"))
+    .map((c) => "User: " + c.q + "\nAssistant: " + (c.a || c.r || "(no reply)"))
     .join("\n\n");
   return "Conversation so far:\n" + history + "\n\nNew message:\n" + prompt;
 }
@@ -5958,8 +6015,10 @@ async function handleCard(request, env) {
   const plan = planRoute(decision);
   const learned = prefsHint(await loadPrefs(env), material);
 
+  const thread = await loadThread(env);
   const systemBits = [
     CARD_OPS[op],
+    thread.note ? "This card is part of a continuing thread. What we are working on: " + thread.note + " Continue it; do not start over." : "",
     op === "template" ? await templateBit(env, body.template) : "",
     styleHint(decision),
     plan.pack.guidance,
@@ -6788,6 +6847,95 @@ async function handleRoute(request, env) {
   });
 }
 
+// ─── the thread ──────────────────────────────────────────────────────────────
+// What we are working on, kept with the app rather than only in the tab. The
+// note he writes and the last exchanges ride with every decision and every
+// answer, so a card continues the conversation instead of starting another.
+const THREAD_KEY = "thread:v1";
+const THREAD_KEEP = 12;
+
+async function loadThread(env) {
+  const store = ctxStore(env);
+  if (!store) return { note: "", exchanges: [] };
+  try {
+    const raw = await readMoved(env, store, THREAD_KEY);
+    const got = raw ? JSON.parse(raw) : null;
+    return {
+      note: String((got && got.note) || "").slice(0, 4000),
+      exchanges: Array.isArray(got && got.exchanges) ? got.exchanges.filter((x) => x && x.q).slice(-THREAD_KEEP) : [],
+      updated: (got && got.updated) || null,
+    };
+  } catch (err) {
+    return { note: "", exchanges: [] };
+  }
+}
+
+async function saveThread(env, patch) {
+  const store = ctxStore(env);
+  if (!store) return { error: "The thread needs a store", status: 503 };
+  const now = await loadThread(env);
+  const next = {
+    note: patch && patch.note != null ? String(patch.note).replace(/\s+/g, " ").trim().slice(0, 4000) : now.note,
+    exchanges: now.exchanges.slice(),
+    updated: new Date().toISOString(),
+  };
+  if (patch && patch.exchange && patch.exchange.q) {
+    next.exchanges.push({
+      q: String(patch.exchange.q).slice(0, 500),
+      a: String(patch.exchange.a || "").slice(0, 1200),
+      at: next.updated,
+    });
+    next.exchanges = next.exchanges.slice(-THREAD_KEEP);
+  }
+  try {
+    await store.put(THREAD_KEY, JSON.stringify(next));
+    return { ok: true, thread: next };
+  } catch (err) {
+    return { error: "Could not keep the thread: " + err.message, status: 503 };
+  }
+}
+
+async function handleThread(request, env) {
+  if (request.method === "GET") return json(await loadThread(env));
+  if (request.method !== "POST") return json({ error: "Use GET or POST" }, 405);
+  const { body, error } = await readBody(request);
+  if (error) return error;
+  const saved = await saveThread(env, { note: body.note });
+  if (saved.error) return json({ error: saved.error }, saved.status || 503);
+  return json({ ok: true, note: saved.thread.note, exchanges: saved.thread.exchanges, updated: saved.thread.updated });
+}
+
+// A question is not an answer. An earlier build kept the decision layer's own
+// question in memory, and serving it back puts that question on screen as the
+// card for ever: the same card, asking what to do, never doing it.
+function looksLikeClarifier(text, cards) {
+  const all = (Array.isArray(cards) ? cards : []).filter((c) => c && c.a);
+  if (all.length > 1) return false;
+  const one = String((all[0] && all[0].a) || text || "").trim();
+  if (!one || one.length > 320) return false;
+  return /\?$/.test(one) && /^(what|which|do|does|did|should|shall|can|could|would|will|is|are|how|who|when|where|why)\b/i.test(one);
+}
+
+// Every request is decided, including the ones answered out of memory. A hit is
+// not a reason to skip the decision: the domain, the care rules and the depth
+// belong to this moment, not to the day the answer was first written.
+async function decideForShortcut(env, prompt, body, step) {
+  const prefs = await loadPrefs(env);
+  const state = [prompt, prefsHint(prefs, prompt)].filter(Boolean).join("\n\n");
+  try {
+    const d = await decide(env, state, body.questions, prefs);
+    if (String(body.search || "").toLowerCase() === "yes") d.needs_web = 0.95;
+    if (String(body.search || "").toLowerCase() === "no") d.needs_web = 0.02;
+    if (step) {
+      step("decide", "domain " + d.domain + " · intent " + d.intent + " · depth " + d.depth + (d.needs_web != null ? " · web " + d.needs_web : ""));
+    }
+    return { decision: d, error: null };
+  } catch (err) {
+    if (step) step("decide", "clef-flash failed: " + err.message);
+    return { decision: null, error: err.message };
+  }
+}
+
 async function handleChat(request, env, emit) {
   const { body, error } = await readBody(request);
   if (error) return error;
@@ -6833,6 +6981,14 @@ async function handleChat(request, env, emit) {
 
   const prompt = String(body.prompt || "").trim();
 
+  // The thread rides with the question: what he typed as the thread, or what the
+  // app last kept. Both the decision and the answer read it.
+  const threadNow = await loadThread(env);
+  const threadNote = String(body.thread_note != null && body.thread_note !== "" ? body.thread_note : threadNow.note || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 1200);
+
   // What this question runs on. A pick is a preference, so it is also never
   // served from what another model remembered.
   const pick = await pickModel(env, body);
@@ -6852,17 +7008,24 @@ async function handleChat(request, env, emit) {
     const approved = await approvedHit(env, prompt);
     if (approved) {
       step("approved", "signed off before, rank " + approved.rank);
+      // Signed off answers are still decided: the route, the domain and the care
+      // rules are this question's, and a card without a decision cannot be
+      // steered by any of them.
+      const agreed = await decideForShortcut(env, prompt, body, step);
+      const agreedSlim = agreed.decision ? slimDecision(agreed.decision) : null;
       const first = approved.cards[0] || { a: "" };
       return json({
         prompt,
         answer: first.a,
         response: first.a,
-        cards: approved.cards,
+        cards: approved.cards.map((c) => Object.assign({}, c, { decision: agreedSlim || c.decision || null })),
         provider: "approved",
         route: "approved",
         approved: true,
         rank: approved.rank,
         approved_at: approved.at,
+        decision: agreedSlim,
+        decision_error: agreed.error,
         thinking,
         cached: true,
       });
@@ -6876,17 +7039,27 @@ async function handleChat(request, env, emit) {
   // that made it.
   if (body.use_cache !== false && body.audit !== true) {
     const held = await storedHit(env, prompt);
-    if (held) {
+    if (held && looksLikeClarifier(held.record.answer, [])) {
+      // The record is a question asking what to do, not an answer to it. Serving
+      // it would put that question on screen instead of doing the work.
+      step("stored", "what is stored there is a question, not an answer, so it is decided fresh");
+    } else if (held) {
+      // Stored answers are decided too: the domain and the rules are this
+      // question's, and a card that arrives without them cannot be steered.
+      const judged = await decideForShortcut(env, prompt, body, step);
+      const judgedSlim = judged.decision ? slimDecision(judged.decision) : null;
       step("stored", held.layer + " · " + held.id);
       return json({
         prompt,
         answer: held.record.answer,
         response: held.record.answer,
-        cards: [{ q: prompt, a: held.record.answer, provider: "store", sources: held.record.sources || [] }],
+        cards: [{ q: prompt, a: held.record.answer, provider: "store", sources: held.record.sources || [], decision: judgedSlim }],
         provider: "store",
         route: "cache",
         source: "cache",
         cacheSource: held.layer,
+        decision: judgedSlim,
+        decision_error: judged.error,
         truth: { layer: held.layer, id: held.id, key: "truth:" + held.id },
         trace: ["cache:hit", "truth:" + held.id],
         approved: false,
@@ -6897,17 +7070,23 @@ async function handleChat(request, env, emit) {
     // Not held here: the other store may hold it, and a saved answer beats a
     // model asking what kind you mean.
     const far = await remoteTruth(env, prompt);
-    if (far) {
+    if (far && looksLikeClarifier(far.answer, [])) {
+      step("stored", "the other store holds a question, not an answer, so it is decided fresh");
+    } else if (far) {
+      const farJudged = await decideForShortcut(env, prompt, body, step);
+      const farSlim = farJudged.decision ? slimDecision(farJudged.decision) : null;
       step("stored", far.layer + " · " + far.id + " · truth worker");
       return json({
         prompt,
         answer: far.answer,
         response: far.answer,
-        cards: [{ q: prompt, a: far.answer, provider: "store", sources: far.sources }],
+        cards: [{ q: prompt, a: far.answer, provider: "store", sources: far.sources, decision: farSlim }],
         provider: "store",
         route: "cache",
         source: "cache",
         cacheSource: far.layer,
+        decision: farSlim,
+        decision_error: farJudged.error,
         truth: { layer: far.layer, id: far.id, query: far.query, remote: true, key: "truth:" + far.id },
         trace: ["cache:hit", "truth-worker:" + far.id],
         approved: false,
@@ -6921,7 +7100,10 @@ async function handleChat(request, env, emit) {
   // 0c. Long term — the same question, however long ago it was asked.
   if (env.LTM && body.use_cache !== false && !proxyWanted && body.audit !== true) {
     const remembered = await ltmGet(env, prompt);
-    if (remembered) {
+    if (remembered && looksLikeClarifier(remembered.answer, remembered.cards)) {
+      step("memory", "what was kept there is a question, not an answer, so it is decided fresh");
+    } else if (remembered) {
+      const recalled = await decideForShortcut(env, prompt, body, step);
       // An entry remembered before cards existed has none, and returning it
       // as-is puts an answer on screen with no decision card to press.
       const kept = Array.isArray(remembered.cards) ? remembered.cards.filter((c) => c && c.a) : [];
@@ -6943,7 +7125,8 @@ async function handleChat(request, env, emit) {
         cards: kept,
         provider: remembered.provider,
         route: "ltm",
-        decision: remembered.decision || null,
+        decision: recalled.decision ? slimDecision(recalled.decision) : remembered.decision || null,
+        decision_error: recalled.error,
         approved: false,
         cached: true,
         thinking,
@@ -6963,7 +7146,9 @@ async function handleChat(request, env, emit) {
   const said = Array.isArray(body.clarify) ? body.clarify.filter((c) => c && c.q) : [];
   // Taken as written: an instruction is obeyed on the first pass.
   const explicit = isDirective(prompt);
-  const told = said.length ? contextCards.concat(said.map((c) => ({ q: c.q, a: c.a }))) : contextCards;
+  const told = (threadNote ? [{ q: "What we are working on", a: threadNote }] : []).concat(
+    said.length ? contextCards.concat(said.map((c) => ({ q: c.q, a: c.a }))) : contextCards
+  );
   // Keep what he just told it before anything reads the preferences again.
   const learnedNow = said.length ? prefsHint(await rememberAnswers(env, prompt, said, prefs), prompt) : learned;
   // The decision model is chosen by window, so the state is only shrunk when no
@@ -7072,9 +7257,15 @@ async function handleChat(request, env, emit) {
       const cached = await cacheGet(env, key);
       if (cached) {
         const parsed = JSON.parse(cached);
+        // A question cached by an earlier build is not an answer: ask again
+        // rather than hand back a card that only asks what to do.
+        if (looksLikeClarifier(parsed.answer, parsed.cards)) throw new Error("cached a question, not an answer");
         step("cache", "answered before, served from KV");
         parsed.cached = true;
         parsed.route = "cache";
+        // Decided just now, on this question: the words are the cached ones, the
+        // decision on the card is not.
+        parsed.decision = decision ? slimDecision(decision) : parsed.decision || null;
         if (parsed.truth && parsed.truth.id) {
           const bumped = await touchTruth(env, parsed.truth.id);
           if (bumped) parsed.truth.seen = bumped.seen;
@@ -7153,7 +7344,11 @@ async function handleChat(request, env, emit) {
     ? "What he has told you, in his order. His principles stand above his own preferences, which stand above the principles for this domain, which stand above what chat has learned; where two of these disagree, the higher one wins.\n" +
       orderedText
     : "";
-  const systemBits = [styleHint(decision), plan.pack.guidance, plan.care ? plan.pack.safety : "", preferenceLine, instructionLine, stageHint(prefs, "cards"), lengthLine(cardsLimit)]
+  const threadLine = threadNote
+    ? "This is one continuing thread, not a fresh question. What we are working on: " + threadNote +
+      " Continue from it, keep its terms and its decisions, and do not start over."
+    : "";
+  const systemBits = [styleHint(decision), plan.pack.guidance, plan.care ? plan.pack.safety : "", preferenceLine, instructionLine, threadLine, stageHint(prefs, "cards"), lengthLine(cardsLimit)]
     .filter(Boolean);
   if (plan.pack.principles && plan.pack.principles.length) {
     systemBits.push(plan.pack.principles.join(" "));
@@ -7181,7 +7376,7 @@ async function handleChat(request, env, emit) {
       role: "system",
       content:
         "Earlier in this conversation:\n" +
-        contextCards.map((c) => "User: " + c.q + "\nAssistant: " + (c.r || "")).join("\n\n"),
+        contextCards.map((c) => "User: " + c.q + "\nAssistant: " + (c.a || c.r || "")).join("\n\n"),
     });
   }
   if (related.length) {
@@ -7791,6 +7986,15 @@ async function finish(
       route,
       cards: (cards || []).length,
     });
+    // The thread remembers what was actually said, so the next card can continue
+    // it even on another device.
+    const spoke = (cards || []).find((c) => c && String(c.a || "").trim());
+    if (spoke) {
+      try {
+        await saveThread(env, { exchange: { q: prompt, a: spoke.a } });
+        payload.thread = { kept: true };
+      } catch (err) {}
+    }
   }
   return json(payload);
 }
