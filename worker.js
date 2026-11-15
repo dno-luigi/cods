@@ -7352,6 +7352,7 @@ async function handleChat(request, env, emit) {
       provider,
       route,
       decision,
+      ara: araInfo,
       sources,
       trace,
       searchError,
