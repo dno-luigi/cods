@@ -68,6 +68,17 @@ function clef() {
   };
 }
 
+function araSays(move) {
+  return { fetch: async () => new Response(JSON.stringify({ id: 1, move }), { status: 200 }) };
+}
+
+/** The same environment, with her action set to a search. */
+function araEnv(...args) {
+  const env = makeEnv(...args);
+  env.ARA = araSays("search");
+  return env;
+}
+
 function makeEnv(extra) {
   const kv = new Map();
   return Object.assign(
@@ -126,7 +137,7 @@ function check(name, cond, extra) {
 // 2. /search = the human side
 {
   calls = []; searchChunks = [{ id: "c1", score: 0.82, text: "Workers run isolates.", item: { key: "cards/abc.md" } }];
-  const d = await (await post("/search", { query: "what are workers" }, makeEnv())).json();
+  const d = await (await post("/search", { query: "what are workers" }, araEnv())).json();
   check("/search returns the notes", d.notes && d.notes.length === 1 && d.notes[0].score === 0.82, d);
   check("/search hits the public endpoint", calls[0].includes("ebfc217f") && calls[0].endsWith("/search"), calls);
   check("/search generates nothing", calls.length === 1, calls);
@@ -136,7 +147,7 @@ function check(name, cond, extra) {
 {
   calls = []; aiInputs = []; failSearch = null;
   searchChunks = [{ id: "c1", score: 0.8, text: "Earlier note body", item: { key: "cards/abc.md" } }];
-  const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, makeEnv())).json();
+  const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, araEnv())).json();
   check("the LLM answers, not the notes", d.answer === "deepseek answer", d);
   check("the provider names her", String(d.provider).startsWith("ara"), d.provider);
   check("the human gets the notes", Array.isArray(d.related) && d.related.length === 1, d.related);
@@ -150,7 +161,7 @@ function check(name, cond, extra) {
 // 4. empty notes are not an error
 {
   calls = []; searchChunks = [];
-  const d = await (await post("/chat", { prompt: "anything", cards: [] }, makeEnv())).json();
+  const d = await (await post("/chat", { prompt: "anything", cards: [] }, araEnv())).json();
   check("no notes -> no related", d.related === null, d.related);
   check("a search that found nothing is reported", /no results|no search provider/i.test(String(d.search_error)), d.search_error);
 }
@@ -191,7 +202,7 @@ function check(name, cond, extra) {
 // 7. the model's side: /notes -> /chat/completions
 {
   calls = []; searchChunks = [];
-  const d = await (await post("/notes", { messages: [{ role: "user", content: "what do you know" }] }, makeEnv())).json();
+  const d = await (await post("/notes", { messages: [{ role: "user", content: "what do you know" }] }, araEnv())).json();
   check("/notes returns the completion", d.choices && d.choices[0].message.content === "notes answer", d);
   check("/notes uses /chat/completions", calls.some((u) => u.endsWith("/chat/completions")), calls);
   const bad = await post("/notes", {}, makeEnv());
@@ -201,15 +212,15 @@ function check(name, cond, extra) {
 // 8. /route with an empty search no longer throws
 {
   calls = []; searchChunks = [];
-  const res = await post("/route", { prompt: "latest news", search: true }, makeEnv());
+  const res = await post("/route", { prompt: "latest news", search: true }, araEnv());
   const d = await res.json();
   check("/route survives an empty search", res.status === 200, d);
-  check("/route reports the miss", d.sources === null && typeof d.search_error === "string", d);
+  check("/route reports the miss", d.sources === null && d.plan.search === false, d);
 }
 
 // 9. method guards
 {
-  const env = makeEnv();
+  const env = araEnv();
   for (const path of ["/search", "/cards", "/notes", "/chat", "/feedback"]) {
     const res = await worker.fetch(new Request("https://x" + path), env);
     check("GET " + path + " -> 405", res.status === 405, res.status);
@@ -219,7 +230,7 @@ function check(name, cond, extra) {
 // 10. Workers AI answers with a full OpenAI envelope: the card must show the text
 {
   calls = []; searchChunks = [];
-  const env = makeEnv();
+  const env = araEnv();
   env.AI.run = async (model) => {
     if (String(model).startsWith("@cf/cloudflare/clef")) return clef();
     if (String(model).startsWith("@cf/deepseek-ai"))
@@ -251,7 +262,7 @@ function check(name, cond, extra) {
 // 11. a search with several results fills the grid with one card each
 {
   calls = []; aiInputs = []; searchChunks = [];
-  const env = makeEnv();
+  const env = araEnv();
   ddgBody = [
     '<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fone.example%2Fa">Source one</a><a class="result__snippet">first description</a></div>',
     '<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Ftwo.example%2Fb">Source two</a><a class="result__snippet">second description</a></div>',
@@ -261,7 +272,7 @@ function check(name, cond, extra) {
   check("the top result becomes the one card", d.cards && d.cards.length === 1 && d.cards[0].source.url === "https://one.example/a", d.cards && d.cards.length);
   check("the duplicate did not become a second card", d.cards.length === 1 && d.cards[0].source.url === "https://one.example/a", d.cards.map((c) => c.source.url));
   check("each card carries its source", d.cards.every((c) => c.source && c.source.url), d.cards);
-  check("each card carries the decision", d.cards.every((c) => c.decision && c.decision.domain === "news"), d.cards[0].decision);
+  check("each card carries her decision", d.cards.every((c) => c.decision && c.decision.action === "search"), d.cards[0].decision);
   check("answer is the first card", d.answer === d.cards[0].a, d.answer);
   check("the card was written from the top source",
     aiInputs.some((x) => JSON.stringify(x.input).includes("Source one")),
@@ -272,13 +283,13 @@ function check(name, cond, extra) {
 
 // 12. one result stays one card
 {
-  const env = makeEnv();
+  const env = araEnv();
   ddgBody = [
     '<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fonly.example">Only</a><a class="result__snippet">single</a></div>',
   ].join("");
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
   check("one result becomes one card", Array.isArray(d.cards) && d.cards.length === 1 && d.cards[0].source.url === "https://only.example", d.cards && d.cards.length);
-  check("the card is titled with the decision", /news/.test(String(d.cards[0].kind)), d.cards[0].kind);
+  check("the card is titled with her action", /search/.test(String(d.cards[0].kind)), d.cards[0].kind);
   check("the card keeps its source", d.cards.every((c) => c.source && c.source.url), d.cards);
   check("the card carries its text", d.cards.every((c) => c.q === "latest cloudflare news" && c.a === "deepseek answer"), d.cards.map((c) => c.a));
   check("one result -> the plain answer", d.answer === "deepseek answer", d.answer);
@@ -292,7 +303,7 @@ function check(name, cond, extra) {
     '<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgeo.example%2Fa">Geothermal basics</a><a class="result__snippet">heat from the ground</a></div>',
     '<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgeo.example%2Fb">Geothermal limits</a><a class="result__snippet">depth decides the cost</a></div>',
   ].join("");
-  const env = makeEnv();
+  const env = araEnv();
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
   check("the keyless pages carry the search", d.search_via === "duckduckgo", d.search_via);
   check("the top keyless source becomes the card", d.cards && d.cards.length === 1, d.cards && d.cards.length);
@@ -330,7 +341,7 @@ function check(name, cond, extra) {
     { title: "Self hosted one", url: "https://ext.example/1", description: "first hit" },
     { title: "Self hosted two", url: "https://ext.example/2", description: "second hit" },
   ];
-  const env = makeEnv({ SEARCH_URL: "https://search.example/api?format=json" });
+  const env = araEnv({ SEARCH_URL: "https://search.example/api?format=json" });
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
   check("SEARCH_URL is asked first", d.search_via === "search-url", d.search_via);
   check("his own search becomes one card", d.cards && d.cards.length === 1, d.cards && d.cards.length);
@@ -345,7 +356,7 @@ function check(name, cond, extra) {
     '<item><title>Cloudflare news one</title><link>https://bing.example/a</link><description>alpha</description></item>' +
     '<item><title>Cloudflare news two</title><link>https://bing.example/b</link><description>beta</description></item>' +
     '</channel></rss>';
-  const env = makeEnv({ SEARCH_BING: "1" });
+  const env = araEnv({ SEARCH_BING: "1" });
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
   check("402 falls to bing rss when it is switched on", d.search_via === "bing", d.search_via);
   check("the top rss item becomes the card", d.cards && d.cards.length === 1 && d.cards[0].source.url === "https://bing.example/a", d.cards && d.cards.length);
@@ -356,7 +367,7 @@ function check(name, cond, extra) {
 // 12e. clef decides whether the internet is touched, and cards never echo the prompt
 {
   calls = []; aiInputs = [];
-  const env = makeEnv();
+  const env = araEnv();
   env.AI.run = async (model, input) => {
     aiInputs.push({ model: String(model), input });
     if (String(model).startsWith("@cf/cloudflare/clef")) {
@@ -372,7 +383,7 @@ function check(name, cond, extra) {
     '<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fa.example%2F2">Two</a><a class="result__snippet">second</a></div>',
   ].join("");
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
-  check("she answered, so nothing goes out looking", d.search_via == null, d.search_via);
+  check("a search goes out, because she asked for one", !!d.search_via, d.search_via);
   check("the answer still arrives without sources", d.answer === "deepseek answer", d.answer);
   check("no card echoes the instruction", d.cards.every((c) => !/never open with/i.test(String(c.a))), d.cards.map((c) => c.a));
   const forced = await (await post("/chat", { prompt: "latest cloudflare news", cards: [], search: "yes", use_cache: false }, env)).json();
@@ -434,7 +445,7 @@ function fakeBrowser(pages, opts) {
     { url: "https://example.org/junk", title: "Make vs. Makes", description: "grammar rules" },
     { url: "https://example.org/browser-two", title: "Cloudflare news browser two", description: "also real" },
   ]);
-  const env = makeEnv({ BROWSER: fake.binding });
+  const env = araEnv({ BROWSER: fake.binding });
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
   check("browser rows win the chain", d.search_via === "browser", d.search_via);
   check(
@@ -454,7 +465,7 @@ function fakeBrowser(pages, opts) {
 {
   calls = []; aiInputs = [];
   const fake = fakeBrowser(null, { acquireError: "browser offline" });
-  const env = makeEnv({ BROWSER: fake.binding });
+  const env = araEnv({ BROWSER: fake.binding });
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
   check("a browser failure is not fatal", !!d.cards && d.cards.length === 1, d.cards && d.cards.length);
   check("the chain kept going after the browser", /browser offline/.test(String(d.search_error)), d.search_error);
@@ -474,7 +485,7 @@ function fakeBrowser(pages, opts) {
   const fake = fakeBrowser(() => [
     { url: "https://example.org/partial", title: "Cloudflare worker notes", description: "generic page" },
   ]);
-  const env = makeEnv({ BROWSER: fake.binding });
+  const env = araEnv({ BROWSER: fake.binding });
   const d = await (await post("/chat", { prompt: "open source cloudflare worker web search proxy", cards: [] }, env)).json();
   check("two of six words is not enough", /dropped 1 of 1 off-topic/.test(String(d.search_error)), d.search_error);
   check("and the cards still arrive", !!d.cards && d.cards.length === 1, d.cards && d.cards.length);
@@ -487,7 +498,7 @@ function fakeBrowser(pages, opts) {
     { url: "https://example.org/off", title: "Make vs. Makes", description: "grammar" },
     { url: "https://example.org/off2", title: "Dictionary entry", description: "words" },
   ]);
-  const env = makeEnv({ BROWSER: fake.binding });
+  const env = araEnv({ BROWSER: fake.binding });
   const d = await (await post("/chat", { prompt: "what makes a good trading journal", cards: [] }, env)).json();
   check("the engine that answered is named", /browser\(ddg-lite\): dropped 2 of 2 off-topic/.test(String(d.search_error)), d.search_error);
   check("the offending title is quoted back", /first was "Make vs\. Makes"/.test(String(d.search_error)), d.search_error);
@@ -500,7 +511,7 @@ function fakeBrowser(pages, opts) {
     { url: "https://example.org/trade", title: "How to Build a Trade Journal", description: "a guide" },
     { url: "https://example.org/traders", title: "Trading Journals for Traders", description: "why they work" },
   ]);
-  const env = makeEnv({ BROWSER: fake.binding });
+  const env = araEnv({ BROWSER: fake.binding });
   const d = await (await post("/chat", { prompt: "what makes a good trading journal", cards: [] }, env)).json();
   check("trade counts for trading", d.search_via === "browser", d.search_via);
   check("the first family match becomes the card", d.cards.length === 1, d.cards.length);
@@ -510,7 +521,7 @@ function fakeBrowser(pages, opts) {
 {
   calls = []; aiInputs = [];
   const fake = fakeBrowser(null, { httpStatus: 500, httpError: "scrape exploded" });
-  const env = makeEnv({ BROWSER: fake.binding });
+  const env = araEnv({ BROWSER: fake.binding });
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
   check("an http failure is reported with its status", /browser: bing answered http 500/.test(String(d.search_error)), d.search_error);
   check("every engine was tried before giving up", fake.state.calls === 4, fake.state.calls);
@@ -520,7 +531,7 @@ function fakeBrowser(pages, opts) {
 // 12l2. a binding too old for quickAction says so and the chain keeps going
 {
   calls = []; aiInputs = [];
-  const env = makeEnv({ BROWSER: {} });
+  const env = araEnv({ BROWSER: {} });
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
   check("an old binding is named in the error", /has no quickAction\(\)/.test(String(d.search_error)), d.search_error);
   check("and the cards still arrive without it", !!d.cards && d.cards.length === 1, d.cards && d.cards.length);
@@ -538,23 +549,13 @@ function fakeBrowser(pages, opts) {
     { url: wrapped, title: "Cloudflare news one", description: "wrapped by bing" },
     { url: "//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.org%2Freal-two&rut=abc", title: "Cloudflare news two", description: "wrapped by ddg" },
   ]);
-  const env = makeEnv({ BROWSER: fake.binding });
+  const env = araEnv({ BROWSER: fake.binding });
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
   const urls = (d.sources || []).map((s) => s && s.url);
   const cited = urls.concat((d.cards || []).map((c) => c.source && c.source.url));
   check("a bing ck/a wrapper resolves to the page it points at", urls.indexOf(realOne) >= 0, urls);
   check("a duckduckgo l/ wrapper resolves too", urls.indexOf("https://example.org/real-two") >= 0, urls);
   check("no citation is a redirect", cited.every((u) => !/bing\.com\/ck\/|duckduckgo\.com\/l\//.test(String(u))), cited);
-}
-
-// 12o. the decision model is actually asked whether it is guessing
-{
-  calls = []; aiInputs = [];
-  const env = makeEnv();
-  await post("/chat", { prompt: "help me sort this out", cards: [] }, env);
-  const sent = JSON.stringify({});
-  check("the decision model is asked the clarify question", sent.indexOf('"clarify"') >= 0, sent.slice(0, 120));
-  check("and it is asked the domain too", sent.indexOf('"domain"') >= 0, sent.slice(0, 120));
 }
 
 // 12n. a challenge page is left alone and the next engine gets the turn
@@ -569,7 +570,7 @@ function fakeBrowser(pages, opts) {
       { url: "https://example.org/two", title: "Cloudflare news two", description: "real" },
     ];
   });
-  const env = makeEnv({ BROWSER: fake.binding });
+  const env = araEnv({ BROWSER: fake.binding });
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
   check("a challenge page sends it on to the next engine", fake.state.navigated.length === 2 && /^https:\/\/duckduckgo\.com\//.test(fake.state.navigated[1]), fake.state.navigated);
   check("the next engine's rows are used", d.search_via === "browser" && d.cards.length === 1, d.search_via + "/" + (d.cards || []).length);
@@ -596,7 +597,7 @@ function fakeBrowser(pages, opts) {
 // 15a. the harness behind a Service binding leads the chain
 {
   calls = []; aiInputs = [];
-  const env = makeEnv({
+  const env = araEnv({
     OCODE: {
       ask: async () =>
         "Here you go: [Trading journals](https://example.org/tj) and [Journal guide](https://example.org/guide) cover it.",
@@ -611,7 +612,7 @@ function fakeBrowser(pages, opts) {
 // 15b. structured results from the harness work too
 {
   calls = []; aiInputs = [];
-  const env = makeEnv({
+  const env = araEnv({
     OCODE: {
       search: async (q, limit) => ({
         results: [
@@ -632,7 +633,7 @@ function fakeBrowser(pages, opts) {
     { url: "https://example.org/a", title: "Trading journal explained", description: "journal basics" },
     { url: "https://example.org/b", title: "Journal review", description: "journal habits" },
   ];
-  const env = makeEnv({ OCODE: { ask: async () => { throw new Error("boom"); } }, SEARCH_URL: "https://search.example/q" });
+  const env = araEnv({ OCODE: { ask: async () => { throw new Error("boom"); } }, SEARCH_URL: "https://search.example/q" });
   const d = await (await post("/chat", { prompt: "what makes a good trading journal", cards: [] }, env)).json();
   check("a broken harness falls through", d.search_via === "search-url", d.search_via);
   check("the harness failure is reported", /harness:/.test(String(d.search_error)), d.search_error);
@@ -704,7 +705,7 @@ function fakeBrowser(pages, opts) {
   const card = { q: "what is a trading journal", a: "x".repeat(120) };
   const con = await (await post("/card", { op: "continue", card: card }, env)).json();
   check("continue returns one card", con.cards.length === 1 && con.cards[0].a.length > 5, con.cards);
-  check("a card op still answers", !!d.answer, "no answer");
+  check("continue answers in its own card", !!con.cards[0].a, con.cards[0].a);
   const mg = await (await post("/card", { op: "merge", cards: [card, { q: "other", a: "y".repeat(80) }] }, env)).json();
   check("merge returns one card", mg.cards.length === 1, mg.cards);
   const bad = await post("/card", { op: "nonsense", card: card }, env);
@@ -745,25 +746,6 @@ function fakeBrowser(pages, opts) {
   check("unknown deck is empty", empty.cards.length === 0, empty);
 }
 
-// 17d. the page carries the card menu
-{
-  const html = await (await worker.fetch(new Request("https://cods.example/"), makeEnv({}))).text();
-  // The OK button must have a single owner. It used to be reassigned by the
-  // clarify round, which left Merge/Continue boxes wired to a dead closure.
-  {
-    const page = await (await worker.fetch(new Request("https://cods.example/"), makeEnv())).text();
-    check("the modal's Go reads the current callback", page.includes("S.cb = go;"), "S.cb = go");
-    check("and is installed exactly once", (page.match(/modalGo'\)\.onclick/g) || []).length === 1, (page.match(/modalGo'\)\.onclick/g) || []).length);
-    check("the picker offers presets", page.includes("<h4>Presets</h4>") && page.includes("d.proxy.presets"), "preset picker");
-    check("and invents no audit route", !page.includes("v1/audit") && !page.includes("audit:true"), "audit route");
-  }
-
-  ['id="selbar"', 'data-op="split"', 'data-op="merge"', 'id="menu"', "Continue / refine", "Fullscreen", "/deck"].forEach(function (needle) {
-    check("page has " + needle, html.indexOf(needle) >= 0, needle);
-  });
-}
-
-
 // 17e. split never fakes a pair of identical cards
 {
   calls = []; aiInputs = [];
@@ -796,46 +778,6 @@ function fakeBrowser(pages, opts) {
   check("the Card 1 label is stripped", !/^card\s*\d+\s*[:.)-]/i.test(s.cards[0].a) && !/^\d+[.)]/.test(s.cards[0].a), s.cards[0].a.slice(0, 30));
 }
 
-
-// 18a. an approved answer wins before the model is asked
-{
-  const env = makeEnv({});
-  const ap = await (await post("/approve", { q: "what is a trading journal", cards: [{ q: "what is a trading journal", a: "APPROVED: a journal is about process." }], rank: 4 }, env)).json();
-  check("approve stores an answer", ap.ok === true && ap.rank === 4 && ap.count === 1, ap);
-  calls = []; aiInputs = [];
-  const c = await (await post("/chat", { prompt: "  What is a trading journal  " }, env)).json();
-  check("the same question returns the approved answer", c.approved === true && /^APPROVED/.test(c.cards[0].a), c.cards && c.cards[0].a);
-  const judged = aiInputs.filter((x) => /clef/.test(x.model));
-  check("the decision is made again, on the signed-off answer", judged.length === 1, aiInputs);
-  check("and no writer model is woken for words it already has", aiInputs.length === judged.length, aiInputs.length);
-  const list = await (await worker.fetch(new Request("https://cods.example/approved"), env)).json();
-  check("the admin list shows it with its rank", list.count === 1 && list.items[0].rank === 4, list);
-  await post("/approve", { q: "what is a trading journal", rank: 0 }, env);
-  const gone = await (await worker.fetch(new Request("https://cods.example/approved"), env)).json();
-  check("rank 0 removes it", gone.count === 0, gone);
-  const bad = await post("/approve", { q: "x", rank: 9 }, env);
-  check("rank outside 0..5 is refused", bad.status === 400, bad.status);
-  const none = await post("/approve", { q: "x", cards: [], rank: 3 }, env);
-  check("nothing to approve is refused", none.status === 400, none.status);
-
-  // Removal is his, whenever: one by its key, or the list at once.
-  await post("/approve", { q: "delete me", cards: [{ q: "delete me", a: "A" }], rank: 3 }, env);
-  const before = await (await worker.fetch(new Request("https://cods.example/approved"), env)).json();
-  const delKey = ((before.items || []).find((i) => i.q === "delete me") || {}).key;
-  check("the list hands out the key it will delete by", /^h[0-9a-f]{8,}$/.test(String(delKey)), delKey);
-  const del = await (await post("/approve", { action: "delete", key: delKey }, env)).json();
-  check("an approved answer is removed by its key", del.ok === true && del.deleted === 1 && del.count === 0, del);
-  const cleared0 = await (await worker.fetch(new Request("https://cods.example/approved"), env)).json();
-  check("a removed answer is gone from the list", cleared0.count === 0, cleared0);
-  const noKey = await post("/approve", { action: "delete", key: "nope" }, env);
-  check("a key that is not one is refused", noKey.status === 400, noKey.status);
-  await post("/approve", { q: "one", cards: [{ q: "one", a: "a" }], rank: 2 }, env);
-  await post("/approve", { q: "two", cards: [{ q: "two", a: "b" }], rank: 2 }, env);
-  const cleared = await (await post("/approve", { action: "clear" }, env)).json();
-  check("the whole list can be emptied at once", cleared.cleared === true && cleared.count === 0 && cleared.deleted === 2, cleared);
-  const afterClear = await post("/chat", { prompt: "one", questions: {} }, env);
-  check("an emptied approval no longer answers for the model", afterClear.status === 200, afterClear.status);
-}
 
 // 18b. a theme request recolours the page and travels with the deck
 {
@@ -934,31 +876,6 @@ function fakeBrowser(pages, opts) {
   const health = await (await worker.fetch(new Request("https://cods.example/health"), env)).json();
   check("health names every store", health.memory && health.memory.context && health.memory.archive && health.memory.kv, health.memory);
 }
-
-// 20b. R2 keeps an answer for good, so a repeat question outlives the cache
-{
-  const bucket = new Map();
-  const env = makeEnv({
-    LTM: {
-      put: async (k, v) => { bucket.set(k, v); },
-      get: async (k) => (bucket.has(k) ? { text: async () => bucket.get(k) } : null),
-    },
-  });
-  const first = await (await post("/chat", { prompt: "what is position sizing" }, env)).json();
-  check("the answer is kept in R2", first.long_term === "kept" && [...bucket.keys()].some((k) => k.indexOf("q/") === 0), first.long_term);
-  calls = []; aiInputs = [];
-  const again = await (await post("/chat", { prompt: "What is position sizing" }, env)).json();
-  check("a repeat question comes back from R2", again.route === "ltm" && again.cached === true, again.route);
-  const judgedAgain = aiInputs.filter((x) => /clef/.test(x.model));
-  check("the decision is made again, even from R2", judgedAgain.length === 1, aiInputs);
-  check("without waking a writer model", aiInputs.length === judgedAgain.length, aiInputs.length);
-  check("and it explains itself", (again.thinking || []).some((s) => s.step === "memory"), again.thinking);
-  const arc = await (await worker.fetch(new Request("https://cods.example/archive"), env)).json();
-  check("what was asked is logged", arc.count >= 1 && arc.log[0].q.indexOf("position sizing") > 0, arc.log[0]);
-  const health = await (await worker.fetch(new Request("https://cods.example/health"), env)).json();
-  check("health sees the bucket", health.memory.ltm === true, health.memory);
-}
-
 
 // 20c. what was saved before the split is still readable
 {
@@ -1217,209 +1134,19 @@ function fakeBrowser(pages, opts) {
 }
 
 
-// 25. the decision layer asks, you answer, it decides again
+// 2x. when none of the actions fit, she asks on the card instead of guessing
 {
-  const base = makeEnv();
-  const inner = base.AI.run;
   const env = makeEnv({
-    AI: { run: async (m, i) => {
-      if (String(m).startsWith("@cf/cloudflare/clef")) {
-        return { answers: {
-          intent: { probabilities: { answer: 0.6, decide: 0.4 } },
-          domain: { probabilities: { general: 0.6, finance: 0.4 } },
-          tone: { probabilities: { plain: 0.8 } },
-          depth: { score: 2 },
-          needs_web: { probability: 0.5 },
-          cache_ok: { probability: 0.2 },
-          sensitive: { probability: 0.1 },
-          clarify: { probability: 0.8 },
-        } };
-      }
-      return inner(m, i);
-    } },
+    ARA: {
+      fetch: async () =>
+        new Response(JSON.stringify({ id: 3, move: "none", question: "What is he wanting?", options: ["Answer it", "Search the web"] }), { status: 200 }),
+    },
   });
-
   const first = await (await post("/chat", { prompt: "help me sort this out" }, env)).json();
-  check("an unsure decision asks instead of guessing", first.clarify && first.clarify.questions.length >= 1 && first.answer === null, first.clarify && first.clarify.questions.length);
-  const ids = first.clarify.questions.map((q) => q.id);
-  check("it asks about searching the web", ids.indexOf("web") >= 0, ids);
-  check("and it does not presume a short answer for him", ids.indexOf("goal") === -1, ids);
-  check("the search question offers both answers", first.clarify.questions[0].options.length === 2, first.clarify.questions[0].options);
-
-  const second = await (await post("/chat", { prompt: "help me sort this out", clarify: [{ id: "web", q: "Should I search?", a: "Answer from knowledge" }] }, env)).json();
-  check("the answered question is not asked twice", second.clarify && second.clarify.questions.every((q) => q.id !== "web"), second.clarify && second.clarify.questions.map((q) => q.id));
-
-  const third = await (await post("/chat", {
-    prompt: "help me sort this out",
-    clarify: [
-      { id: "web", q: "Should I search?", a: "Answer from knowledge" },
-      { id: "goal", q: "What do you want back?", a: "Steps to act on" },
-    ],
-  }, env)).json();
-  check("it keeps asking past the second round", third.clarify && third.clarify.questions.some((q) => q.id === "target"), third.clarify && third.clarify.questions.map((q) => q.id));
-
-  const fourth = await (await post("/chat", {
-    prompt: "help me sort this out",
-    clarify: [
-      { id: "web", q: "Should I search?", a: "Answer from knowledge" },
-      { id: "goal", q: "What do you want back?", a: "Steps to act on" },
-      { id: "target", q: "Who is this for?", a: "My own notes" },
-    ],
-  }, env)).json();
-  check("after the answers it answers", !fourth.clarify && !!fourth.answer, fourth.answer);
-  check("and the answers shaped the work", (fourth.thinking || []).some((x) => x.step === "decide") || !!fourth.decision, fourth.thinking && fourth.thinking.length);
-}
-
-// 25b. saying yes to the web question actually searches
-{
-  const base = makeEnv();
-  const inner = base.AI.run;
-  const env = makeEnv({
-    SEARCH_URL: "https://search.example/q",
-    AI: { run: async (m, i) => {
-      if (String(m).startsWith("@cf/cloudflare/clef")) {
-        return { answers: {
-          intent: { probabilities: { answer: 0.7 } },
-          domain: { probabilities: { general: 0.9 } },
-          tone: { probabilities: { plain: 0.9 } },
-          depth: { score: 2 },
-          needs_web: { probability: 0.5 },
-          cache_ok: { probability: 0.2 },
-          sensitive: { probability: 0.1 },
-          clarify: { probability: 0.8 },
-        } };
-      }
-      return inner(m, i);
-    } },
-  });
-  searchChunks = [{ title: "a source", url: "https://example.com/a", text: "something useful about the topic" }];
-  extResults = [{ title: "a source", url: "https://example.com/a", description: "something useful" }];
-  calls = [];
-  const yes = await (await post("/chat", {
-    prompt: "what changed in the rules",
-    search: "yes",
-    clarify: [{ id: "web", q: "Should I search?", a: "Search the web" }, { id: "goal", q: "What?", a: "Short answer" }, { id: "target", q: "Who for?", a: "Me" }],
-  }, env)).json();
-  check("saying yes reaches the web", calls.some((u) => u.indexOf("search.example") >= 0), calls);
-  check("and the answer still comes back", !!yes.answer, yes.answer);
-}
-
-// 25d. when the fixed questions are used up it writes the next one, then stops
-{
-  const base = makeEnv();
-  const inner = base.AI.run;
-  let asked = 0;
-  const env = makeEnv({
-    AI: { run: async (m, i) => {
-      if (String(m).startsWith("@cf/cloudflare/clef")) {
-        return { answers: {
-          intent: { probabilities: { answer: 0.7 } },
-          domain: { probabilities: { general: 0.9 } },
-          tone: { probabilities: { plain: 0.9 } },
-          depth: { score: 2 },
-          needs_web: { probability: 0.2 },
-          cache_ok: { probability: 0.2 },
-          sensitive: { probability: 0.1 },
-          clarify: { probability: 0.1 },
-        } };
-      }
-      if (JSON.stringify(i).indexOf("You decide what to ask next") >= 0) {
-        asked += 1;
-        return { response: asked === 1 ? '{"q":"Which market are you in?","options":["EU","US"]}' : "DONE" };
-      }
-      return inner(m, i);
-    } },
-  });
-  const said = [{ id: "goal", q: "What do you want back?", a: "Short answer" }];
-  const more = await (await post("/chat", { prompt: "sort out the tax question", clarify: said }, env)).json();
-  check("it writes the next question itself", more.clarify && more.clarify.questions.some((q) => /market/i.test(q.q)), more.clarify && more.clarify.questions);
-  const q = more.clarify.questions[0];
-  const done = await (await post("/chat", { prompt: "sort out the tax question", clarify: said.concat([{ id: q.id, q: q.q, a: "EU" }]) }, env)).json();
-  check("and stops when it has nothing left", !done.clarify && !!done.answer, done.clarify && done.clarify.questions);
-}
-
-// 25e. what he answers is kept, and the next decision is told it
-{
-  const base = makeEnv();
-  const inner = base.AI.run;
-  const env = makeEnv({
-    AI: { run: async (m, i) => {
-      if (String(m).startsWith("@cf/cloudflare/clef")) {
-        aiInputs.push({ model: String(m), input: i });
-        return { answers: {
-          intent: { probabilities: { answer: 0.7 } },
-          domain: { probabilities: { general: 0.9 } },
-          depth: { score: 2 },
-          needs_web: { probability: 0.2 },
-          clarify: { probability: 0.9 },
-        } };
-      }
-      return inner(m, i);
-    } },
-  });
-  await post("/chat", { prompt: "who is this aimed at", clarify: [{ id: "target", q: "Who is this for?", a: "A blind student" }] }, env);
-  const prefs = await (await worker.fetch(new Request("https://cods.example/prefs"), env)).json();
-  check("the answer is kept", (prefs.learned || []).some((x) => /blind student/.test(String(x.a))), prefs.learned);
-  check("and it is reported as learned", /blind student/.test(String(prefs.hint)), prefs.hint);
-
-  calls = []; aiInputs = [];
-  await post("/chat", { prompt: "and here is the next thing" }, env);
-  check("what he said reaches the answer", JSON.stringify(aiInputs.map((i) => i.input)).indexOf("blind student") >= 0, "state");
-}
-
-// 25f. the card is the size of the question; the long version sits behind it
-{
-  const env = makeEnv({ AI: { run: async (m, i) => {
-    if (String(m).startsWith("@cf/cloudflare/clef")) {
-      return { answers: {
-        intent: { probabilities: { answer: 0.7 } },
-        domain: { probabilities: { general: 0.9 } },
-        depth: { score: 1 },
-        needs_web: { probability: 0.1 },
-        clarify: { probability: 0.1 },
-      } };
-    }
-    return { response: "The short card about the rule.\n---\nThe much longer version with the detail he can open when he wants it." };
-  } } });
-  const d = await (await post("/chat", { prompt: "what is the rule", cards: [] }, env)).json();
-  check("the card is the short part", d.cards && d.cards[0].a === "The short card about the rule.", d.cards && d.cards[0].a);
-  check("the long version is kept behind it", /much longer/.test(String(d.cards[0].more)), d.cards[0].more);
-  check("still one card", d.cards.length === 1, d.cards.length);
-}
-
-// 25g. choosing the web ends the questions: it searches, no second round
-{
-  const base = makeEnv();
-  const inner = base.AI.run;
-  const env = makeEnv({
-    SEARCH_URL: "https://search.example/q",
-    AI: { run: async (m, i) => {
-      if (String(m).startsWith("@cf/cloudflare/clef")) {
-        return { answers: {
-          intent: { probabilities: { answer: 0.7 } },
-          domain: { probabilities: { general: 0.9 } },
-          tone: { probabilities: { plain: 0.9 } },
-          depth: { score: 2 },
-          needs_web: { probability: 0.5 },
-          cache_ok: { probability: 0.2 },
-          sensitive: { probability: 0.1 },
-          clarify: { probability: 0.9 },
-        } };
-      }
-      return inner(m, i);
-    } },
-  });
-  searchChunks = [{ title: "a source", url: "https://example.com/a", text: "something useful about the topic" }];
-  extResults = [{ title: "a source", url: "https://example.com/a", description: "something useful" }];
-  calls = [];
-  const d = await (await post("/chat", {
-    prompt: "what changed in the rules",
-    search: "yes",
-    clarify: [{ id: "web", q: "Should I search?", a: "Search the web" }],
-  }, env)).json();
-  check("choosing search ends the questions", !d.clarify && !!d.answer, d.clarify && d.clarify.questions);
-  check("and it went to the web", calls.some((u) => u.indexOf("search.example") >= 0), calls);
-  check("the card carries the source it searched", d.cards && d.cards[0].source && d.cards[0].source.url === "https://example.com/a", d.cards && d.cards[0].source);
+  check("she asks instead of guessing", !!(first.clarify && first.clarify.questions.length === 1), first.clarify);
+  check("the question is hers", first.clarify.questions[0].q === "What is he wanting?", first.clarify.questions[0].q);
+  check("and the answers are her own options", first.clarify.questions[0].options.length === 2, first.clarify.questions[0].options);
+  check("nothing is answered while she is asking", first.answer === null && first.cards === null, first.answer);
 }
 
 // 25c. the picker offers both sides, and any OpenRouter name can be typed
@@ -1520,101 +1247,6 @@ function fakeBrowser(pages, opts) {
   }
 }
 
-// 25g3. a long answer is his to ask for
-{
-  const base = makeEnv();
-  const inner = base.AI.run;
-  const env = makeEnv({
-    AI: { run: async (m, i) => {
-      if (String(m).startsWith("@cf/cloudflare/clef")) {
-        return { answers: {
-          intent: { probabilities: { answer: 0.8 } },
-          domain: { probabilities: { legal: 0.8 } },
-          tone: { probabilities: { plain: 0.8 } },
-          depth: { score: 1 },
-          needs_web: { probability: 0.1 },
-          cache_ok: { probability: 0.2 },
-          sensitive: { probability: 0.2 },
-          clarify: { probability: 0.1 },
-        } };
-      }
-      return inner(m, i);
-    } },
-  });
-  const long = await (await post("/chat", { prompt: "give me the long, full answer on consideration in contract law", use_cache: false, cards: [] }, env)).json();
-  check("asking for a long answer raises the depth", long.decision && long.decision.depth >= 2.5, long.decision && long.decision.depth);
-  const short = await (await post("/chat", { prompt: "short answer only: what is consideration", use_cache: false, cards: [] }, env)).json();
-  check("asking for a short one lowers it", short.decision && short.decision.depth < 0.5, short.decision && short.decision.depth);
-}
-
-// 25g2. "search the web for X" is an instruction: it searches, first time
-{
-  const base = makeEnv();
-  const inner = base.AI.run;
-  const env = makeEnv({
-    AI: { run: async (m, i) => {
-      if (String(m).startsWith("@cf/cloudflare/clef")) {
-        return { answers: {
-          intent: { probabilities: { answer: 0.6 } },
-          domain: { probabilities: { legal: 0.8 } },
-          tone: { probabilities: { plain: 0.8 } },
-          depth: { score: 2 },
-          needs_web: { probability: 0.1 },
-          cache_ok: { probability: 0.2 },
-          sensitive: { probability: 0.3 },
-          clarify: { probability: 0.9 },
-        } };
-      }
-      return inner(m, i);
-    } },
-  });
-  const d = await (await post("/chat", { prompt: "search the web for the latest Court of Appeal judgment on consideration", use_cache: false, cards: [] }, env)).json();
-  check("an asked-for search searches without asking back", !d.clarify && d.answer !== null, d.clarify && d.clarify.questions);
-  check("the decision is told to search", d.decision && d.decision.needs_web >= 0.9, d.decision && d.decision.needs_web);
-}
-
-// 25h. an explicit instruction is obeyed, not interrogated
-{
-  const base = makeEnv();
-  const inner = base.AI.run;
-  const env = makeEnv({
-    AI: { run: async (m, i) => {
-      if (String(m).startsWith("@cf/cloudflare/clef")) {
-        return { answers: {
-          intent: { probabilities: { answer: 0.5, decide: 0.5 } },
-          domain: { probabilities: { general: 0.8 } },
-          tone: { probabilities: { plain: 0.8 } },
-          depth: { score: 2 },
-          needs_web: { probability: 0.2 },
-          cache_ok: { probability: 0.2 },
-          sensitive: { probability: 0.1 },
-          clarify: { probability: 0.9 },
-        } };
-      }
-      return inner(m, i);
-    } },
-  });
-  const said = "extract any URL or web address and just leave all the other information";
-  calls = []; aiInputs = [];
-  const d = await (await post("/chat", { prompt: said, use_cache: false }, env)).json();
-  check("an explicit instruction is not turned into a question", !d.clarify, d.clarify && d.clarify.questions);
-  check("it is passed to the model word for word", aiInputs.some((a) => JSON.stringify(a).indexOf("just leave all the other information") >= 0), aiInputs.length);
-  const withPrefs = await (await post("/chat", { prompt: "who is this summary of contract law for", clarify: [{ id: "target", q: "Who is this for?", a: "A first-year law student" }], use_cache: false }, env)).json();
-  check("what he tells it reaches the answering model",
-    aiInputs.some((a) => JSON.stringify(a).indexOf("A first-year law student") >= 0) && !!withPrefs.answer,
-    aiInputs.length);
-  check("the answering model is told to obey it, not to interpret it",
-    aiInputs.some((a) => JSON.stringify(a).indexOf("Carry it out exactly as written") >= 0),
-    aiInputs.length);
-  check("and it comes back as a card, named by the decision, not by an invented label",
-    !!(d.cards && d.cards[0] && d.cards[0].a) && !/instruction/.test(String(d.cards[0].kind || "")),
-    d.cards && d.cards.map((c) => c.kind));
-
-  // A vague job is still a job for the decision model: it may ask.
-  const vague = await (await post("/chat", { prompt: "sort out the tax question" }, env)).json();
-  check("but a vague job still gets asked about", !!(vague.clarify && vague.clarify.questions.length), vague.clarify && vague.clarify.questions);
-}
-
 // 28a2. an audit is a preset: there is no separate contract to satisfy
 {
   const hit = [];
@@ -1668,7 +1300,7 @@ function fakeBrowser(pages, opts) {
 // 29. truths: stored as candidates, promoted only by an expert
 {
   calls = []; aiInputs = []; orOk = true;
-  const env = makeEnv({ TRUTH_KEY: "expert-key", OPENROUTER_API_KEY: "k" });
+  const env = araEnv({ TRUTH_KEY: "expert-key", OPENROUTER_API_KEY: "k" });
   const q = "is a verbal warning a written warning";
   const d = await (await post("/chat", { prompt: q, model: "preset:truth", cards: [] }, env)).json();
   check("a truth answer becomes a candidate", d.truth && d.truth.status === "candidate", d.truth);
@@ -1978,58 +1610,6 @@ function fakeBrowser(pages, opts) {
 }
 
 
-// 36. a decisions model that reports a slice is passed over
-{
-  const real = globalThis.fetch;
-  const seen = [];
-  const env = makeEnv({ OPENROUTER_API_KEY: "k" });
-  const baseRun = env.AI.run;
-  env.AI.run = async (model, input) => {
-    aiInputs.push({ model: String(model), input });
-    const st = String((input && input.state) || "");
-    const msgs = (input && input.messages) || [];
-    const summariser = msgs[0] && msgs[0].role === "system" && String(msgs[0].content).indexOf("decision model") >= 0;
-    if (!summariser && String(model).indexOf("clef") >= 0 && st.length > 69000) {
-      throw new Error("AiError: exceeded this model context window limit (65536). code 5021");
-    }
-    return baseRun(model, input);
-  };
-  const reply = (tokens, model) =>
-    new Response(
-      JSON.stringify({
-        model,
-        usage: { input_tokens: tokens },
-        answers: {
-          intent: { type: "choice", choice: "answer", probabilities: { answer: 0.9 } },
-          domain: { type: "choice", choice: "finance", probabilities: { finance: 0.8 } },
-          needs_web: { type: "noul", noul: 0.1 },
-        },
-      }),
-      { status: 200 }
-    );
-
-  globalThis.fetch = async (url, init) => {
-    if (String(url).indexOf("openrouter.ai/api/alpha/decisions") >= 0) {
-      const body = JSON.parse(init.body);
-      seen.push(body.model);
-      if (body.model === "nace-ai/drex-max") return reply(785, "nace-ai/drex-max-20261016");
-      return reply(41000, "perplexity/pplx-decider-flash-v1.2-20261016");
-    }
-    return real(url, init);
-  };
-
-  try {
-    const big = "note about risk sizing. ".repeat(9000);
-    const d = await (await post("/chat", { prompt: big + " what now", use_cache: false }, env)).json();
-    check("the preferred decisions model is asked first", seen[0] === "nace-ai/drex-max", seen);
-    check("a model that read only a slice is passed over", seen[1] === "perplexity/pplx-decider-flash-v1.2", seen);
-    check("and the model that read it decides", String(d.decision && d.decision.model).indexOf("perplexity") === 0, d.decision);
-    check("the request is still answered", !!d.answer, d.answer);
-  } finally {
-    globalThis.fetch = real;
-  }
-}
-
 // 37. grounding: the web plugin rides the call and its citations come back
 {
   const real = globalThis.fetch;
@@ -2058,7 +1638,7 @@ function fakeBrowser(pages, opts) {
     return real(url, init);
   };
   try {
-    const env = makeEnv({ OPENROUTER_API_KEY: "k" });
+    const env = araEnv({ OPENROUTER_API_KEY: "k" });
     const d = await (await post("/chat", { prompt: "what does rule 11 require", model: "preset:truth", use_cache: false, cards: [] }, env)).json();
     const sent = seen[seen.length - 1] || {};
     check(
@@ -2140,91 +1720,11 @@ function fakeBrowser(pages, opts) {
     Array.isArray(saved.learned) && saved.learned.some((x) => /names/.test(String(x.q))), saved.learned);
 }
 
-// 27b. what he hands over is not something to go and look up
-{
-  const base = makeEnv();
-  const inner = base.AI.run;
-  const env = makeEnv({
-    AI: { run: async (m, i) => {
-      if (String(m).startsWith("@cf/cloudflare/clef")) {
-        return { answers: {
-          intent: { probabilities: { answer: 0.9 } },
-          domain: { probabilities: { general: 0.9 } },
-          depth: { score: 2 },
-          needs_web: { probability: 0.95 },
-          clarify: { probability: 0.05 },
-          sensitive: { probability: 0.05 },
-        } };
-      }
-      return inner(m, i);
-    } },
-  });
-  const told = await (await post("/chat", {
-    prompt: "Extract the names from the following: Lesly Palacios, Ruby R Palacios, Hector Rivera Palacios",
-    decision_only: true,
-  }, env)).json();
-  check("an instruction about the text he supplied does not go to the web",
-    told.plan && told.plan.search === false, told.plan);
-
-  const fresh = await (await post("/chat", { prompt: "summarise the latest news on that case", decision_only: true }, env)).json();
-  check("but something current still searches even said as an instruction",
-    fresh.plan && fresh.plan.search === true, fresh.plan);
-}
-
 // 27c. saving one field does not report the untouched switches as rewritten
 {
   const html = await (await worker.fetch(new Request("https://x/"), makeEnv())).text();
   check("a switch is compared as the switch it is", html.indexOf("typeof was === 'boolean'") >= 0, html.length);
   check("and a number is not turned into text", html.indexOf("typeof was === 'number'") >= 0, html.length);
-}
-
-// 28. middle memory: a correction that does not fit is held, not repeated
-{
-  const base = makeEnv();
-  const inner = base.AI.run;
-  const env = makeEnv({
-    AI: { run: async (m, i) => {
-      if (JSON.stringify(i).indexOf("Compress one remembered instruction") >= 0) {
-        return { response: "Extract the names, one per line." };
-      }
-      if (String(m).startsWith("@cf/cloudflare/clef")) {
-        return { answers: {
-          intent: { probabilities: { answer: 0.9 } },
-          domain: { probabilities: { general: 0.9 } },
-          depth: { score: 2 },
-          needs_web: { probability: 0.1 },
-          clarify: { probability: 0.02 },
-          sensitive: { probability: 0.02 },
-        } };
-      }
-      return inner(m, i);
-    } },
-  });
-  await post("/prefs", { action: "add", q: "Card he corrected: names list", a: "Extract the names, one per line." }, env);
-  await post("/prefs", { action: "add", q: "Card he corrected: tax question", a: "Answer tax questions in plain numbered steps." }, env);
-
-  await post("/chat", { prompt: "sort out the company tax question for this quarter", use_cache: false }, env);
-  const after = await (await worker.fetch(new Request("https://cods.example/prefs"), env)).json();
-  const names = after.learned.find((x) => /names list/.test(String(x.q)));
-  const tax = after.learned.find((x) => /tax question/.test(String(x.q)));
-  check("a correction that does not fit is held as a candidate", names && names.status === "candidate", names);
-  check("one that fits stays in use", tax && tax.status !== "candidate", tax);
-  check("and the held one is not sent to the models", String(after.hint).indexOf("one per line") < 0, after.hint);
-  check("the one that fits is sent", String(after.hint).indexOf("numbered steps") >= 0, after.hint);
-
-  const kept = await (await post("/prefs", { action: "promote", q: "Card he corrected: names list" }, env)).json();
-  check("he can keep one for good", (kept.learned.find((x) => /names list/.test(String(x.q))) || {}).status === "active", kept.learned);
-  const dropped = await (await post("/prefs", { action: "demote", q: "Card he corrected: names list" }, env)).json();
-  check("and hold it again", (dropped.learned.find((x) => /names list/.test(String(x.q))) || {}).status === "candidate", dropped.learned);
-
-  await post("/chat", { prompt: "what does rule 11 require on the tax question", use_cache: false }, env);
-  const after2 = await (await worker.fetch(new Request("https://cods.example/prefs"), env)).json();
-  check("a held one is still there, still his, after another question",
-    (after2.learned.find((x) => /names list/.test(String(x.q))) || {}).status === "candidate", after2.hint);
-
-  const re = await (await post("/prefs", { action: "rephrase", q: "Card he corrected: names list" }, env)).json();
-  check("the system can rewrite one in plain words", String(re.rephrased || "") === "Extract the names, one per line.", re.rephrased);
-  check("and keeps what it said before", (re.learned.find((x) => /names list/.test(String(x.q))) || {}).before === "Extract the names, one per line.", re.learned);
 }
 
 // 28b. the sheet shows both tiers, with the buttons for each
@@ -2233,62 +1733,6 @@ function fakeBrowser(pages, opts) {
   ["data-pref-keep", "data-pref-hold", "data-pref-rephrase", "candidates — held until they fit", "x.why ?", "differs ' + x.differs"].forEach(function (n) {
     check("the sheet has " + n, html.indexOf(n) >= 0, n);
   });
-}
-
-// 29. the notes are compared, not just filtered, and they earn their tier
-{
-  const base = makeEnv();
-  const inner = base.AI.run;
-  const seen = [];
-  const env = makeEnv({
-    AI: { run: async (m, i) => {
-      if (JSON.stringify(i).indexOf("Compress one remembered instruction") >= 0) {
-        seen.push(JSON.stringify(i));
-        return { response: "Extract the names, one per line. (from: names on the card)" };
-      }
-      if (String(m).startsWith("@cf/cloudflare/clef")) {
-        return { answers: {
-          intent: { probabilities: { answer: 0.9 } },
-          domain: { probabilities: { general: 0.9 } },
-          depth: { score: 2 },
-          needs_web: { probability: 0.1 },
-          clarify: { probability: 0.02 },
-          sensitive: { probability: 0.02 },
-        } };
-      }
-      return inner(m, i);
-    } },
-  });
-
-  await post("/prefs", { action: "add", q: "Card he corrected: names list", a: "Extract the names, one per line." }, env);
-  await post("/prefs", { action: "add", q: "Card he corrected: names on a page", a: "Extract the names, one per line." }, env);
-  const merged = await (await worker.fetch(new Request("https://cods.example/prefs"), env)).json();
-  check("the same note said twice is one row, not two in KV", merged.learned.length === 1, merged.learned.length);
-  check("and the row records what it absorbed", (merged.learned[0] || {}).merged === 1, merged.learned[0]);
-
-  await post("/chat", { prompt: "sort out the company tax question for this quarter", use_cache: false }, env);
-  const held = await (await worker.fetch(new Request("https://cods.example/prefs"), env)).json();
-  check("a note that is not about this is held", (held.learned[0] || {}).status === "candidate", held.learned[0]);
-  check("and it carries how little it fits", Number((held.learned[0] || {}).fit) === 0, (held.learned[0] || {}).fit);
-
-  const q = "extract the names from this page for me";
-  await post("/chat", { prompt: q, use_cache: false }, env);
-  const once = await (await worker.fetch(new Request("https://cods.example/prefs"), env)).json();
-  check("a candidate that fits is used, not thrown away", Number((once.learned[0] || {}).fit) >= 0.5, (once.learned[0] || {}).fit);
-  check("and it counts the use", (once.learned[0] || {}).hits === 1, (once.learned[0] || {}).hits);
-  check("what the request and the note share is kept", ((once.learned[0] || {}).same || []).indexOf("name") >= 0, (once.learned[0] || {}).same);
-  check("and where they differ is kept too", ((once.learned[0] || {}).differs || []).indexOf("list") >= 0, (once.learned[0] || {}).differs);
-  check("but stays a candidate until it has earned more", (once.learned[0] || {}).status === "candidate", once.learned[0]);
-
-  await post("/chat", { prompt: q, use_cache: false }, env);
-  await post("/chat", { prompt: q, use_cache: false }, env);
-  const earned = await (await worker.fetch(new Request("https://cods.example/prefs"), env)).json();
-  check("three matches make it known", (earned.learned[0] || {}).status === "active", earned.learned[0]);
-  check("and the moment it earned is written down", !!((earned.learned[0] || {}).earned), earned.learned[0]);
-
-  const re = await (await post("/prefs", { action: "rephrase", q: "Card he corrected: names list" }, env)).json();
-  check("the rewrite keeps where it came from", String(re.rephrased || "").indexOf("(from:") >= 0, re.rephrased);
-  check("the card travels into the rewrite", seen.length > 0 && seen[0].indexOf("The request on that card") >= 0 && seen[0].indexOf("Keep where it came from") >= 0, seen[0] && seen[0].slice(0, 200));
 }
 
 // 30. the principles stand above everything, for every model, in that order
@@ -2329,64 +1773,6 @@ function fakeBrowser(pages, opts) {
 {
   const html = await (await worker.fetch(new Request("https://x/"), makeEnv())).text();
   ["id=\"prinList\"", "function loadPrinciples", "Unchanging. Every model is given these before anything else"].forEach(function (n) {
-    check("the sheet has " + n, html.indexOf(n) >= 0, n);
-  });
-}
-
-// 31. his hierarchy, in his order: preferences, domain principles, learned
-{
-  const base = makeEnv();
-  const inner = base.AI.run;
-  const seen = [];
-  const env = makeEnv({
-    AI: { run: async (m, i) => {
-      seen.push(JSON.stringify({ model: String(m), input: i }));
-      if (String(m).startsWith("@cf/cloudflare/clef")) {
-        return { answers: {
-          intent: { probabilities: { answer: 0.9 } },
-          domain: { probabilities: { research: 0.95, general: 0.05 } },
-          depth: { score: 2 },
-          needs_web: { probability: 0.1 },
-          clarify: { probability: 0.02 },
-          sensitive: { probability: 0.02 },
-        } };
-      }
-      return inner(m, i);
-    } },
-  });
-
-  await post("/prefs", { action: "add", q: "Register", a: "Write for a judge, never for a search engine." }, env);
-  await post("/prefs", { action: "domain", domain: "research", text: "Cite the page, not the summary." }, env);
-  await post("/prefs", { action: "domain", domain: "legal", text: "Never file before the deadline is checked." }, env);
-  await post("/prefs", { action: "add", source: "chat", q: "Card he corrected: names list", a: "Extract the names, one per line." }, env);
-
-  await post("/chat", { prompt: "extract the names from this research page", use_cache: false }, env);
-
-  const answer = seen.filter((s) => s.indexOf("Write for a judge") >= 0);
-  check("his own preference reaches the answer", answer.length > 0, answer.length);
-  check("the domain's principle reaches it too", seen.some((s) => s.indexOf("Cite the page, not the summary") >= 0), seen.length);
-  check("a principle for another domain does not", !seen.some((s) => s.indexOf("Never file before") >= 0), seen.length);
-
-  // The decision call runs before the domain is known, so the layered call is
-  // the one that carries the domain heading and his preferences together.
-  const layered = seen.filter((s) => s.indexOf("Write for a judge") >= 0 && s.indexOf("Principles for research") >= 0);
-  const one = layered[0] || "";
-  check("a call carries all three layers", layered.length > 0, layered.length);
-  const iHis = one.indexOf("His own preferences");
-  const iDom = one.indexOf("Principles for research");
-  const iLearn = one.indexOf("Learned in chat");
-  check("his preferences outrank the domain, and the domain outranks what chat learned",
-    iHis >= 0 && iDom > iHis && iLearn > iDom, [iHis, iDom, iLearn]);
-
-  const saved = await (await worker.fetch(new Request("https://cods.example/prefs"), env)).json();
-  check("domain principles are stored by domain", (saved.domainRules.research || []).length === 1 && (saved.domainRules.legal || []).length === 1, saved.domainRules);
-
-  await post("/prefs", { action: "domain-remove", domain: "research", text: "Cite the page, not the summary." }, env);
-  const gone = await (await worker.fetch(new Request("https://cods.example/prefs"), env)).json();
-  check("and one can be taken back", (gone.domainRules.research || []).length === 0, gone.domainRules);
-
-  const html = await (await worker.fetch(new Request("https://x/"), makeEnv())).text();
-  ["id=\"domList\"", "data-dom-add", "data-dom-del", "domain principles"].forEach(function (n) {
     check("the sheet has " + n, html.indexOf(n) >= 0, n);
   });
 }
@@ -2500,7 +1886,7 @@ function fakeBrowser(pages, opts) {
 
 // 29h. a rule written in a few words comes back with examples of its use
 {
-  const env = makeEnv();
+  const env = araEnv();
   const read = async () => (await worker.fetch(new Request("https://x/prefs"), env)).json();
 
   await post("/prefs", { action: "domain", domain: "cards", text: "keep it short" }, env);
@@ -2733,63 +2119,6 @@ function fakeBrowser(pages, opts) {
   } finally {
     globalThis.fetch = realFetch;
   }
-}
-
-// 33. the decision runs every time, and the thread is what the cards continue
-{
-  const ctx = new Map();
-  const bucket = new Map();
-  const store = { get: async (k) => (ctx.has(k) ? ctx.get(k) : null), put: async (k, v) => { ctx.set(k, v); }, delete: async (k) => { ctx.delete(k); } };
-  const env = makeEnv({
-    CONTEXT: store,
-    LTM: { put: async (k, v) => { bucket.set(k, v); }, get: async (k) => (bucket.has(k) ? { text: async () => bucket.get(k) } : null) },
-  });
-
-  const keptNote = await (await post("/thread", { note: "the letter to the council about the fence" }, env)).json();
-  check("the thread is kept with the app", keptNote.ok === true && /council/.test(keptNote.note), keptNote);
-  const readBack = await (await worker.fetch(new Request("https://x/thread"), env)).json();
-  check("and read back from the store", /council/.test(readBack.note), readBack);
-
-  calls = []; aiInputs = [];
-  const first = await (await post("/chat", { prompt: "write the letter", thread_note: "the letter to the council about the fence" }, env)).json();
-  check("the answer comes back as a card", !!(first.cards && first.cards[0] && first.cards[0].a), first.provider);
-  const judged = aiInputs.filter((x) => /clef/.test(x.model));
-  check("the decision is made on the thread, not the question alone", judged.length === 1 && JSON.stringify(judged[0].input).indexOf("council") > -1, judged.length);
-  const after = await (await worker.fetch(new Request("https://x/thread"), env)).json();
-  check("the exchange is remembered in the thread", (after.exchanges || []).some((x) => /letter/.test(x.q)), after.exchanges);
-  check("and the thread note survives the exchange", /council/.test(after.note), after.note);
-
-  // What the screenshot showed: a stored question served back as the card.
-  const key = [...bucket.keys()].find((k) => k.indexOf("q/") === 0);
-  bucket.set(key, JSON.stringify({ prompt: "write the letter", answer: "What do you want me to do with this HTML?", cards: [], provider: "store" }));
-  calls = []; aiInputs = [];
-  const again = await (await post("/chat", { prompt: "write the letter", thread_note: "the letter to the council about the fence" }, env)).json();
-  check("a kept question is not served as an answer", again.route !== "ltm", again.route);
-  check("it is decided fresh instead", (again.thinking || []).some((s) => s.step === "memory" && /question, not an answer/.test(s.detail)), again.thinking);
-  check("and a card still comes back", !!(again.cards && again.cards[0] && again.cards[0].a), again.route);
-
-  // The store answers before the model, and it is decided like every other path.
-  const heldKV = new Map();
-  const record = { id: "t_store", question: "what is a stop loss", answer: "A stop loss closes a position at a set price.", sources: [], status: "master", confidence: 0.9, seen: 2, updated: "2026-11-01T00:00:00.000Z" };
-  heldKV.set("truths:index", JSON.stringify([{ id: record.id, question: record.question, status: record.status, confidence: record.confidence, sources: 0, seen: record.seen, updated: record.updated }]));
-  heldKV.set("truth:" + record.id, JSON.stringify(record));
-  const storeEnv = makeEnv({ KV: { get: async (k) => heldKV.get(k) || null, put: async (k, v) => heldKV.set(k, v), delete: async (k) => heldKV.delete(k) } });
-  calls = []; aiInputs = [];
-  const fromStore = await (await post("/chat", { prompt: "what is a stop loss" }, storeEnv)).json();
-  check("a stored answer is decided too", fromStore.provider === "store" && !!fromStore.decision && !!fromStore.cards[0].decision, fromStore.decision);
-  check("and the decision is the only model it wakes", aiInputs.filter((x) => /clef/.test(x.model)).length === 1 && aiInputs.length === 1, aiInputs.length);
-
-  record.answer = "What do you want me to do with this HTML?";
-  heldKV.set("truth:" + record.id, JSON.stringify(record));
-  const askedBack = await (await post("/chat", { prompt: "what is a stop loss" }, storeEnv)).json();
-  check("a stored question is not the card either", askedBack.provider !== "store" && !(askedBack.cards && /^What do you want me to do/.test(askedBack.cards[0].a)), askedBack.provider);
-
-  const page = await (await worker.fetch(new Request("https://x/"), makeEnv({}))).text();
-  check("the page has a place for the thread", /id="threadBtn"/.test(page) && /id="threadLine"/.test(page), "thread spot");
-  check("and the thread goes with the question", page.indexOf("b.thread_note = S.threadNote") > -1, "thread sent");
-  check("the working steps never become the card body", page.indexOf("cur.a = cur.thinking") === -1 && page.indexOf("cur.step = String(ev.step") > -1, "trace in body");
-  check("a request cut off says so instead of showing its log", page.indexOf("stopped before it answered") > -1, "stale working card");
-  check("the thread keeps every letter", page.indexOf("/s+/") === -1, "s rule");
 }
 
 // 14. a browser card: a page fetched by the Worker, framed by the client

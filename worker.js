@@ -7566,7 +7566,8 @@ function kindFor(decision, pick) {
 
 function decisionLabel(decision) {
   const d = decision || {};
-  return [d.domain, d.intent].filter(Boolean).join(" \u00b7 ") || null;
+  // Her action is the label: domain is no longer decided here.
+  return d.action || [d.domain, d.intent].filter(Boolean).join(" \u00b7 ") || null;
 }
 
 // A card is the size of the question, not the size of an essay. He reads these
@@ -7594,6 +7595,7 @@ function splitCard(text, budget) {
 function slimDecision(decision) {
   if (!decision) return null;
   return {
+    action: decision.action || null,
     intent: decision.intent,
     domain: decision.domain,
     depth: decision.depth,
