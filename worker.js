@@ -441,13 +441,13 @@ body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;dis
 .face{display:none;animation:pop .16s ease-out}
 .card:not(.flipped) .front{display:block}
 .card.flipped .back{display:block}
-/* The turn: the face being left drops away and the next one rises into place,
-   at the .16s ease-out this page already uses for a face (.face has it). No 3D,
-   no rotation, nothing borrowed from anywhere else. */
-@keyframes slipOut{to{opacity:0;transform:translateY(-6px)}}
-@keyframes slipIn{from{opacity:0;transform:translateY(6px)}}
-.card.slip-out{animation:slipOut .14s ease-in forwards;pointer-events:none}
-.card.slip-in{animation:slipIn .18s ease-out}
+/* The turn: the card swings edge-on, the faces swap while it cannot be seen, and
+   it swings back the other way - one 180 degree turn over 0.6s. The card itself
+   is untouched: same box, same height, same faces, same colours. */
+@keyframes slipOut{to{transform:perspective(1000px) rotateY(90deg)}}
+@keyframes slipIn{from{transform:perspective(1000px) rotateY(-90deg)}}
+.card.slip-out{animation:slipOut .3s cubic-bezier(.4,.2,.2,1) forwards;pointer-events:none}
+.card.slip-in{animation:slipIn .3s cubic-bezier(.4,.2,.2,1) both}
 @media (prefers-reduced-motion:reduce){.card.slip-out,.card.slip-in{animation:none!important}}
 @keyframes pop{from{opacity:.2;transform:translateY(3px)}to{opacity:1;transform:none}}
 .body{padding:8px 14px 12px;font-size:14px;line-height:1.62;word-break:break-word}
@@ -1057,10 +1057,10 @@ function slipFlip(id) {
     var fresh = document.querySelector('.card[data-id="' + id + '"]');
     if (fresh) {
       fresh.classList.add('slip-in');
-      setTimeout(function () { fresh.classList.remove('slip-in'); }, 200);
+      setTimeout(function () { fresh.classList.remove('slip-in'); }, 320);
     }
     delete SLIPPING[id];
-  }, 140);
+  }, 300);
 }
 function render() {
   $('count').textContent = String(S.cards.length);
