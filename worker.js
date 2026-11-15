@@ -4327,13 +4327,13 @@ async function askAra(env, text) {
     const res = await binder.fetch("https://ara/decide", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: String(text || ""), domain: "cards" }),
+      body: JSON.stringify({ text: String(text || ""), domain: "cards", surface: "cards" }),
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) return { ok: false, bound: true, reason: "ara_status_" + res.status };
     const data = await res.json();
     if (!data || data.refused || !data.move) return { ok: false, bound: true, reason: "ara_no_decision" };
-    return { ok: true, bound: true, id: data.id ?? null, move: data.move, route: data.route ?? null };
+    return { ok: true, bound: true, id: data.id ?? null, move: data.move, route: data.route ?? null, question: data.question ?? null, options: Array.isArray(data.options) ? data.options : null };
   } catch {
     return { ok: false, bound: true, reason: "ara_error" };
   }
@@ -7172,8 +7172,36 @@ async function handleChat(request, env, emit) {
     return json({ error: { code: "ara_no_decision", message: "ARA did not decide (" + ara.reason + ")." } }, 502);
   }
 
+  // She routes: `generate` means nothing stored answers it, so the shortcuts
+  // are skipped rather than serving an old answer under a new question.
+  // Her action names the work. Only a plain answer or a search may come from
+  // something already stored; a card op works on the table, not the store.
+  const mayShortcut = !ara.bound || ara.move === "answer" || ara.move === "search";
+
+  // She does not know what he is wanting. Her question goes on the card with her
+  // own options, so nothing has to be typed: tapping one is the answer, and not
+  // answering it costs him nothing.
+  if (ara.bound && ara.move === "none") {
+    step("ara", "no action fits, so the card asks");
+    return json({
+      prompt,
+      clarify: {
+        round: 0,
+        max: null,
+        questions: [{ id: "want", q: ara.question || "What are you wanting?", options: ara.options || [] }],
+        said: [],
+      },
+      decision: null,
+      answer: null,
+      cards: null,
+      thinking,
+      ara: araInfo,
+    });
+  }
+  const araInfo = ara.bound ? { id: ara.id, move: ara.move } : null;
+
   // 0. Approved — a question this person has signed off on answers itself.
-  if (body.use_approved !== false) {
+  if (body.use_approved !== false && mayShortcut) {
     const approved = await approvedHit(env, prompt);
     if (approved) {
       step("approved", "signed off before, rank " + approved.rank);
@@ -7206,7 +7234,7 @@ async function handleChat(request, env, emit) {
   // saved for it instead of reaching a model that has to ask what kind you mean.
   // A miss falls through to the ordinary path, where the answer names the model
   // that made it.
-  if (body.use_cache !== false && body.audit !== true) {
+  if (body.use_cache !== false && body.audit !== true && mayShortcut) {
     const held = await storedHit(env, prompt);
     if (held && looksLikeClarifier(held.record.answer, [])) {
       // The record is a question asking what to do, not an answer to it. Serving
@@ -7225,6 +7253,7 @@ async function handleChat(request, env, emit) {
         cards: [{ q: prompt, a: held.record.answer, provider: "store", sources: held.record.sources || [], decision: judgedSlim }],
         provider: "store",
         route: "cache",
+        ara: araInfo,
         source: "cache",
         cacheSource: held.layer,
         decision: judgedSlim,
@@ -7252,6 +7281,7 @@ async function handleChat(request, env, emit) {
         cards: [{ q: prompt, a: far.answer, provider: "store", sources: far.sources, decision: farSlim }],
         provider: "store",
         route: "cache",
+        ara: araInfo,
         source: "cache",
         cacheSource: far.layer,
         decision: farSlim,
@@ -7422,7 +7452,7 @@ async function handleChat(request, env, emit) {
 
   // 2. Cache — answered before?
   const key = await cacheKeyFor(prompt, contextCards, body, env);
-  if (cacheStore(env) && body.use_cache !== false) {
+  if (cacheStore(env) && body.use_cache !== false && mayShortcut) {
     try {
       const cached = await cacheGet(env, key);
       if (cached) {
@@ -7433,6 +7463,7 @@ async function handleChat(request, env, emit) {
         step("cache", "answered before, served from KV");
         parsed.cached = true;
         parsed.route = "cache";
+        parsed.ara = araInfo;
         // Decided just now, on this question: the words are the cached ones, the
         // decision on the card is not.
         parsed.decision = decision ? slimDecision(decision) : parsed.decision || null;
