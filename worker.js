@@ -7162,6 +7162,16 @@ async function handleChat(request, env, emit) {
   let pickError = "";
   if (!prompt) return json({ error: "No prompt" }, 400);
 
+  // 0. ARA — the first contact. No decision from her, no request — and
+  // before the shortcuts: a signed-off answer, a stored one and the other
+  // store's are all answers this worker would otherwise give without her seeing
+  // the question at all.
+  const ara = await askAra(env, prompt);
+  if (!ara.ok) {
+    step("ara", "no decision (" + ara.reason + ")");
+    return json({ error: { code: "ara_no_decision", message: "ARA did not decide (" + ara.reason + ")." } }, 502);
+  }
+
   // 0. Approved — a question this person has signed off on answers itself.
   if (body.use_approved !== false) {
     const approved = await approvedHit(env, prompt);
@@ -7328,13 +7338,6 @@ async function handleChat(request, env, emit) {
   };
   let state = fitted.state;
   const failures = [];
-
-  // 0. ARA — the first contact. No decision from her, no request.
-  const ara = await askAra(env, prompt);
-  if (!ara.ok) {
-    step("ara", "no decision (" + ara.reason + ")");
-    return json({ error: { code: "ara_no_decision", message: "ARA did not decide (" + ara.reason + ")." } }, 502);
-  }
 
   // 1. Decide — clef-flash classifies the request.
   let decision = null;
