@@ -1021,6 +1021,38 @@ function fakeBrowser(pages, opts) {
 }
 
 
+// 22b. a stored answer that is a whole page is framed, not printed as source
+{
+  const html = await (await worker.fetch(new Request("https://cods.example/"), makeEnv({}))).text();
+  const a = html.indexOf("function looksLikeDocument(");
+  const b = html.indexOf("/* end-doc */");
+  check("the document path ships in the page", a > -1 && b > a, a + ":" + b);
+  const lib = new Function(html.slice(a, b) + "; return { looksLikeDocument: looksLikeDocument, documentSrcdoc: documentSrcdoc, docFrame: docFrame };")();
+  const page = "<!DOCTYPE html><html><head><title>Deed</title></head><body><h1>Life Estate</h1></body></html>";
+  check("a page is recognised as a page", lib.looksLikeDocument(page) === true, "ok");
+  check("prose is not a page", lib.looksLikeDocument("**bold** answer with no page in it") === false, "ok");
+  check("html shown inside a fence is not framed", lib.looksLikeDocument("```html\n<!DOCTYPE html>\n```") === false, "ok");
+  const framed = lib.docFrame(page);
+  check("the page goes in a sandboxed frame",
+    framed.indexOf('<iframe class="doc-frame"') === 0 &&
+    framed.indexOf('sandbox="allow-scripts allow-modals allow-popups allow-forms"') > -1 &&
+    framed.indexOf("srcdoc=") > -1, framed.slice(0, 140));
+  const quoted = lib.docFrame('<html><body class="deed"><p>x</p></body></html>');
+  check("the frame\u2019s quotes cannot break the attribute", quoted.indexOf('srcdoc="') > -1 && quoted.indexOf("class=&quot;deed&quot;") > -1, "ok");
+  check("the page keeps its own head", framed.indexOf("<title>Deed</title>") > -1, "ok");
+  const bare = lib.docFrame("<p>hello</p>");
+  check("a page with no colours gets a light base",
+    bare.indexOf("html{background:#fff}") > -1 && bare.indexOf("html,body{color:#111}") > -1, "ok");
+  const styled = lib.docFrame("<html><head><style>body{background:#eef1f5;color:#20262e}</style></head><body>x</body></html>");
+  check("a page\u2019s own colours are never overridden",
+    styled.indexOf("html{background:#fff}") === -1 && styled.indexOf("html,body{color:#111}") === -1, "ok");
+  check("the card paints a page as a page",
+    html.indexOf("'<div class=\"body card-a\">' + answerHTML(c.showFull && c.more ? c.more : c.a)") > -1, "ok");
+  check("both answer views do too", html.split("answerHTML(c.a)").length - 1 === 2, html.split("answerHTML(c.a)").length - 1);
+  check("a page is not typed out", html.indexOf("if (looksLikeDocument(text)) return;") > -1, "ok");
+  check("the frame has its own size", html.indexOf(".doc-frame{display:block;width:100%") > -1 && html.indexOf(".fs-body .doc-frame{height:") > -1, "ok");
+}
+
 // 23. the OpenRouter proxy is one option, not the default
 {
   const seen = [];

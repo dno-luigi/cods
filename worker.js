@@ -455,6 +455,10 @@ body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;dis
 .front .card-q{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 .front .card-q.open{display:block;overflow:visible}
 .card-a{white-space:normal}
+/* A stored answer can be a whole page: it arrives as a frame, not as text. The
+   card keeps its own shape; the page scrolls inside it. */
+.doc-frame{display:block;width:100%;height:340px;border:1px solid var(--line);border-radius:10px;background:#fff}
+.fs-body .doc-frame{height:calc(100dvh - 108px)}
 :is(.card-a,.fs-body){-webkit-user-select:text;user-select:text;overflow-wrap:anywhere}
 :is(.card-a,.fs-body) p{margin:0 0 15px;line-height:1.68}
 :is(.card-a,.fs-body) p+p{margin-top:2px}
@@ -741,6 +745,37 @@ function md(t) {
   return out.join('');
 }
 /* end-md */
+// An answer can be a document, not prose: the truth store hands back whole
+// pages (a deed, a letter, a form) and markdown escapes them, so the card shows
+// the source instead of the page. Anything shaped like a document is framed
+// instead, sandboxed, and keeps the <style> it shipped with.
+function looksLikeDocument(t) {
+  // Fenced code is stripped first: explaining HTML should not make a frame.
+  var fence = String.fromCharCode(96, 96, 96);
+  var prose = String(t == null ? '' : t).split(fence).filter(function (x, k) { return k % 2 === 0; }).join('');
+  return /<!doctype\\s+html|<html[\\s>]|<head[\\s>]|<body[\\s>]|<style[\\s>]/i.test(prose);
+}
+// The page's own CSS is authoritative. The base only fills in what the page
+// left unsaid, because a page that names no colour would be black text on a
+// white frame - or invisible once that frame sits on a dark card.
+function documentSrcdoc(html) {
+  var text = String(html == null ? '' : html);
+  var css = (text.match(/<style[^>]*>[\\s\\S]*?<\\/style>/gi) || []).join(' ');
+  var base = '<style>' + (/background(-color)?\\s*:/i.test(css) ? '' : 'html{background:#fff}') +
+    (/(^|[;{\\s])color\\s*:/i.test(css) ? '' : 'html,body{color:#111}') + 'body{margin:0}</style>';
+  var head = '<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">' + base;
+  if (/<head[^>]*>/i.test(text)) return text.replace(/<head[^>]*>/i, function (tag) { return tag + head; });
+  if (/<html[^>]*>/i.test(text)) return text.replace(/<html[^>]*>/i, function (tag) { return tag + '<head>' + head + '</head>'; });
+  return '<!DOCTYPE html><html><head>' + head + '</head><body>' + text + '</body></html>';
+}
+function docFrame(html) {
+  // The page runs its own scripts, but without allow-same-origin it cannot
+  // reach this document, its cards or its storage.
+  var doc = documentSrcdoc(html).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+  return '<iframe class="doc-frame" title="Document" sandbox="allow-scripts allow-modals allow-popups allow-forms" srcdoc="' + doc + '"></iframe>';
+}
+function answerHTML(t) { return looksLikeDocument(t) ? docFrame(t) : md(t); }
+/* end-doc */
 function toast(m) {
   var t = $('toast');
   t.textContent = m;
@@ -1017,6 +1052,8 @@ function typeIn(c) {
   if (!node) return;
   var text = String(c.a || '');
   if (text.length < 40) return;
+  // A page is not typed out: revealing it would show its tags first.
+  if (looksLikeDocument(text)) return;
   var i = 0;
   node.textContent = '';
   var timer = setInterval(function () {
@@ -1039,7 +1076,7 @@ function cardHTML(c) {
       '<span class="dots" data-tts="' + id + '">' + (S.speaking === c.id ? 'stop' : 'play') + '</span>' +
       (c.more ? '<span class="dots" data-full="' + id + '">' + (c.showFull ? 'short' : 'long') + '</span>' : '') +
       '<span class="dots" data-dots="' + id + '">more</span></span></div>' +
-      marker(c) + '<div class="body card-a">' + md(c.showFull && c.more ? c.more : c.a) + '</div>' + meta(c) + shots(c) + notes(c) + fb(c) + '</div>' +
+      marker(c) + '<div class="body card-a">' + answerHTML(c.showFull && c.more ? c.more : c.a) + '</div>' + meta(c) + shots(c) + notes(c) + fb(c) + '</div>' +
     '<div class="via">via ' + esc(c.provider) + '</div></div>';
 }
 // Flip with the slip. The old path toggled the state and re-rendered, which
@@ -1447,7 +1484,7 @@ function clearSel() { S.sel = {}; render(); }
 
 function openFs(c) {
   S.fs = c.id;
-  $('fsBody').innerHTML = '<div class="card-q" style="color:var(--dim);font-size:13px;margin-bottom:10px">' + esc(c.q) + '</div>' + md(c.a);
+  $('fsBody').innerHTML = '<div class="card-q" style="color:var(--dim);font-size:13px;margin-bottom:10px">' + esc(c.q) + '</div>' + answerHTML(c.a);
   $('fs').classList.add('show');
 }
 function closeFs() { $('fs').classList.remove('show'); S.fs = null; }
@@ -2772,7 +2809,7 @@ $('fsFlip').onclick = function () {
   var c = byId(S.fs);
   if (!c) return;
   S.flip[c.id] = !S.flip[c.id];
-  $('fsBody').innerHTML = '<div class="card-q" style="color:var(--dim);font-size:13px;margin-bottom:10px">' + esc(c.q) + '</div>' + md(c.a);
+  $('fsBody').innerHTML = '<div class="card-q" style="color:var(--dim);font-size:13px;margin-bottom:10px">' + esc(c.q) + '</div>' + answerHTML(c.a);
 };
 // Speak your question: recorded here, transcribed by the Worker, dropped into
 // the prompt so it can be corrected before it is sent. Free and always on.
