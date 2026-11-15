@@ -156,7 +156,13 @@ body.view-full #grid { grid-template-columns: 1fr; }
 body.view-grid .card { min-height: 200px; }
 body.view-full .card { min-height: 55vh; }
 
-.card:hover { border-color: color-mix(in srgb, var(--p) 45%, var(--b)); }
+.card:hover {
+  border-color: color-mix(in srgb, var(--p) 45%, var(--b));
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.card:active { transform: translateY(0); }
 .card:focus-visible { box-shadow: 0 0 0 2px var(--p); }
 
 .card-body {
@@ -164,12 +170,12 @@ body.view-full .card { min-height: 55vh; }
   height: 100%;
   min-height: inherit;
   transform-style: preserve-3d;
-  transition: transform .5s cubic-bezier(.4, .2, .2, 1);
+  transition: transform .6s cubic-bezier(.4, .2, .2, 1);
 }
 
 .card.flip .card-body { transform: rotateY(180deg); }
 
-.card.new { animation: cardIn .25s ease both; }
+.card.new { animation: cardIn .4s ease both; }
 
 @keyframes cardIn {
   from { opacity: 0; transform: translateY(8px) scale(.98); }
@@ -240,6 +246,39 @@ body.view-full .face-c { font-size: 15px; line-height: 1.7; }
 .face.back .face-c { color: color-mix(in srgb, var(--t) 92%, var(--muted)); }
 
 /* selection state */
+.card.edited {
+  border-color: color-mix(in srgb, var(--p) 30%, var(--b));
+}
+
+.card.edited::before {
+  content: 'rewritten';
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  font-size: 9px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--dim);
+  pointer-events: none;
+}
+
+.face-edit {
+  width: 100%;
+  min-height: 96px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px dashed color-mix(in srgb, var(--p) 55%, var(--b));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--cb) 88%, var(--p));
+  color: var(--t);
+  font: inherit;
+  line-height: 1.6;
+  resize: vertical;
+  outline: none;
+}
+
+.face-edit:focus { border-style: solid; }
+
 .card.sel {
   border-color: var(--p);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--p) 70%, transparent);
@@ -787,4 +826,94 @@ body.view-full .face-c { font-size: 15px; line-height: 1.7; }
 
 @media (prefers-reduced-motion: reduce) {
   .card-body, #toast, .modal, .ctx-menu, .fab { transition: none; animation: none; }
+}
+
+/* ─── mini web browser ─── */
+.mb-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: none;
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: blur(6px);
+}
+
+.mb-overlay.show { display: block; }
+
+.mb-shell {
+  position: absolute;
+  inset: 3vh 2vw;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--b);
+  border-radius: var(--radius);
+  background: var(--cb);
+  overflow: hidden;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .45);
+}
+
+.mb-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--b);
+  background: color-mix(in srgb, var(--cb) 80%, var(--bg));
+}
+
+.mb-bar button, .mb-bar a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--b);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--t);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.mb-bar button:disabled { opacity: .35; cursor: default; }
+.mb-bar button:hover:not(:disabled), .mb-bar a:hover { border-color: var(--p); }
+.mb-bar .mb-go { border-color: color-mix(in srgb, var(--p) 60%, var(--b)); }
+
+.mb-bar input {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--b);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--t);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.mb-bar input:focus { border-color: var(--p); }
+
+.mb-view { flex: 1; min-height: 0; position: relative; background: #fff; }
+.mb-frame { width: 100%; height: 100%; border: 0; display: block; background: #fff; }
+.mb-shot { width: 100%; height: 100%; object-fit: contain; object-position: top center; background: var(--bg); }
+
+.mb-note {
+  padding: 6px 12px;
+  border-top: 1px solid var(--b);
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.mb-text {
+  margin: 0;
+  padding: 16px 18px;
+  height: 100%;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--cb);
+  color: var(--t);
+  font: 13px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace;
 }

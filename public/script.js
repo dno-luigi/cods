@@ -137,7 +137,11 @@
     cardEl(card, isNew) {
       const div = document.createElement('div');
       div.className =
-        'card' + (isNew ? ' new' : '') + (this.sel.has(card.id) ? ' sel' : '') + (card.locked ? ' locked' : '');
+        'card' +
+        (isNew ? ' new' : '') +
+        (this.sel.has(card.id) ? ' sel' : '') +
+        (card.locked ? ' locked' : '') +
+        (card.edited ? ' edited' : '');
       div.setAttribute('data-id', card.id);
       div.tabIndex = 0;
 
@@ -149,9 +153,11 @@
         '<div class="face"><div class="face-h"><span>Request</span><div class="actions">' +
         '<button type="button" onclick="app.openCtx(\'' + card.id + '\', event)" title="More"><i class="fas fa-ellipsis-v"></i></button>' +
         '<button type="button" onclick="app.toggleSel(\'' + card.id + '\', event)" title="Select"><i class="fas fa-check-circle"></i></button>' +
+        '<button type="button" onclick="app.editFace(\'' + card.id + '\',\'q\', event)" title="Rewrite note"><i class="fas fa-pen"></i></button>' +
         '</div></div><div class="face-c">' + this.md(card.q) + '</div></div>' +
         '<div class="face back"><div class="face-h"><span>Response</span><div class="actions">' +
         '<button type="button" onclick="app.readTTS(\'' + card.id + '\', event)" title="Play"><i class="fas fa-volume-up"></i></button>' +
+        '<button type="button" onclick="app.editFace(\'' + card.id + '\',\'r\', event)" title="Rewrite note"><i class="fas fa-pen"></i></button>' +
         '<button type="button" onclick="app.openCtx(\'' + card.id + '\', event)" title="More"><i class="fas fa-ellipsis-v"></i></button>' +
         '</div></div><div class="face-c">' + backHtml + '</div></div>' +
         '</div>';
@@ -171,6 +177,14 @@
           return;
         }
         div.classList.toggle('flip');
+      });
+
+      div.addEventListener('keydown', (e) => {
+        if (e.target !== div) return;
+        if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+          e.preventDefault();
+          div.classList.toggle('flip');
+        }
       });
 
       div.addEventListener('dblclick', (e) => {
@@ -200,6 +214,73 @@
       ['touchend', 'touchmove', 'touchcancel'].forEach((ev) =>
         div.addEventListener(ev, () => clearTimeout(longPress), { passive: true })
       );
+    },
+
+    /* ─── rewriting a note on a card ─── */
+    // The pencil turns that face into a textarea. The words are kept as he writes
+    // them: no round trip to a model, and the card says so afterwards.
+    editFace(id, side, ev) {
+      if (ev && ev.stopPropagation) ev.stopPropagation();
+      const card = this.cards.find((c) => c.id === id);
+      if (!card) return;
+      const node = document.querySelector('.card[data-id="' + id + '"]');
+      if (!node) return;
+      const faces = node.querySelectorAll('.face-c');
+      const box = side === 'q' ? faces[0] : faces[1];
+      if (!box || box.querySelector('textarea')) return;
+
+      const raw = side === 'q' ? card.q || '' : card.r || '';
+      box.innerHTML = '';
+      const ta = document.createElement('textarea');
+      ta.className = 'face-edit';
+      ta.value = raw;
+      box.appendChild(ta);
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+
+      let settled = false;
+      const finish = (keep) => {
+        if (settled) return;
+        settled = true;
+        if (keep) this.rewriteCard(id, side, ta.value);
+        else box.innerHTML = this.md(raw);
+      };
+      ta.addEventListener('click', (e) => e.stopPropagation());
+      ta.addEventListener('pointerdown', (e) => e.stopPropagation());
+      ta.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          finish(false);
+        }
+        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+          e.preventDefault();
+          finish(true);
+        }
+      });
+      ta.addEventListener('blur', () => finish(true));
+    },
+
+    rewriteCard(id, side, text) {
+      const card = this.cards.find((c) => c.id === id);
+      if (!card) return;
+      const clean = String(text == null ? '' : text).trim();
+      if (side === 'q') card.q = clean;
+      else card.r = clean;
+      card.edited = true;
+      card.editedAt = Date.now();
+
+      const node = document.querySelector('.card[data-id="' + id + '"]');
+      if (node) {
+        node.classList.add('edited');
+        const faces = node.querySelectorAll('.face-c');
+        const box = side === 'q' ? faces[0] : faces[1];
+        if (box) box.innerHTML = this.md(clean);
+      }
+      if (this.fsId === id && ge('fsBody')) ge('fsBody').innerHTML = this.md(card.r || '');
+      this.pushHist('Rewrite');
+      this.save();
+      toast('Note rewritten');
     },
 
     /* ─── card CRUD ─── */
@@ -282,6 +363,8 @@
       try {
         const answer = await this.ask(q, id);
         this.updCard(id, null, answer);
+        const landed = document.querySelector('.card[data-id="' + id + '"]');
+        if (landed) setTimeout(() => landed.classList.add('flip'), 100);
         this.addResultCards(q, id);
         this.checkActions(answer);
       } catch (e) {
@@ -361,6 +444,143 @@
       Array.from(this.sel).forEach((id) => this.delCard(id));
       this.clearSel();
       toast('Deleted ' + n + ' card(s)');
+    },
+
+    /* ─── mini web browser ─── */
+    // A page inside the app: address bar, history, a live frame, and a picture for
+    // the sites that refuse to be framed. The frame is sandboxed, and the picture
+    // comes from this Worker's own /shot — nothing here proxies page HTML.
+    mb: { history: [], at: -1, mode: 'live' },
+
+    mbModes: ['live', 'picture', 'text'],
+
+    openBrowser(startUrl) {
+      let el = document.getElementById('miniBrowser');
+      if (!el) el = this.buildMiniBrowser();
+      el.classList.add('show');
+      if (startUrl) this.mbGo(startUrl);
+      else setTimeout(() => { const i = ge('mbUrl'); if (i) i.focus(); }, 60);
+    },
+    closeBrowser() {
+      const el = document.getElementById('miniBrowser');
+      if (el) el.classList.remove('show');
+    },
+    normalizeUrl(raw) {
+      const t = String(raw || '').trim();
+      if (!t) return '';
+      if (/^https?:\/\//i.test(t)) return t;
+      if (/^[\w-]+(\.[\w-]+)+([/?#].*)?$/i.test(t)) return 'https://' + t;
+      return 'https://duckduckgo.com/?q=' + encodeURIComponent(t);
+    },
+    buildMiniBrowser() {
+      const el = document.createElement('div');
+      el.id = 'miniBrowser';
+      el.className = 'mb-overlay';
+      el.innerHTML =
+        '<div class="mb-shell">' +
+        '<div class="mb-bar">' +
+        '<button type="button" id="mbBack" title="Back"><i class="fas fa-arrow-left"></i></button>' +
+        '<button type="button" id="mbFwd" title="Forward"><i class="fas fa-arrow-right"></i></button>' +
+        '<button type="button" id="mbReload" title="Reload"><i class="fas fa-rotate-right"></i></button>' +
+        '<input id="mbUrl" type="text" spellcheck="false" autocomplete="off" placeholder="Address or search">' +
+        '<button type="button" class="mb-go" id="mbGo" title="Go"><i class="fas fa-arrow-right"></i></button>' +
+        '<button type="button" id="mbMode" title="Live page or picture"><i class="fas fa-image"></i></button>' +
+        '<a id="mbTab" target="_blank" rel="noopener noreferrer" title="Open in a tab"><i class="fas fa-up-right-from-square"></i></a>' +
+        '<button type="button" id="mbClose" title="Close"><i class="fas fa-times"></i></button>' +
+        '</div>' +
+        '<div class="mb-view" id="mbView"></div>' +
+        '<div class="mb-note" id="mbNote"></div>' +
+        '</div>';
+      document.body.appendChild(el);
+
+      const url = ge('mbUrl');
+      if (url) {
+        url.addEventListener('keydown', (e) => {
+          e.stopPropagation();
+          if (e.key === 'Enter') { e.preventDefault(); this.mbGo(url.value); }
+          if (e.key === 'Escape') { e.preventDefault(); this.closeBrowser(); }
+        });
+      }
+      const on = (id, fn) => { const b = ge(id); if (b) b.addEventListener('click', fn); };
+      on('mbGo', () => this.mbGo(url ? url.value : ''));
+      on('mbBack', () => this.mbNav(-1));
+      on('mbFwd', () => this.mbNav(1));
+      on('mbReload', () => this.mbRender(true));
+      on('mbMode', () => {
+        const i = this.mbModes.indexOf(this.mb.mode);
+        this.mb.mode = this.mbModes[(i + 1) % this.mbModes.length];
+        this.mbRender(true);
+      });
+      on('mbClose', () => this.closeBrowser());
+      return el;
+    },
+    mbGo(raw) {
+      const url = this.normalizeUrl(raw);
+      if (!url) return;
+      const h = this.mb.history;
+      this.mb.history = h.slice(0, this.mb.at + 1);
+      this.mb.history.push(url);
+      this.mb.at = this.mb.history.length - 1;
+      this.mbRender(true);
+    },
+    mbNav(step) {
+      const next = this.mb.at + step;
+      if (next < 0 || next >= this.mb.history.length) return;
+      this.mb.at = next;
+      this.mbRender(true);
+    },
+    mbRender(resetScroll) {
+      const view = ge('mbView');
+      const input = ge('mbUrl');
+      const note = ge('mbNote');
+      const tab = ge('mbTab');
+      const url = this.mb.history[this.mb.at] || '';
+      if (input) input.value = url;
+      if (tab) tab.href = url || '#';
+      const back = ge('mbBack');
+      const fwd = ge('mbFwd');
+      if (back) back.disabled = this.mb.at <= 0;
+      if (fwd) fwd.disabled = this.mb.at >= this.mb.history.length - 1;
+      if (!view) return;
+      view.innerHTML = '';
+      if (!url) {
+        if (note) note.textContent = 'Type an address, or a search, and press Enter.';
+        return;
+      }
+      if (this.mb.mode === 'text') {
+        const pre = document.createElement('pre');
+        pre.className = 'mb-text';
+        pre.textContent = 'Reading the page\u2026';
+        view.appendChild(pre);
+        fetch('/read?u=' + encodeURIComponent(url))
+          .then((r) => r.json())
+          .then((d) => {
+            pre.textContent = d && d.text ? d.text : 'That page gave no words (' + ((d && d.error) || 'empty') + ').';
+          })
+          .catch((e) => { pre.textContent = 'That page could not be read: ' + e.message; });
+        if (note) note.textContent = 'Text mode: the page as words, no pictures and no scripts.';
+        return;
+      }
+      if (this.mb.mode === 'picture') {
+        const img = document.createElement('img');
+        img.className = 'mb-shot';
+        img.alt = 'Picture of ' + url;
+        img.src = '/shot?u=' + encodeURIComponent(url);
+        img.addEventListener('error', () => {
+          if (note) note.textContent = 'That page would not render. It may be private, behind a login, or too slow.';
+        });
+        view.appendChild(img);
+        if (note) note.textContent = 'Picture mode: this is how the Worker sees the page. Switch to live for the real thing.';
+      } else {
+        const frame = document.createElement('iframe');
+        frame.className = 'mb-frame';
+        frame.setAttribute('referrerpolicy', 'no-referrer');
+        frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox');
+        frame.setAttribute('allow', 'clipboard-read; clipboard-write');
+        frame.src = url;
+        view.appendChild(frame);
+        if (note) note.textContent = 'Live page. Sites that forbid framing stay blank — switch to the picture.';
+      }
     },
 
     /* ─── context menu ─── */

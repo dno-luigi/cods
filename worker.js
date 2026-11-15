@@ -8,6 +8,13 @@
 //   4. answer     — OpenRouter or a Workers AI chat model, grounded in the sources
 //
 // Bindings: AI (clef + Workers AI), BROWSER (real pages), KV (answer cache)
+// The agent-browsing service binding. ABROWSER is the name it carries; the
+// second spelling is accepted so a one-letter config slip cannot leave the agent
+// unreachable at runtime. /health reports which one actually resolved.
+function agentBrowser(env) {
+  return env.ABROWSER || env.ABROSWER || null;
+}
+
 const cH = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
@@ -2843,6 +2850,7 @@ export default {
         clef: !!env.AI,
         search_url: env.SEARCH_URL ? "configured" : null,
         browser: !!env.BROWSER,
+        agent_browser: agentBrowser(env) ? (env.ABROWSER ? "ABROWSER" : "ABROSWER") : null,
         ocode: !!env.OCODE,
         orproxy: !!env.ORPROXY,
         orproxy_mode: orProxyMode,
@@ -3613,6 +3621,7 @@ export default {
     }
 
     if (url.pathname === "/shot" && request.method === "GET") return handleShot(env, url);
+    if (url.pathname === "/read" && request.method === "GET") return handleRead(env, url);
     if (url.pathname === "/templates" && (request.method === "GET" || request.method === "POST"))
       return handleTemplates(env, request, url);
     if (url.pathname.startsWith("/templates/") && request.method === "DELETE")
@@ -5724,6 +5733,41 @@ async function handleShot(env, url) {
     } catch (err) {}
   }
   return new Response(bytes, { headers: { ...SHOT_HEADERS, ...cH } });
+}
+
+// A page as words, for the mini browser's text mode and for anything that would
+// rather read than look. Same one-scrape cost as the screenshot; nothing is kept.
+async function handleRead(env, url) {
+  const target = String(url.searchParams.get("u") || "");
+  if (!/^https?:\/\/[^\s]+$/i.test(target) || target.length > 2048) {
+    return new Response(JSON.stringify({ ok: false, error: "bad_url" }), {
+      status: 400, headers: { ...cH, "content-type": "application/json" }
+    });
+  }
+  const jsonHeaders = { ...cH, "content-type": "application/json" };
+  if (!env.BROWSER || typeof env.BROWSER.quickAction !== "function") {
+    return new Response(JSON.stringify({ ok: false, error: "no_browser" }), { status: 503, headers: jsonHeaders });
+  }
+  let payload = null;
+  try {
+    const res = await env.BROWSER.quickAction("scrape", {
+      url: target,
+      userAgent: BROWSER_UA,
+      elements: [{ selector: "main, article, body" }, { selector: "title" }],
+      gotoOptions: { waitUntil: "domcontentloaded", timeout: 20000 },
+    });
+    payload = res ? await res.json().catch(() => null) : null;
+  } catch (err) {
+    return new Response(JSON.stringify({ ok: false, error: "read_failed", message: err.message }), { status: 502, headers: jsonHeaders });
+  }
+  const blocks = Array.isArray(payload) ? payload : (payload && Array.isArray(payload.result) ? payload.result : []);
+  const texts = ((blocks[0] && blocks[0].results) || []).map((el) => String(el.text || "")).join("\n");
+  const title = ((blocks[1] && blocks[1].results) || []).map((el) => String(el.text || "")).join(" ").slice(0, 300);
+  const text = (title ? title + "\n\n" : "") + texts.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  if (!text) return new Response(JSON.stringify({ ok: false, error: "empty_page" }), { status: 400, headers: jsonHeaders });
+  return new Response(JSON.stringify({ ok: true, url: target, title, text: text.slice(0, 20000), via: "scrape" }), {
+    status: 200, headers: jsonHeaders
+  });
 }
 
 // Everything a browser would run is stripped before anything is stored: a share
