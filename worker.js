@@ -2,12 +2,12 @@
 //
 // Pipeline per card:
 //   1. cache      — has this already been answered?
-//   2. decide     — clef-flash classifies intent / domain / need-for-web / care / depth / tone
+//   2. decide     — ARA answers with one of cards' own actions; that is the decision
 //   3. search     — only when decide() asks for the web: OpenRouter's web plugin,
 //                    then a real page through BROWSER
 //   4. answer     — OpenRouter or a Workers AI chat model, grounded in the sources
 //
-// Bindings: AI (clef + Workers AI), BROWSER (real pages), KV (answer cache)
+// Bindings: AI (Workers AI), ARA (the decider), BROWSER (real pages), KV (answer cache)
 // The agent-browsing service binding. ABROWSER is the name it carries; the
 // second spelling is accepted so a one-letter config slip cannot leave the agent
 // unreachable at runtime. /health reports which one actually resolved.
@@ -24,10 +24,6 @@ const cH = {
 
 // Room for the questions schema plus the estimator's own error.
 const DECISION_RESERVE = 1500;
-// clef-flash reads a 24,576-token window. The platform does not trim text state
-// for you: it answers 413 with code 5021 ("exceeded this model context window
-// limit"), which used to lose the decision entirely. So the state is budgeted
-// here, and the question is placed first: whatever else is dropped, clef still
 // sees what was actually asked.
 const CLEF_CONTEXT_TOKENS = 24576;
 const CLEF_STATE_TOKENS = 23000;
@@ -182,7 +178,7 @@ const CF_TEXT_MODELS = [
 ];
 
 // The shapes: what a call has to look like, not which model answers it. The
-// card stays short because it rides in clef-flash's state; the full per-model
+// card stays short; the full per-model
 // catalogue is a file in R2 served by /shapes, and no prompt should ever
 // carry all 760 ids.
 const SHAPES_KEY = "models/catalogue.json";
@@ -196,7 +192,7 @@ const SHAPE_CARD = [
   "stt \u2014 POST /api/v1/audio/transcriptions {model,input_audio:{data,format}}. Text out.",
   "tts \u2014 POST /api/v1/audio/speech {model,input,voice}. Raw audio bytes out, not JSON.",
   "responses \u2014 POST /api/v1/responses with input[] parts of text, image, file or audio.",
-  "decide \u2014 POST /api/alpha/decisions {model,state,questions}. Typed questions in, calibrated probabilities out: noul (yes/no), choice, score. Cloudflare clef models answer the same schema through env.AI.run with the short name (clef-omni, not the @cf id).",
+  "decide \u2014 POST /decide on ARA {text,surface}. One typed question: which of this surface's own actions is he asking for. The answer is a choice, never a score.",
   "Cloudflare fixes the endpoint only: env.AI.run wants {prompt} for text-to-text and image, {text} for embeddings, {audio} for ASR, {query,contexts} for the reranker.",
 ].join("\n");
 
