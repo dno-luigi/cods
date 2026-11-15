@@ -48,6 +48,9 @@ globalThis.fetch = function (url, opts) {
     }
     return Promise.resolve(new Response(JSON.stringify({ error: { message: "no credits" } }), { status: 402 }));
   }
+  if (String(url).includes("browse.example")) {
+    return Promise.resolve(new Response('<!DOCTYPE html><html><head><title>Browsed page</title></head><body>Browsed page</body></html>', { status: 200, headers: { "Content-Type": "text/html; charset=utf-8" } }));
+  }
   return Promise.reject(new Error("unexpected fetch " + url));
 };
 
@@ -3005,6 +3008,27 @@ function fakeBrowser(pages, opts) {
   check("the working steps never become the card body", page.indexOf("cur.a = cur.thinking") === -1 && page.indexOf("cur.step = String(ev.step") > -1, "trace in body");
   check("a request cut off says so instead of showing its log", page.indexOf("stopped before it answered") > -1, "stale working card");
   check("the thread keeps every letter", page.indexOf("/s+/") === -1, "s rule");
+}
+
+// 14. a browser card: a page fetched by the Worker, framed by the client
+{
+  const env = makeEnv();
+  const get = async (q) => worker.fetch(new Request("https://x/browse" + q), env);
+  check("a missing address is refused", (await get("")).status === 400);
+  check("a file URL is refused", (await get("?url=file:///etc/passwd")).status === 400);
+  check("loopback is refused", (await get("?url=http://127.0.0.1:8080/")).status === 400);
+  check("metadata is refused", (await get("?url=http://169.254.169.254/latest/meta-data/")).status === 400);
+  check("a private range is refused", (await get("?url=http://192.168.1.4/")).status === 400);
+  check("localhost is refused", (await get("?url=http://localhost/")).status === 400);
+  check("a bare host is refused server-side", (await get("?url=example")).status === 400);
+  const res = await get("?url=https://browse.example/news/today");
+  const page = await res.text();
+  check("a public page comes back as HTML", res.status === 200 && /text\/html/.test(res.headers.get("content-type") || ""), res.status);
+  check("with a base so its own files resolve", page.indexOf('<base href="https://browse.example/news/">') >= 0, page.slice(0, 160));
+  check("and the page itself arrives", page.indexOf("Browsed page") >= 0, page.length);
+  const posted = await worker.fetch(new Request("https://x/browse?url=https://browse.example/", { method: "POST" }), env);
+  check("and it is read-only", posted.status === 405, posted.status);
+
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");

@@ -593,7 +593,7 @@ code{font-size:12.5px;background:#00000044;padding:1px 4px;border-radius:4px}
   <button class="icon" data-sel="clear">Close</button>
 </div>
 <div id="sugg"></div>
-<div class="input"><button class="chip" id="modelBtn" title="Model">auto</button><input id="prompt" placeholder="Type a prompt..." autocomplete="off"><button class="chip" id="mic" title="Speak your question" aria-label="Speak your question">mic</button><button id="send">Send</button></div>
+<div class="input"><button class="chip" id="modelBtn" title="Model">auto</button><input id="prompt" placeholder="Type a prompt..." autocomplete="off"><button class="chip" id="web" title="Open a web page" aria-label="Open a web page">web</button><button class="chip" id="mic" title="Speak your question" aria-label="Speak your question">mic</button><button id="send">Send</button></div>
 <div class="menu" id="menu"></div>
 <div class="sheet" id="sheet"><div class="sheet-body" id="sheetBody"></div></div>
 <div class="modal" id="modal"><div class="modal-box">
@@ -780,6 +780,60 @@ function docFrame(html) {
 }
 function answerHTML(t) { return looksLikeDocument(t) ? docFrame(t) : md(t); }
 /* end-doc */
+/* start-browse */
+// A page instead of an answer. The Worker fetches it, and the card shows it in the
+// same sandboxed frame the truth store's documents use, so it stays inside cods.
+function browseUrl(raw) {
+  var t = String(raw == null ? '' : raw).trim();
+  if (!t) return '';
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(t)) {
+    if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+([/:?#]|$)/i.test(t)) return '';
+    t = 'https://' + t;
+  }
+  var u;
+  try { u = new URL(t); } catch (e) { return ''; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+  return u.hostname ? u.href : '';
+}
+function browseTo(raw) {
+  var target = browseUrl(raw);
+  if (!target) { toast('That is not a web address'); return; }
+  var card = mk(target, 'Fetching the page...', 'web');
+  S.cards.push(card);
+  S.flip[card.id] = true;
+  render(); scrollBottom();
+  fetch('/browse?url=' + encodeURIComponent(target))
+    .then(function (r) { return r.text().then(function (t) { return { ok: r.ok, text: t }; }); })
+    .then(function (res) {
+      var cur = byId(card.id);
+      if (!cur) return;
+      if (!res.ok) {
+        var why = res.text;
+        try { why = JSON.parse(res.text).error || why; } catch (e) {}
+        cur.a = 'That page did not open: ' + String(why || 'no reason given').slice(0, 300);
+        cur.provider = 'web · error';
+      } else {
+        cur.a = res.text;
+        cur.provider = 'web · ' + target;
+      }
+      save(); render(); scrollBottom();
+    })
+    .catch(function (e) {
+      var cur = byId(card.id);
+      if (!cur) return;
+      cur.a = 'That page did not open: ' + e.message;
+      cur.provider = 'web · error';
+      save(); render();
+    });
+}
+function browseAsk() {
+  var typed = $('prompt').value.trim();
+  if (browseUrl(typed)) { $('prompt').value = ''; browseTo(typed); return; }
+  ask('Open a page', 'Type a web address. This Worker fetches the page and the card shows it in a frame of its own.', 'https://example.com', function (v) { browseTo(v); });
+}
+$('web').onclick = browseAsk;
+/* end-browse */
+
 function toast(m) {
   var t = $('toast');
   t.textContent = m;
@@ -2958,6 +3012,47 @@ paintThread();
 </body>
 </html>`;
 
+// A page in a card. This route is public, so it does not forward whatever it is
+// handed: http(s) only, no loopback, private, link-local or metadata host, a short
+// timeout, and a cap on what comes back. The card frames what it returns.
+const BROWSE_LIMIT = 512 * 1024;
+const BROWSE_TIMEOUT_MS = 12000;
+const BROWSE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+
+function browseTarget(raw) {
+  const text = String(raw == null ? "" : raw).trim();
+  if (!text || text.length > 2048) return null;
+  let target;
+  try { target = new URL(text); } catch { return null; }
+  if (target.protocol !== "http:" && target.protocol !== "https:") return null;
+  if (target.username || target.password) return null;
+  const host = target.hostname.toLowerCase();
+  if (!host || host.includes(":")) return null;
+  if (host === "localhost" || /(^|\.)(localhost|local|internal|arpa)$/.test(host)) return null;
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const a = Number(v4[1]);
+    const b = Number(v4[2]);
+    if (a === 0 || a === 10 || a === 127 || a >= 224) return null;
+    if (a === 169 && b === 254) return null;
+    if (a === 172 && b >= 16 && b <= 31) return null;
+    if (a === 192 && b === 168) return null;
+    if (a === 100 && b >= 64 && b <= 127) return null;
+  }
+  return target;
+}
+
+// Without a base the page's own CSS, images and links have nothing to resolve
+// against inside a frame, so the directory it came from is written in.
+function browseDocument(html, target) {
+  const path = target.pathname || "/";
+  const base = target.origin + path.slice(0, path.lastIndexOf("/") + 1);
+  const tag = '<base href="' + base.replace(/&/g, "&amp;").replace(/"/g, "&quot;") + '">';
+  if (/<head[^>]*>/i.test(html)) return html.replace(/<head[^>]*>/i, (head) => head + tag);
+  if (/<html[^>]*>/i.test(html)) return html.replace(/<html[^>]*>/i, (root) => root + "<head>" + tag + "</head>");
+  return "<!DOCTYPE html><html><head>" + tag + "</head><body>" + html + "</body></html>";
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -3011,6 +3106,37 @@ export default {
     // POST nothing: this asks the proxy one tiny question and reports which way
   // in it accepted, or every error it gave, so the binding can be checked from
   // a phone browser instead of a terminal.
+  if (url.pathname === "/browse") {
+    if (request.method !== "GET") return json({ error: "GET only" }, 405);
+    const target = browseTarget(url.searchParams.get("url"));
+    if (!target) return json({ error: "That is not a public web address" }, 400);
+    try {
+      const res = await fetch(target.href, {
+        headers: {
+          "User-Agent": BROWSE_UA,
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.5"
+        },
+        redirect: "follow",
+        signal: AbortSignal.timeout(BROWSE_TIMEOUT_MS)
+      });
+      if (!res.ok) return json({ error: "The page answered " + res.status }, 502);
+      const type = String(res.headers.get("content-type") || "");
+      if (type && !/text\/html|application\/xhtml/i.test(type)) {
+        return json({ error: "That address is " + type.split(";")[0] + ", not a page" }, 415);
+      }
+      const declared = Number(res.headers.get("content-length") || 0);
+      if (declared > BROWSE_LIMIT) return json({ error: "That page is too big to show" }, 413);
+      const html = (await res.text()).slice(0, BROWSE_LIMIT);
+      if (!html.trim()) return json({ error: "The page was empty" }, 502);
+      return new Response(browseDocument(html, target), {
+        headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...cH }
+      });
+    } catch (err) {
+      return json({ error: "Could not reach that page: " + (err && err.message ? err.message : "timeout") }, 502);
+    }
+  }
+
   if (url.pathname === "/orproxy") {
     if (!env.ORPROXY) return json({ ok: false, error: "ORPROXY is not bound on this Worker" }, 400);
     try {
