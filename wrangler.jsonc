@@ -95,6 +95,13 @@
   // Add it back under "services" once that Worker exists there.
   "unsafe": {
     "bindings": [
+      // ARA: the point of contact. She decides before any model is called.
+      {
+        "name": "ARA",
+        "type": "service",
+        "service": "ara",
+        "environment": "production"
+      },
       {
         "name": "ORPROXY",
         "type": "service",

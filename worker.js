@@ -4316,6 +4316,29 @@ async function noteAttempt(env, domain, model, ok) {
 
 // ─── decision layer ───────────────────────────────────────────────────────────
 
+// ARA first. She is the point of contact, so her answer comes before clef's:
+// when the binding is present she must decide, and a refusal, a timeout or no
+// decision stops the request before any model is called. Unbound (tests, local
+// dev) falls through untouched.
+async function askAra(env, text) {
+  const binder = env && env.ARA;
+  if (!binder || typeof binder.fetch !== "function") return { ok: true, bound: false };
+  try {
+    const res = await binder.fetch("https://ara/decide", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: String(text || ""), domain: "cards" }),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return { ok: false, bound: true, reason: "ara_status_" + res.status };
+    const data = await res.json();
+    if (!data || data.refused || !data.move) return { ok: false, bound: true, reason: "ara_no_decision" };
+    return { ok: true, bound: true, id: data.id ?? null, move: data.move, route: data.route ?? null };
+  } catch {
+    return { ok: false, bound: true, reason: "ara_error" };
+  }
+}
+
 async function decide(env, state, questions, prefs) {
   const asked = questions && typeof questions === "object" ? questions : QUESTIONS;
   // A rule he wrote for the decide step is read here and nowhere else: it can
@@ -7306,6 +7329,13 @@ async function handleChat(request, env, emit) {
   let state = fitted.state;
   const failures = [];
 
+  // 0. ARA — the first contact. No decision from her, no request.
+  const ara = await askAra(env, prompt);
+  if (!ara.ok) {
+    step("ara", "no decision (" + ara.reason + ")");
+    return json({ error: { code: "ara_no_decision", message: "ARA did not decide (" + ara.reason + ")." } }, 502);
+  }
+
   // 1. Decide — clef-flash classifies the request.
   let decision = null;
   let decisionError = null;
@@ -7380,6 +7410,7 @@ async function handleChat(request, env, emit) {
     }
   }
   if (decision && learned) decision.preferences = learned;
+  if (ara.bound) step("ara", ara.move + (ara.route ? " · " + ara.route : ""));
   step("decide", decision
     ? "domain " + decision.domain + " · intent " + decision.intent + " · depth " + decision.depth + (decision.needs_web != null ? " · web " + decision.needs_web : "") +
       (decision.shape ? " · shape " + decision.shape : "") +
