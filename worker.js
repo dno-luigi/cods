@@ -7763,7 +7763,7 @@ async function finish(
   env,
   key,
   plan,
-  { prompt, answer, provider, route, decision, sources, trace, searchError, searchVia, related, relatedError, cards, theme, thinking, longTerm, pick, truth }
+  { prompt, answer, provider, route, decision, ara, sources, trace, searchError, searchVia, related, relatedError, cards, theme, thinking, longTerm, pick, truth }
 ) {
   const payload = {
     answer,
@@ -7773,6 +7773,7 @@ async function finish(
     route,
     theme: theme || null,
     decision: slimDecision(decision),
+    ara: ara || null,
     sources: sources && sources.length ? sources.map((s) => ({ title: s.title, url: s.url })) : null,
     search_error: searchError || null,
     search_via: searchVia || null,
