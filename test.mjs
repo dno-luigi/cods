@@ -2825,6 +2825,35 @@ function fakeBrowser(pages, opts) {
   );
 }
 
+// The store answers a typed question itself, on any preset, in any case.
+{
+  calls = [];
+  const kv = new Map();
+  const rec = {
+    id: "t_dem1",
+    question: "demand template",
+    answer: "The demand template that was saved.",
+    sources: [{ title: "saved", url: "https://example.com/demand" }],
+    status: "master",
+    confidence: 0.95,
+    seen: 2,
+    updated: "2026-11-10T00:00:00.000Z",
+  };
+  kv.set("truths:index", JSON.stringify([{ id: rec.id, question: rec.question, status: rec.status, confidence: rec.confidence, sources: 1, seen: rec.seen, updated: rec.updated }]));
+  kv.set("truth:" + rec.id, JSON.stringify(rec));
+  const env = makeEnv({ KV: { get: async (k) => kv.get(k) || null, put: async (k, v) => kv.set(k, v), delete: async (k) => kv.delete(k) } });
+  const d = await (await post("/chat", { prompt: "Demand Template?", cards: [] }, env)).json();
+  check("a saved question answers itself without Off", d.provider === "store" && d.route === "cache", { provider: d.provider, route: d.route });
+  check("typed in any case, with a question mark", d.truth && d.truth.id === rec.id, d.truth);
+  check("the model is never asked what kind is needed", calls.length === 0, calls);
+  check("the saved answer is the one on the card", d.cards[0] && d.cards[0].a === rec.answer, d.cards[0]);
+}
+
+{
+  const d = await (await post("/chat", { prompt: "what is 2+2", cards: [] }, makeEnv())).json();
+  check("an unsaved question still reaches the answer path", d.provider !== "store", d.provider);
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
 

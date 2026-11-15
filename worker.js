@@ -3969,6 +3969,14 @@ function normalized(s) {
     .trim();
 }
 
+// A typed question as the store files it: case, spacing and a trailing question
+// mark or full stop make no difference to which record answers it.
+function lookupKey(s) {
+  return normalized(s)
+    .replace(/^[\s"'\u201c\u201d]+/, "")
+    .replace(/[\s.,;:!?"'\u201c\u201d]+$/, "");
+}
+
 // What this question should run on: an explicit pick, the model this person
 // chose last time, or nothing so the usual order applies.
 async function pickModel(env, body) {
@@ -6458,12 +6466,12 @@ async function approvedHit(env, prompt) {
   return store.items[await approvedHash(prompt)] || null;
 }
 
-// Off answers from what the store already holds. It reads the truth records the
+// The store answers a question it already holds. It reads the truth records the
 // page keeps - master first, then the rest by confidence - and names the layer
 // it came from so a stored answer is never mistaken for a generated one.
 async function storedHit(env, question) {
   const box = truthStore(env);
-  const q = normalized(question);
+  const q = lookupKey(question);
   if (!box || !q) return null;
   let list = [];
   try {
@@ -6472,7 +6480,7 @@ async function storedHit(env, question) {
     list = [];
   }
   const rows = (Array.isArray(list) ? list : []).filter(
-    (r) => r && r.id && normalized(r.question || "") === q
+    (r) => r && r.id && lookupKey(r.question || "") === q
   );
   if (!rows.length) return null;
   rows.sort(
@@ -6776,7 +6784,35 @@ async function handleChat(request, env, emit) {
     }
   }
 
-  // 0b. Long term — the same question, however long ago it was asked.
+  // 0b. The store - a question it already holds answers itself, on every preset.
+  // Typed in any case, with a question mark or without, it lands on the record
+  // saved for it instead of reaching a model that has to ask what kind you mean.
+  // A miss falls through to the ordinary path, where the answer names the model
+  // that made it.
+  if (body.use_cache !== false && body.audit !== true) {
+    const held = await storedHit(env, prompt);
+    if (held) {
+      step("stored", held.layer + " · " + held.id);
+      return json({
+        prompt,
+        answer: held.record.answer,
+        response: held.record.answer,
+        cards: [{ q: prompt, a: held.record.answer, provider: "store", sources: held.record.sources || [] }],
+        provider: "store",
+        route: "cache",
+        source: "cache",
+        cacheSource: held.layer,
+        truth: { layer: held.layer, id: held.id, key: "truth:" + held.id },
+        trace: ["cache:hit", "truth:" + held.id],
+        approved: false,
+        cached: true,
+        thinking,
+      });
+    }
+    if (pick.off) step("stored", "nothing stored for that question — answering from the model");
+  }
+
+  // 0c. Long term — the same question, however long ago it was asked.
   if (env.LTM && body.use_cache !== false && !proxyWanted && body.audit !== true) {
     const remembered = await ltmGet(env, prompt);
     if (remembered) {
@@ -6807,32 +6843,6 @@ async function handleChat(request, env, emit) {
         thinking,
       });
     }
-  }
-
-  // 0c. Off - the question, answered from what is already stored. A hit says
-  // provider "store" and names the layer; a miss says so and falls through to
-  // the ordinary path, where the answer names the model that made it.
-  if (pick.off) {
-    const hit = await storedHit(env, prompt);
-    if (hit) {
-      step("stored", hit.layer + " · " + hit.id);
-      return json({
-        prompt,
-        answer: hit.record.answer,
-        response: hit.record.answer,
-        cards: [{ q: prompt, a: hit.record.answer, provider: "store", sources: hit.record.sources || [] }],
-        provider: "store",
-        route: "cache",
-        source: "cache",
-        cacheSource: hit.layer,
-        truth: { layer: hit.layer, id: hit.id, key: "truth:" + hit.id },
-        trace: ["cache:hit", "truth:" + hit.id],
-        approved: false,
-        cached: true,
-        thinking,
-      });
-    }
-    step("stored", "nothing stored for that question — answering from the model");
   }
 
   const contextCards = Array.isArray(body.cards) ? body.cards.filter((c) => c && c.q) : [];
