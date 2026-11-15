@@ -2978,7 +2978,7 @@ export default {
     if (url.pathname === "/health") {
       return json({
         status: "ok",
-        clef: !!env.AI,
+        ara: !!(env && env.ARA),
         search_url: env.SEARCH_URL ? "configured" : null,
         browser: !!env.BROWSER,
         agent_browser: agentBrowser(env) ? (env.ABROWSER ? "ABROWSER" : "ABROSWER") : null,
@@ -4220,7 +4220,7 @@ async function noteAttempt(env, domain, model, ok) {
 
 // ─── decision layer ───────────────────────────────────────────────────────────
 
-// ARA first. She is the point of contact, so her answer comes before clef's:
+// ARA is the point of contact: her answer is the decision, and a request with
 // when the binding is present she must decide, and a refusal, a timeout or no
 // decision stops the request before any model is called. Unbound (tests, local
 // dev) falls through untouched.
@@ -4386,7 +4386,7 @@ function readScore(v) {
 }
 
 function readProbability(v) {
-  // The Decisions API names a yes/no answer `noul`; Cloudflare's clef answers
+  // The Decisions API names a yes/no answer `noul`; her decider answers
   // with `probability`. Both mean the same thing here.
   if (v && typeof v === "object" && typeof v.noul === "number") return v.noul;
   if (v == null) return null;
@@ -7401,7 +7401,7 @@ async function handleChat(request, env, emit) {
         }
         return respond({
           answer: via.text,
-          provider: "clef-flash → openrouter · " + target,
+          provider: "ara → openrouter · " + target,
           trace: [{ source: "openrouter", model: target }],
         });
       } catch (err) {
@@ -7425,7 +7425,7 @@ async function handleChat(request, env, emit) {
       );
       return respond({
         answer: via.text,
-        provider: "clef-flash → orproxy",
+        provider: "ara → orproxy",
         trace: [{ source: "orproxy", via: via.via, model: via.model }],
       });
     } catch (err) {
@@ -7448,7 +7448,7 @@ async function handleChat(request, env, emit) {
         if (text) {
           return respond({
             answer: text,
-            provider: "clef-flash → " + cfModel,
+            provider: "ara → " + cfModel,
             trace: [{ source: "workers-ai", model: cfModel }],
           });
         }
@@ -7468,7 +7468,7 @@ async function handleChat(request, env, emit) {
         const answer = await callOpenRouter(env, model, messages, body);
         return respond({
           answer,
-          provider: "clef-flash → openrouter",
+          provider: "ara → openrouter",
           trace: [{ source: "openrouter", model }],
         });
       } catch (err) {
@@ -7492,7 +7492,7 @@ async function handleChat(request, env, emit) {
       if (answer) {
         return respond({
           answer,
-          provider: "clef-flash → workers-ai",
+          provider: "ara → workers-ai",
           trace: [{ source: "workers-ai", model: env.CF_CHAT_MODEL }],
         });
       }
@@ -7702,7 +7702,7 @@ async function askText(env, messages, body) {
   if (env.ORPROXY && (body.proxy === true || String(body.provider || "") === "orproxy")) {
     try {
       const via = await orProxyCall(env, forOr, settings);
-      return { text: via.text, provider: "clef-flash → orproxy", trace: [{ source: "orproxy", via: via.via, model: via.model }] };
+      return { text: via.text, provider: "ara → orproxy", trace: [{ source: "orproxy", via: via.via, model: via.model }] };
     } catch (err) {
       failures.push("orproxy: " + err.message);
     }
@@ -7712,7 +7712,7 @@ async function askText(env, messages, body) {
     for (const cfModel of cfModels) {
       try {
         const text = textFrom(await env.AI.run(cfModel, Object.assign({ messages: forCf }, settings)));
-        if (text) return { text, provider: "clef-flash → " + cfModel, trace: [{ source: "workers-ai", model: cfModel }] };
+        if (text) return { text, provider: "ara → " + cfModel, trace: [{ source: "workers-ai", model: cfModel }] };
         failures.push(cfModel + ": empty response");
       } catch (err) {
         failures.push(cfModel + ": " + err.message);
@@ -7726,7 +7726,7 @@ async function askText(env, messages, body) {
     for (const model of models) {
       try {
         const text = await callOpenRouter(env, model, forOr, body);
-        return { text, provider: "clef-flash → openrouter", trace: [{ source: "openrouter", model }] };
+        return { text, provider: "ara → openrouter", trace: [{ source: "openrouter", model }] };
       } catch (err) {
         orErrors.push(model + ": " + err.message);
         if (err.status && err.status !== 400 && err.status !== 404) break;
@@ -7740,7 +7740,7 @@ async function askText(env, messages, body) {
   if (env.CF_CHAT_MODEL && env.AI) {
     try {
       const text = textFrom(await env.AI.run(env.CF_CHAT_MODEL, Object.assign({ messages: forCf }, settings)));
-      if (text) return { text, provider: "clef-flash → workers-ai", trace: [{ source: "workers-ai", model: env.CF_CHAT_MODEL }] };
+      if (text) return { text, provider: "ara → workers-ai", trace: [{ source: "workers-ai", model: env.CF_CHAT_MODEL }] };
       failures.push("workers-ai: empty response");
     } catch (err) {
       failures.push("workers-ai: " + err.message);
