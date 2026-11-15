@@ -1054,8 +1054,8 @@ function fakeBrowser(pages, opts) {
   check("a page\u2019s own colours are never overridden",
     styled.indexOf("html{background:#fff}") === -1 && styled.indexOf("html,body{color:#111}") === -1, "ok");
   check("the card paints a page as a page",
-    html.indexOf("'<div class=\"body card-a\">' + answerHTML(c.showFull && c.more ? c.more : c.a)") > -1, "ok");
-  check("both answer views do too", html.split("answerHTML(c.a)").length - 1 === 2, html.split("answerHTML(c.a)").length - 1);
+    html.indexOf("'<div class=\"body card-a\">' + cardBody(c, c.showFull && c.more ? c.more : c.a)") > -1, "ok");
+  check("both answer views do too", html.split("cardBody(c, c.a)").length - 1 === 2, html.split("cardBody(c, c.a)").length - 1);
   check("a page is not typed out", html.indexOf("if (looksLikeDocument(text)) return;") > -1, "ok");
   check("the frame has its own size", html.indexOf(".doc-frame{display:block;width:100%") > -1 && html.indexOf(".fs-body .doc-frame{height:") > -1, "ok");
 }
@@ -3029,6 +3029,15 @@ function fakeBrowser(pages, opts) {
   const posted = await worker.fetch(new Request("https://x/browse?url=https://browse.example/", { method: "POST" }), env);
   check("and it is read-only", posted.status === 405, posted.status);
 
+}
+
+// 14b. a page the Worker cannot fetch is handed to the browser, not dropped
+{
+  const page = await (await worker.fetch(new Request("https://x/"), makeEnv())).text();
+  check("a card can render a page live", page.indexOf("function liveFrame(url)") > -1, "liveFrame");
+  check("and the card body goes through it", page.indexOf("cardBody(c, c.showFull && c.more") > -1, "cardBody");
+  check("the fetch failure becomes a live page", page.indexOf("cur.live = target") > -1, "live fallback");
+  check("with the reason kept in the card", page.indexOf("Opened live in the browser") > -1, "reason");
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");

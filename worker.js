@@ -795,6 +795,14 @@ function browseUrl(raw) {
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
   return u.hostname ? u.href : '';
 }
+// A page the Worker could not fetch is still a page the browser can: a Worker
+// cannot reach another Worker on its own zone, and workers.dev has no origin to
+// fall back to, so the card loads it live instead of reporting a dead end.
+function liveFrame(url) {
+  return '<iframe class="doc-frame" title="Live page" src="' + esc(url) + '" referrerpolicy="no-referrer" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"></iframe>';
+}
+function cardBody(c, text) { return c && c.live ? liveFrame(c.live) : answerHTML(text); }
+
 function browseTo(raw) {
   var target = browseUrl(raw);
   if (!target) { toast('That is not a web address'); return; }
@@ -810,8 +818,9 @@ function browseTo(raw) {
       if (!res.ok) {
         var why = res.text;
         try { why = JSON.parse(res.text).error || why; } catch (e) {}
-        cur.a = 'That page did not open: ' + String(why || 'no reason given').slice(0, 300);
-        cur.provider = 'web · error';
+        cur.live = target;
+        cur.a = 'Opened live in the browser: ' + String(why || 'the Worker could not fetch it').slice(0, 300);
+        cur.provider = 'web · live page';
       } else {
         cur.a = res.text;
         cur.provider = 'web · ' + target;
@@ -821,8 +830,9 @@ function browseTo(raw) {
     .catch(function (e) {
       var cur = byId(card.id);
       if (!cur) return;
-      cur.a = 'That page did not open: ' + e.message;
-      cur.provider = 'web · error';
+      cur.live = target;
+      cur.a = 'Opened live in the browser: ' + e.message;
+      cur.provider = 'web · live page';
       save(); render();
     });
 }
@@ -1134,7 +1144,7 @@ function cardHTML(c) {
       '<span class="dots" data-tts="' + id + '">' + (S.speaking === c.id ? 'stop' : 'play') + '</span>' +
       (c.more ? '<span class="dots" data-full="' + id + '">' + (c.showFull ? 'short' : 'long') + '</span>' : '') +
       '<span class="dots" data-dots="' + id + '">more</span></span></div>' +
-      marker(c) + '<div class="body card-a">' + answerHTML(c.showFull && c.more ? c.more : c.a) + '</div>' + meta(c) + shots(c) + notes(c) + fb(c) + '</div>' +
+      marker(c) + '<div class="body card-a">' + cardBody(c, c.showFull && c.more ? c.more : c.a) + '</div>' + meta(c) + shots(c) + notes(c) + fb(c) + '</div>' +
     '<div class="via">via ' + esc(c.provider) + (c.provider === 'working' && c.step ? ' · ' + esc(c.step) : '') + '</div></div>';
 }
 // Flip with the slip. The old path toggled the state and re-rendered, which
@@ -1542,7 +1552,7 @@ function clearSel() { S.sel = {}; render(); }
 
 function openFs(c) {
   S.fs = c.id;
-  $('fsBody').innerHTML = '<div class="card-q" style="color:var(--dim);font-size:13px;margin-bottom:10px">' + esc(c.q) + '</div>' + answerHTML(c.a);
+  $('fsBody').innerHTML = '<div class="card-q" style="color:var(--dim);font-size:13px;margin-bottom:10px">' + esc(c.q) + '</div>' + cardBody(c, c.a);
   $('fs').classList.add('show');
 }
 function closeFs() { $('fs').classList.remove('show'); S.fs = null; }
@@ -2873,7 +2883,7 @@ $('fsFlip').onclick = function () {
   var c = byId(S.fs);
   if (!c) return;
   S.flip[c.id] = !S.flip[c.id];
-  $('fsBody').innerHTML = '<div class="card-q" style="color:var(--dim);font-size:13px;margin-bottom:10px">' + esc(c.q) + '</div>' + answerHTML(c.a);
+  $('fsBody').innerHTML = '<div class="card-q" style="color:var(--dim);font-size:13px;margin-bottom:10px">' + esc(c.q) + '</div>' + cardBody(c, c.a);
 };
 // Speak your question: recorded here, transcribed by the Worker, dropped into
 // the prompt so it can be corrected before it is sent. Free and always on.
