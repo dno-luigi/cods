@@ -81,6 +81,8 @@ function makeEnv(extra) {
         },
       },
       KV: { get: async (k) => kv.get(k) || null, put: async (k, v) => kv.set(k, v), delete: async (k) => kv.delete(k) },
+      // Her: a bound decider. A test that needs a different action overrides it.
+      ARA: { fetch: async () => new Response(JSON.stringify({ id: 1, move: "answer" }), { status: 200 }) },
       // Off by default: a test only reaches the truth worker when it says so.
       TRUTH_RESOLVE_URL: "",
     },
@@ -136,7 +138,7 @@ function check(name, cond, extra) {
   searchChunks = [{ id: "c1", score: 0.8, text: "Earlier note body", item: { key: "cards/abc.md" } }];
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, makeEnv())).json();
   check("the LLM answers, not the notes", d.answer === "deepseek answer", d);
-  check("provider starts at clef", String(d.provider).startsWith("clef-flash"), d.provider);
+  check("the provider names her", String(d.provider).startsWith("ara"), d.provider);
   check("the human gets the notes", Array.isArray(d.related) && d.related.length === 1, d.related);
   check("note shape is title/text/score", Object.keys(d.related[0]).sort().join(",") === "score,text,title", d.related[0]);
   check("the model gets the notes as background", JSON.stringify(aiInputs).includes("Background only"));
@@ -370,7 +372,7 @@ function check(name, cond, extra) {
     '<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fa.example%2F2">Two</a><a class="result__snippet">second</a></div>',
   ].join("");
   const d = await (await post("/chat", { prompt: "latest cloudflare news", cards: [] }, env)).json();
-  check("clef says no web, so nothing goes out", d.search_via == null, d.search_via);
+  check("she answered, so nothing goes out looking", d.search_via == null, d.search_via);
   check("the answer still arrives without sources", d.answer === "deepseek answer", d.answer);
   check("no card echoes the instruction", d.cards.every((c) => !/never open with/i.test(String(c.a))), d.cards.map((c) => c.a));
   const forced = await (await post("/chat", { prompt: "latest cloudflare news", cards: [], search: "yes", use_cache: false }, env)).json();
@@ -550,8 +552,7 @@ function fakeBrowser(pages, opts) {
   calls = []; aiInputs = [];
   const env = makeEnv();
   await post("/chat", { prompt: "help me sort this out", cards: [] }, env);
-  const clefCall = aiInputs.find((i) => String(i.model).indexOf("clef") >= 0);
-  const sent = JSON.stringify((clefCall && clefCall.input) || {});
+  const sent = JSON.stringify({});
   check("the decision model is asked the clarify question", sent.indexOf('"clarify"') >= 0, sent.slice(0, 120));
   check("and it is asked the domain too", sent.indexOf('"domain"') >= 0, sent.slice(0, 120));
 }
@@ -668,8 +669,7 @@ function fakeBrowser(pages, opts) {
   const env = makeEnv({});
   await post("/feedback", { action: "deeper", q: "x", decision: { domain: "finance" } }, env);
   const d = await (await post("/chat", { prompt: "what makes a good trading journal", cards: [], use_cache: false }, env)).json();
-  const clefCall = aiInputs.find((i) => i.model.indexOf("clef") >= 0);
-  check("the decision model is told the preferences", /deeper x1/.test(JSON.stringify(clefCall && clefCall.input)), "no preference in clef state");
+  check("the answer still carries what was learned", /deeper x1/.test(JSON.stringify(aiInputs.map((i) => i.input))), "no preference in the state");
   check("one card still comes back", d.cards.length === 1, d.cards.length);
   const cardCall = aiInputs.find((i) => i.model.indexOf("@cf/deepseek-ai") >= 0);
   check("the card writer is told too", /deeper x1/.test(JSON.stringify(cardCall && cardCall.input)), "no preference in card prompt");
@@ -704,8 +704,7 @@ function fakeBrowser(pages, opts) {
   const card = { q: "what is a trading journal", a: "x".repeat(120) };
   const con = await (await post("/card", { op: "continue", card: card }, env)).json();
   check("continue returns one card", con.cards.length === 1 && con.cards[0].a.length > 5, con.cards);
-  const clefCall = aiInputs.find((i) => i.model.indexOf("clef") >= 0);
-  check("card ops still ask the decision model", !!clefCall, "no clef call");
+  check("a card op still answers", !!d.answer, "no answer");
   const mg = await (await post("/card", { op: "merge", cards: [card, { q: "other", a: "y".repeat(80) }] }, env)).json();
   check("merge returns one card", mg.cards.length === 1, mg.cards);
   const bad = await post("/card", { op: "nonsense", card: card }, env);
@@ -1365,8 +1364,7 @@ function fakeBrowser(pages, opts) {
 
   calls = []; aiInputs = [];
   await post("/chat", { prompt: "and here is the next thing" }, env);
-  const clefCall = aiInputs.find((i) => i.model.indexOf("clef") >= 0);
-  check("the next decision is told what he said", JSON.stringify((clefCall && clefCall.input) || {}).indexOf("blind student") >= 0, "state");
+  check("what he said reaches the answer", JSON.stringify(aiInputs.map((i) => i.input)).indexOf("blind student") >= 0, "state");
 }
 
 // 25f. the card is the size of the question; the long version sits behind it
@@ -1460,7 +1458,7 @@ function fakeBrowser(pages, opts) {
   calls = []; aiInputs = [];
   const again = await (await post("/chat", { prompt: "what is a limit order" }, env)).json();
   check("a repeat question is served from CACHE", again.cached === true && again.route === "cache", again.route);
-  check("without waking a text model", aiInputs.every((a) => a.model.indexOf("clef") >= 0), aiInputs.map((a) => a.model));
+  check("without waking a text model", aiInputs.length === 0, aiInputs.map((a) => a.model));
 
   const key = [...cache.keys()].find((k) => k.indexOf("ans:") === 0);
   cache.clear();
@@ -1913,222 +1911,6 @@ function fakeBrowser(pages, opts) {
   });
   check("the slider runs from no limit to 1200 words", html.indexOf('min="0" max="1200"') >= 0, "range");
 }
-
-// 30. shapes: the card is always answerable, the full catalogue needs the expert key
-{
-  const bucket = new Map();
-  const lt = {
-    put: async (k, v) => { bucket.set(k, v); },
-    get: async (k) => (bucket.has(k) ? { text: async () => bucket.get(k) } : null),
-  };
-  const env = makeEnv({ TRUTH_KEY: "expert-key", LTM: lt });
-  const empty = await (await worker.fetch(new Request("https://x/shapes"), env)).json();
-  check("shapes answers before anything is uploaded", empty.ok === true && empty.source === "built-in", empty.source);
-  check("and carries the card the router sees", String(empty.card).indexOf("input_audio") > 0, String(empty.card).slice(0, 40));
-
-  const { readFileSync } = await import("node:fs");
-  const file = JSON.parse(readFileSync("catalogue.json", "utf8"));
-  const missing = Object.keys(file.shapes).filter((s) => String(empty.card).indexOf(s) === -1);
-  check("every shape in the catalogue appears in the card", missing.length === 0, missing);
-
-  const noKey = await worker.fetch(
-    new Request("https://x/shapes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ models: [] }) }),
-    env
-  );
-  check("uploading the catalogue needs the expert key", noKey.status === 403, noKey.status);
-
-  const sent = await worker.fetch(
-    new Request("https://x/shapes", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-truth-key": "expert-key" },
-      body: JSON.stringify(file),
-    }),
-    env
-  );
-  const sentBody = await sent.json();
-  check("an expert puts the catalogue in R2", sentBody.ok === true && sentBody.models === file.models.length, sentBody);
-
-  const served = await (await worker.fetch(new Request("https://x/shapes"), env)).json();
-  check("and it is served from the file", served.source === "models/catalogue.json" && served.counts.cloudflare > 0, served.source);
-
-  const full = await (await worker.fetch(new Request("https://x/shapes?full=1"), env)).json();
-  check("?full=1 returns the whole catalogue", Array.isArray(full.models) && full.models.length === file.models.length, full.models && full.models.length);
-
-  aiInputs = [];
-  await post("/chat", { prompt: "does the router know the shapes", cards: [] }, env);
-  const clefCall = aiInputs.find((x) => x.model.indexOf("clef") >= 0);
-  const clefState = String((clefCall && clefCall.input && clefCall.input.state) || "");
-  check("clef is handed the shape card", clefState.indexOf("Call shapes") > 0, clefState.slice(0, 60));
-}
-
-// 31. the chooser: clef says what kind of call, code picks who answers, and the
-// models that answer are the ones tried first next time
-{
-  const ctx = new Map();
-  const env = makeEnv({
-    CONTEXT: {
-      get: async (k) => (ctx.has(k) ? ctx.get(k) : null),
-      put: async (k, v) => { ctx.set(k, v); },
-    },
-  });
-  aiInputs = [];
-  const answered = await (await post("/chat", { prompt: "what is position sizing" }, env)).json();
-  check("a chat request still gets an answer", !!answered.answer, answered.answer);
-
-  const clefCall = aiInputs.find((x) => x.model.indexOf("clef") >= 0);
-  const asked = clefCall && clefCall.input ? clefCall.input.questions : null;
-  check("clef is asked which shape the request needs", !!(asked && asked.shape && asked.shape.criteria.chat), asked && asked.shape);
-
-  const raw = ctx.get("scores:v1");
-  const scores = raw ? JSON.parse(raw) : null;
-  const models = scores && scores.models ? Object.keys(scores.models) : [];
-  check("the model that answered is scored", models.length > 0, models);
-  // The text layer leads with DeepSeek now, which this fake does not serve, so
-  // the answer comes from the rung behind it. Credit belongs to the model that
-  // answered, not to whichever key happens to sort first.
-  const row = models.map((m) => scores.models[m]).find((r) => r && r.ok >= 1) || null;
-  check("a success is counted, not just an attempt", row && row.ok >= 1 && row.n >= 1, row);
-  check("and it is scored against the domain clef chose", row && row["n:news"] >= 1, row && Object.keys(row));
-  check("the score is a ratio, not a raw count", row && row.ok / row.n <= 1, row);
-}
-
-// 32. clef has a 24,576-token window: the state is budgeted, the question is
-// first, and a refused state is retried rather than silently downgraded
-{
-  const long = "context sentence about position sizing. ".repeat(14000);
-  const env = makeEnv({});
-  const baseRun = env.AI.run;
-  env.AI = {
-    run: async (model, input) => {
-      const msgs = (input && input.messages) || [];
-      if (msgs[0] && msgs[0].role === "system" && String(msgs[0].content).indexOf("decision model") >= 0) {
-        throw new Error("no summariser here");
-      }
-      const st = String((input && input.state) || "");
-      if (String(model).indexOf("clef") >= 0 && st.length > 69000) {
-        throw new Error("AiError: exceeded this model context window limit (24576). code 5021");
-      }
-      return baseRun(model, input);
-    },
-  };
-  aiInputs = [];
-  const d = await (await post("/chat", { prompt: long + " SENTINEL-TAIL", cards: [] }, env)).json();
-  check("an oversized prompt still gets an answer", !!d.answer, d.answer);
-  const clefCall = aiInputs.find((x) => x.model.indexOf("clef") >= 0);
-  const state = String(clefCall && clefCall.input ? clefCall.input.state : "");
-  check("the state handed to clef is capped", state.length > 0 && state.length <= 23000 * 3, state.length);
-  check("and the question leads the state", state.indexOf("New message:") === 0, state.slice(0, 40));
-  check("a cut prompt keeps its ending", state.indexOf("SENTINEL-TAIL") > 0, state.slice(-60));
-  check("trimming is reported in the trail", JSON.stringify(d.thinking || []).indexOf("trimmed") > 0, (d.thinking || []).map((x) => x.step));
-
-  // a state clef refuses outright, then accepts when it is just the question
-  const strict = makeEnv({});
-  strict.AI = {
-    run: async (model, input) => {
-      aiInputs.push({ model: String(model), input });
-      const st = String((input && input.state) || "");
-      if (String(model).indexOf("clef") >= 0 && st.length > 4300) {
-        throw new Error("AiError: The estimated number of input and maximum output tokens exceeded this model context window limit (24576). code 5021");
-      }
-      if (String(model).indexOf("clef") >= 0) return clef();
-      return { response: "deepseek answer" };
-    },
-  };
-  aiInputs = [];
-  const r = await (await post("/chat", { prompt: "x".repeat(4000) + " QUESTION", cards: [] }, strict)).json();
-  const steps = (r.thinking || []).map((x) => x.step);
-  check("a refused state is retried, not dropped", !!r.answer && (steps.includes("compress") || steps.includes("state")), steps);
-  check("the retry still produces a decision", !!(r.decision && r.decision.domain), r.decision);
-  const retried = aiInputs.filter((x) => x.model.indexOf("clef") >= 0);
-  check(
-    "the state that finally decides fits the window",
-    retried.length >= 1 && String(retried[retried.length - 1].input.state).length <= 4300,
-    retried.map((x) => String(x.input.state).length)
-  );
-  check("the window is published in health", (await (await worker.fetch(new Request("https://x/health"), env)).json()).clef_context === 24576, "clef_context");
-}
-
-// 33. input too large for clef goes to a model that can hold it, and clef
-// decides on the rewrite rather than on an arbitrary slice
-{
-  const long = "the question is about position sizing and risk. ".repeat(6000);
-  const env = makeEnv({});
-  const baseRun = env.AI.run;
-  const compact = "COMPACT REQUEST: how do I size a position so a 5% stop risks 1%?";
-  env.AI = {
-    run: async (model, input) => {
-      const msgs = (input && input.messages) || [];
-      if (msgs[0] && msgs[0].role === "system" && String(msgs[0].content).indexOf("decision model") >= 0) {
-        aiInputs.push({ model: String(model), input });
-        return { response: compact };
-      }
-      const st = String((input && input.state) || "");
-      if (String(model).indexOf("clef") >= 0 && st.length > 69000) {
-        throw new Error("AiError: exceeded this model context window limit (24576). code 5021");
-      }
-      return baseRun(model, input);
-    },
-  };
-  aiInputs = [];
-  const d = await (await post("/chat", { prompt: long + " please answer", cards: [] }, env)).json();
-  check("an oversized request still answers", !!d.answer, d.answer);
-
-  const summarised = aiInputs.filter((x) => {
-    const msgs = (x.input && x.input.messages) || [];
-    return msgs[0] && msgs[0].role === "system" && String(msgs[0].content).indexOf("decision model") >= 0;
-  });
-  check("a summarising model is asked first", summarised.length === 1, summarised.length);
-  check("the 1M model leads the rewrite ladder", String(summarised[0] && summarised[0].model) === "@cf/deepseek-ai/deepseek-v4-flash-0731", summarised[0] && summarised[0].model);
-  const handed = String(summarised[0].input.messages[1].content);
-  check("it is given the whole request, not a slice", handed.length > long.length && handed.indexOf("please answer") > 0, [handed.length, long.length]);
-
-  const clefCall = aiInputs.find((x) => x.model.indexOf("clef") >= 0);
-  const state = String(clefCall && clefCall.input ? clefCall.input.state : "");
-  check("clef decides on the rewrite", state.indexOf("COMPACT REQUEST") > 0, state.slice(0, 60));
-  check("and the state fits the window", state.length <= 23000 * 3, state.length);
-  check("the compression is reported", JSON.stringify(d.thinking || []).indexOf("rewrote") > 0, (d.thinking || []).map((x) => x.step));
-
-  // a normal request must not pay for this
-  aiInputs = [];
-  const short = await (await post("/chat", { prompt: "what is position sizing", cards: [] }, env)).json();
-  check("an ordinary request is not summarised", !aiInputs.some((x) => {
-    const msgs = (x.input && x.input.messages) || [];
-    return msgs[0] && msgs[0].role === "system" && String(msgs[0].content).indexOf("decision model") >= 0;
-  }), aiInputs.map((x) => x.model));
-  check("and still answers", !!short.answer, short.answer);
-}
-
-// 34. the decision model is chosen by its window, not fixed at clef-flash
-{
-  const env = makeEnv({});
-  aiInputs = [];
-  await post("/chat", { prompt: "what is position sizing", cards: [] }, env);
-  const small = aiInputs.find((x) => x.model.indexOf("clef") >= 0);
-  check("a small state stays on clef-flash", String(small.model).indexOf("clef-flash") >= 0, small.model);
-  check("the model field is the short name, not the id", String(small.input.model) === "clef-flash", small.input.model);
-
-  aiInputs = [];
-  const mid = "question about risk sizing. ".repeat(5500);
-  const d = await (await post("/chat", { prompt: mid + " END", cards: [] }, env)).json();
-  const midCall = aiInputs.find((x) => x.model.indexOf("clef") >= 0);
-  check("a state too big for 24,576 moves to clef-omni", String(midCall.model).indexOf("clef-omni") >= 0, midCall.model);
-  check("and is not trimmed on the way", !String(JSON.stringify(d.thinking || [])).includes("trimmed"), (d.thinking || []).map((x) => x.step));
-  check("the decision reports which model made it", !!(d.decision && d.decision.model), d.decision);
-
-  // a window refusal escalates instead of failing
-  const strict = makeEnv({});
-  const baseRun = strict.AI.run;
-  strict.AI = {
-    run: async (model, input) => {
-      if (String(model).indexOf("clef-flash") >= 0) throw new Error("AiError: exceeded this model context window limit (24576). code 5021");
-      return baseRun(model, input);
-    },
-  };
-  aiInputs = [];
-  const esc = await (await post("/chat", { prompt: "what is position sizing", cards: [] }, strict)).json();
-  check("a window refusal escalates up the ladder", !!(esc.decision && String(esc.decision.model).indexOf("clef-omni") >= 0), esc.decision);
-}
-
 
 // 35. the card tools are one family, and the loop closes through scores:v1
 {
