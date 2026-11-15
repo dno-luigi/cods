@@ -156,13 +156,7 @@ body.view-full #grid { grid-template-columns: 1fr; }
 body.view-grid .card { min-height: 200px; }
 body.view-full .card { min-height: 55vh; }
 
-.card:hover {
-  border-color: color-mix(in srgb, var(--p) 45%, var(--b));
-  transform: translateY(-2px);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
-}
-
-.card:active { transform: translateY(0); }
+.card:hover { border-color: color-mix(in srgb, var(--p) 45%, var(--b)); }
 .card:focus-visible { box-shadow: 0 0 0 2px var(--p); }
 
 .card-body {
@@ -170,12 +164,12 @@ body.view-full .card { min-height: 55vh; }
   height: 100%;
   min-height: inherit;
   transform-style: preserve-3d;
-  transition: transform .6s cubic-bezier(.4, .2, .2, 1);
+  transition: transform .5s cubic-bezier(.4, .2, .2, 1);
 }
 
 .card.flip .card-body { transform: rotateY(180deg); }
 
-.card.new { animation: cardIn .4s ease both; }
+.card.new { animation: cardIn .25s ease both; }
 
 @keyframes cardIn {
   from { opacity: 0; transform: translateY(8px) scale(.98); }

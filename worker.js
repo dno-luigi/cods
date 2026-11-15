@@ -441,6 +441,14 @@ body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;dis
 .face{display:none;animation:pop .16s ease-out}
 .card:not(.flipped) .front{display:block}
 .card.flipped .back{display:block}
+/* The slip: the card turns edge-on, the faces swap while it cannot be seen, and
+   it comes back the other way. 0.6s total, mind's easing. Nothing about the card
+   itself changes — same size, same height, same faces. */
+@keyframes slipOut{to{transform:perspective(1000px) rotateY(90deg)}}
+@keyframes slipIn{from{transform:perspective(1000px) rotateY(-90deg)}}
+.card.slip-out{animation:slipOut .3s cubic-bezier(.4,.2,.2,1) forwards;pointer-events:none}
+.card.slip-in{animation:slipIn .3s cubic-bezier(.4,.2,.2,1) both}
+@media (prefers-reduced-motion:reduce){.card.slip-out,.card.slip-in{animation:none!important}}
 @keyframes pop{from{opacity:.2;transform:translateY(3px)}to{opacity:1;transform:none}}
 .body{padding:8px 14px 12px;font-size:14px;line-height:1.62;word-break:break-word}
 .card-q{white-space:pre-wrap;font-size:15px}
@@ -1033,6 +1041,26 @@ function cardHTML(c) {
       '<span class="dots" data-dots="' + id + '">more</span></span></div>' +
       marker(c) + '<div class="body card-a">' + md(c.showFull && c.more ? c.more : c.a) + '</div>' + meta(c) + shots(c) + notes(c) + fb(c) + '</div>' +
     '<div class="via">via ' + esc(c.provider) + '</div></div>';
+}
+// Flip with the slip. The old path toggled the state and re-rendered, which
+// replaced the node before it could move, so the card only ever popped.
+var SLIPPING = {};
+function slipFlip(id) {
+  var node = document.querySelector('.card[data-id="' + id + '"]');
+  var still = window.matchMedia && window.matchMedia('(prefers-reduced-motion:reduce)').matches;
+  if (!node || SLIPPING[id] || still) { S.flip[id] = !S.flip[id]; render(); return; }
+  SLIPPING[id] = 1;
+  node.classList.add('slip-out');
+  setTimeout(function () {
+    S.flip[id] = !S.flip[id];
+    render();
+    var fresh = document.querySelector('.card[data-id="' + id + '"]');
+    if (fresh) {
+      fresh.classList.add('slip-in');
+      setTimeout(function () { fresh.classList.remove('slip-in'); }, 320);
+    }
+    delete SLIPPING[id];
+  }, 300);
 }
 function render() {
   $('count').textContent = String(S.cards.length);
@@ -2622,8 +2650,7 @@ $('cards').addEventListener('click', function (e) {
   if (!card) return;
   var cid = card.getAttribute('data-id');
   if (S.sel[cid]) { delete S.sel[cid]; render(); return; }
-  S.flip[cid] = !S.flip[cid];
-  render();
+  slipFlip(cid);
 });
 $('cards').addEventListener('touchstart', function (e) {
   var card = e.target.closest('.card');
