@@ -21,16 +21,7 @@ const cH = {
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
-const CLEF_MODEL = "@cf/cloudflare/clef-flash";
 
-// Decision models, smallest window first. Cloudflare's own pages: clef-flash
-// 24,576, clef-omni 64,000, clef 65,536. `model` must be the short name: the API
-// validates it against ^\s*clef(-omni|-flash)?\s*$ and rejects the @cf id.
-const DECISION_LADDER = [
-  { id: "@cf/cloudflare/clef-flash", model: "clef-flash", context: 24576 },
-  { id: "@cf/cloudflare/clef-omni", model: "clef-omni", context: 64000 },
-  { id: "@cf/cloudflare/clef", model: "clef", context: 65536 },
-];
 // Room for the questions schema plus the estimator's own error.
 const DECISION_RESERVE = 1500;
 // clef-flash reads a 24,576-token window. The platform does not trim text state
@@ -329,89 +320,6 @@ const DOMAINS = {
   },
 };
 
-// Typed questions handed to clef-flash. Answers come back keyed by these ids.
-const QUESTIONS = {
-  // The decision model cannot generate, and that is fine: what it can do is say
-  // what kind of call the request needs. Code then picks a model that can make
-  // that call. Shapes outlive model ids, so this list does not go stale.
-  shape: {
-    type: "choice",
-    instructions: "What kind of call answers this prompt?",
-    criteria: {
-      chat: "Text in, text out: an answer, explanation, judgement or steps",
-      embed: "Turning text into vectors, for finding things by meaning",
-      rerank: "Ordering a known set of passages by relevance",
-      image: "Producing a picture",
-      video: "Producing a moving clip",
-      stt: "Turning speech into text",
-      tts: "Turning text into speech",
-    },
-  },
-  intent: {
-    type: "choice",
-    instructions: "What does the user want out of this prompt?",
-    criteria: {
-      answer: "A direct answer, explanation, or fact",
-      list: "A set of items, options, or ideas",
-      build: "Code, markup, or another concrete artifact",
-      decide: "A judgement or recommendation between alternatives",
-      meta: "A question about this app, the model, or the conversation so far",
-    },
-  },
-  domain: {
-    type: "choice",
-    instructions: "Which domain does this prompt belong to?",
-    criteria: {
-      general: "Everyday questions with no special field",
-      logic: "A self-contained argument, puzzle, or reasoning problem",
-      math: "Arithmetic, algebra, statistics, or other calculation",
-      code: "Programming, debugging, tooling, or configuration",
-      medical: "Health, symptoms, medication, or clinical questions",
-      legal: "Law, contracts, rights, or obligations",
-      finance: "Money, investing, tax, or accounting",
-      safety: "Something harmful, illegal, or dangerous",
-      news: "Recent events, prices, releases, or other time-sensitive facts",
-      research: "A factual question that benefits from sources",
-      howto: "A procedure the user wants to carry out",
-    },
-  },
-  needs_web: {
-    type: "noul",
-    instructions:
-      "Does answering accurately require current information from the internet (news, prices, releases, live data, recent events)?",
-  },
-  cache_ok: {
-    type: "noul",
-    instructions:
-      "Is this a stable question whose answer is unlikely to have changed, so a cached answer would still be correct?",
-  },
-  sensitive: {
-    type: "noul",
-    instructions:
-      "Does this touch medical, legal, financial, or safety-sensitive ground where extra care is required?",
-  },
-  // Without this the decision layer could not say "I am guessing what you
-  // want", so the only question it ever asked was the web one.
-  clarify: {
-    type: "noul",
-    instructions:
-      "Is this prompt ambiguous enough that answering now would be a guess about what the person actually wants? Answer yes when one clarifying question would change the answer.",
-  },
-  depth: {
-    type: "score",
-    instructions: "How much depth does a good answer need here?",
-    criteria: ["One line", "A short paragraph", "A full explanation", "A deep, structured dive"],
-  },
-  tone: {
-    type: "choice",
-    instructions: "Which register fits this prompt?",
-    criteria: {
-      plain: "Neutral, everyday language",
-      technical: "Precise, engineering language",
-      warm: "Friendly and conversational",
-    },
-  },
-};
 
 const HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -4339,125 +4247,39 @@ async function askAra(env, text) {
   }
 }
 
-async function decide(env, state, questions, prefs) {
-  const asked = questions && typeof questions === "object" ? questions : QUESTIONS;
-  // A rule he wrote for the decide step is read here and nowhere else: it can
-  // change how the decision is made without touching how an answer is written.
-  const decideRules = [stageHint(prefs, "decide"), lengthLine(lengthLimit(prefs, "decide"))].filter(Boolean);
-  if (decideRules.length) state = state + "\n\n" + decideRules.join("\n");
-  const tokens = estimateTokens(state) + estimateTokens(PRINCIPLES_TEXT);
-  // They close the state rather than open it: the question still leads, and a
-  // cut can only take from the middle, so the principles cannot be trimmed away.
-  state = state + "\n\n" + PRINCIPLES_TEXT;
-  const wanted = String(env.CF_DECISION_MODEL || "").trim();
-  const start = wanted ? Math.max(0, DECISION_LADDER.findIndex((m) => m.id === wanted || m.model === wanted)) : 0;
-  const order = DECISION_LADDER.slice(start);
+/**
+ * Her answer is the decision. clef is gone: no ladder, no probabilities, no
+ * second opinion laid over the top of her.
+ */
+const ACTION_INTENT = {
+  answer: "answer",
+  search: "answer",
+  fetch: "answer",
+  card: "build",
+  merge: "build",
+  split: "build",
+  template: "build",
+  style: "build",
+  magic: "build",
+  continue: "build",
+};
 
-  // The smallest model whose window holds this state. The largest one is used
-  // as a last resort so a 413 still has somewhere to go.
-  let candidates = order.filter((m) => tokens <= m.context - DECISION_RESERVE);
-  const fits = candidates.length > 0;
-  if (!fits) candidates = [order[order.length - 1]];
-
-  let lastError = null;
-  let answered = null;
-  let usedBy = null;
-  for (const entry of candidates) {
-    try {
-      const res = await env.AI.run(entry.id, { model: entry.model, state, questions: asked });
-      answered = res;
-      usedBy = entry.id;
-      break;
-    } catch (err) {
-      lastError = err;
-      // Only a window refusal is worth moving up the ladder for.
-      if (!/context window|5021|too large|exceeded/i.test(String(err && err.message))) throw err;
-    }
-  }
-
-  // Nothing on Cloudflare holds it: the Decisions API is the bigger window, and
-  // it answers the same typed questions.
-  if (!answered && !fits && env.OPENROUTER_API_KEY) {
-    try {
-      const via = await decisionsCall(env, state, asked);
-      answered = via.body;
-      usedBy = via.model;
-    } catch (err) {
-      lastError = err;
-    }
-  }
-  if (!answered) throw lastError || new Error("no decision model answered");
-
-  const res = answered;
-  const answers = (res && res.answers) || res || {};
+function decisionFrom(ara) {
+  if (!ara || !ara.bound || !ara.move) return null;
+  const action = ara.move;
   return {
-    decision_model: usedBy,
-    intent: readChoice(answers.intent),
-    shape: readChoice(answers.shape),
-    domain: readChoice(answers.domain),
-    tone: readChoice(answers.tone),
-    depth: readScore(answers.depth),
-    clarify: readProbability(answers.clarify),
-    needs_web: readProbability(answers.needs_web),
-    cache_ok: readProbability(answers.cache_ok),
-    sensitive: readProbability(answers.sensitive),
+    decision_model: "ara",
+    action,
+    intent: ACTION_INTENT[action] || "answer",
+    shape: "chat",
+    domain: "general",
+    tone: "plain",
+    depth: 2,
+    clarify: 0,
+    needs_web: action === "search" || action === "fetch" ? 0.9 : 0.05,
+    cache_ok: action === "answer" ? 0.9 : 0.2,
+    sensitive: 0,
   };
-}
-
-// POST /api/alpha/decisions — the OpenRouter shape for typed decisions. It is
-// not the chat endpoint and no chat SDK will work against it.
-//
-// Not every decisions model reads the whole state: drex-max answered a
-// 215,000-character state while reporting 785 input tokens, which is a slice,
-// not the state. A confident answer about a slice is worse than no answer, so a
-// model whose own token count says it skipped most of the input is passed over.
-const OR_DECISION_LADDER = ["nace-ai/drex-max", "perplexity/pplx-decider-flash-v1.2", "liquid/d1.1"];
-
-async function decisionsCall(env, state, questions) {
-  const preferred = String(env.OR_DECISION_MODEL || "").trim();
-  const order = [...new Set([preferred, ...OR_DECISION_LADDER].filter(Boolean))];
-  const estimate = estimateTokens(state);
-  const tried = [];
-  let lastError = null;
-  for (const model of order) {
-    try {
-      const res = await fetch("https://openrouter.ai/api/alpha/decisions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: "Bearer " + env.OPENROUTER_API_KEY,
-        },
-        body: JSON.stringify({ model, state, questions }),
-      });
-      const text = await res.text();
-      if (!res.ok) {
-        tried.push(model + " HTTP " + res.status);
-        lastError = new Error("decisions " + res.status + ": " + text.slice(0, 160));
-        continue;
-      }
-      let body = null;
-      try {
-        body = JSON.parse(text);
-      } catch (err) {
-        tried.push(model + " unreadable");
-        lastError = new Error("decisions: unreadable reply");
-        continue;
-      }
-      const read = body && body.usage ? Number(body.usage.input_tokens) || 0 : 0;
-      if (read && estimate && read < estimate * 0.4) {
-        tried.push(model + " read " + read + " of ~" + estimate);
-        lastError = new Error(model + " read only " + read + " of about " + estimate + " tokens");
-        continue;
-      }
-      return { body, model: (body && body.model) || model, read, tried };
-    } catch (err) {
-      tried.push(model + " " + String((err && err.message) || err));
-      lastError = err;
-    }
-  }
-  const err = lastError || new Error("no OpenRouter decisions model answered");
-  err.tried = tried;
-  throw err;
 }
 
 function planRoute(decision) {
@@ -4528,59 +4350,6 @@ function isDirective(prompt) {
   // A question is a question: it gets answered, and may be worth clarifying.
   if (p.indexOf("?") >= 0) return false;
   return DIRECTIVE_VERBS.test(p.split("\n")[0].slice(0, 200));
-}
-
-function clarifyQuestions(decision, said) {
-  const d = decision || {};
-  const asked = new Set((said || []).map((s) => String((s && s.id) || "")));
-  const out = [];
-
-  if (!asked.has("web") && typeof d.needs_web === "number" && d.needs_web >= WEB_ASK_LOW && d.needs_web < WEB_ASK_HIGH) {
-    out.push({
-      id: "web",
-      q: "Should I search the web for this, or answer from what the model already knows?",
-      options: ["Search the web", "Answer from knowledge"],
-    });
-  }
-  if (!asked.has("target") && typeof d.clarify === "number" && d.clarify >= 0.75) {
-    out.push({
-      id: "target",
-      q: "Who is this for, and what are you going to do with it?",
-      options: [],
-    });
-  }
-  return out;
-}
-
-// The fixed questions run out. After that the decision model writes the next
-// one from what he has already said, so the conversation continues until it
-// actually knows what he wants instead of stopping at a round count.
-async function nextQuestions(env, prompt, said, decision, body) {
-  const told = (said || []).map((s, i) => i + 1 + ". " + s.q + " -> " + s.a).join("\n");
-  const messages = [
-    {
-      role: "system",
-      content:
-        "You decide what to ask next before an answer is written. Ask one question at a time, only what would change the answer.\n" +
-        "Reply with one line of JSON and nothing else: {\"q\":\"the question\",\"options\":[\"short option\",\"short option\"]}\n" +
-        "options may be [] when the answer has to be typed. If nothing important is left to ask, reply exactly: DONE",
-    },
-    { role: "user", content: "The request: " + prompt + "\nAnswers so far:\n" + (told || "(none)") },
-  ];
-  try {
-    const r = await askText(env, messages, Object.assign({}, body, { max_tokens: 180 }));
-    const text = String(r.text || "").trim();
-    if (!text || /^DONE/i.test(text)) return [];
-    const m = text.match(/\{[\s\S]*\}/);
-    if (!m) return [];
-    const parsed = JSON.parse(m[0]);
-    const q = String(parsed.q || "").trim();
-    if (!q) return [];
-    const options = Array.isArray(parsed.options) ? parsed.options.map(String).filter(Boolean).slice(0, 4) : [];
-    return [{ id: "ask" + ((said || []).length + 1), q, options }];
-  } catch (err) {
-    return [];
-  }
 }
 
 function readChoice(v) {
@@ -6165,12 +5934,8 @@ async function handleCard(request, env) {
   const instruction = String(body.instruction || "").slice(0, 400);
   const failures = [];
 
-  let decision = null;
-  try {
-    decision = await decide(env, [instruction, material].filter(Boolean).join("\n\n"), null, await loadPrefs(env));
-  } catch (err) {
-    failures.push("clef-flash: " + err.message);
-  }
+  // A card op is an explicit instruction, not a request to be read.
+  const decision = null;
   const plan = planRoute(decision);
   const learned = prefsHint(await loadPrefs(env), material);
 
@@ -6968,13 +6733,8 @@ async function handleRoute(request, env) {
   if (!prompt) return json({ error: "No prompt" }, 400);
 
   const contextCards = Array.isArray(body.cards) ? body.cards.filter((c) => c && c.q) : [];
-  let decision = null;
-  let decisionError = null;
-  try {
-    decision = await decide(env, buildState(prompt, contextCards), body.questions, await loadPrefs(env));
-  } catch (err) {
-    decisionError = err.message;
-  }
+  const decision = null;
+  const decisionError = null;
 
   const plan = planRoute(decision);
   let sources = null;
@@ -7078,21 +6838,10 @@ function looksLikeClarifier(text, cards) {
 // Every request is decided, including the ones answered out of memory. A hit is
 // not a reason to skip the decision: the domain, the care rules and the depth
 // belong to this moment, not to the day the answer was first written.
-async function decideForShortcut(env, prompt, body, step) {
-  const prefs = await loadPrefs(env);
-  const state = [prompt, prefsHint(prefs, prompt)].filter(Boolean).join("\n\n");
-  try {
-    const d = await decide(env, state, body.questions, prefs);
-    if (String(body.search || "").toLowerCase() === "yes") d.needs_web = 0.95;
-    if (String(body.search || "").toLowerCase() === "no") d.needs_web = 0.02;
-    if (step) {
-      step("decide", "domain " + d.domain + " · intent " + d.intent + " · depth " + d.depth + (d.needs_web != null ? " · web " + d.needs_web : ""));
-    }
-    return { decision: d, error: null };
-  } catch (err) {
-    if (step) step("decide", "clef-flash failed: " + err.message);
-    return { decision: null, error: err.message };
-  }
+function decideForShortcut(ara, step) {
+  const d = decisionFrom(ara);
+  if (step && d) step("decide", "action " + d.action);
+  return { decision: d, error: null };
 }
 
 async function handleChat(request, env, emit) {
@@ -7178,6 +6927,8 @@ async function handleChat(request, env, emit) {
   // something already stored; a card op works on the table, not the store.
   const mayShortcut = !ara.bound || ara.move === "answer" || ara.move === "search";
 
+  const araInfo = ara.bound ? { id: ara.id, move: ara.move } : null;
+
   // She does not know what he is wanting. Her question goes on the card with her
   // own options, so nothing has to be typed: tapping one is the answer, and not
   // answering it costs him nothing.
@@ -7198,7 +6949,6 @@ async function handleChat(request, env, emit) {
       ara: araInfo,
     });
   }
-  const araInfo = ara.bound ? { id: ara.id, move: ara.move } : null;
 
   // 0. Approved — a question this person has signed off on answers itself.
   if (body.use_approved !== false && mayShortcut) {
@@ -7208,7 +6958,7 @@ async function handleChat(request, env, emit) {
       // Signed off answers are still decided: the route, the domain and the care
       // rules are this question's, and a card without a decision cannot be
       // steered by any of them.
-      const agreed = await decideForShortcut(env, prompt, body, step);
+      const agreed = await decideForShortcut(ara, step);
       const agreedSlim = agreed.decision ? slimDecision(agreed.decision) : null;
       const first = approved.cards[0] || { a: "" };
       return json({
@@ -7243,7 +6993,7 @@ async function handleChat(request, env, emit) {
     } else if (held) {
       // Stored answers are decided too: the domain and the rules are this
       // question's, and a card that arrives without them cannot be steered.
-      const judged = await decideForShortcut(env, prompt, body, step);
+      const judged = await decideForShortcut(ara, step);
       const judgedSlim = judged.decision ? slimDecision(judged.decision) : null;
       step("stored", held.layer + " · " + held.id);
       return json({
@@ -7271,7 +7021,7 @@ async function handleChat(request, env, emit) {
     if (far && looksLikeClarifier(far.answer, [])) {
       step("stored", "the other store holds a question, not an answer, so it is decided fresh");
     } else if (far) {
-      const farJudged = await decideForShortcut(env, prompt, body, step);
+      const farJudged = await decideForShortcut(ara, step);
       const farSlim = farJudged.decision ? slimDecision(farJudged.decision) : null;
       step("stored", far.layer + " · " + far.id + " · truth worker");
       return json({
@@ -7302,7 +7052,7 @@ async function handleChat(request, env, emit) {
     if (remembered && looksLikeClarifier(remembered.answer, remembered.cards)) {
       step("memory", "what was kept there is a question, not an answer, so it is decided fresh");
     } else if (remembered) {
-      const recalled = await decideForShortcut(env, prompt, body, step);
+      const recalled = await decideForShortcut(ara, step);
       // An entry remembered before cards existed has none, and returning it
       // as-is puts an answer on screen with no decision card to press.
       const kept = Array.isArray(remembered.cards) ? remembered.cards.filter((c) => c && c.a) : [];
@@ -7350,105 +7100,14 @@ async function handleChat(request, env, emit) {
   );
   // Keep what he just told it before anything reads the preferences again.
   const learnedNow = said.length ? prefsHint(await rememberAnswers(env, prompt, said, prefs), prompt) : learned;
-  // The decision model is chosen by window, so the state is only shrunk when no
-  // decision model can hold it. Order: raw state -> a model rewrites it ->
-  // budgeted cut as the last resort.
-  const rawState = [buildState(prompt, told), learnedNow].filter(Boolean).join("\n\n");
-  const widest = DECISION_LADDER[DECISION_LADDER.length - 1].context - DECISION_RESERVE;
-  const cardTokens = estimateTokens(SHAPE_CARD);
-  // Deciding comes first, on the state as written: the ladder picks by window and
-  // the Decisions API covers what no Cloudflare model holds. Rewriting only makes
-  // sense once both of those have refused.
-  let fitted = {
-    state: [rawState, SHAPE_CARD].filter(Boolean).join("\n\n"),
-    tokens: estimateTokens(rawState) + cardTokens,
-    dropped: 0,
-    promptCut: false,
-    trimmed: false,
-  };
-  let state = fitted.state;
   const failures = [];
 
-  // 1. Decide — clef-flash classifies the request.
-  let decision = null;
-  let decisionError = null;
-  try {
-    decision = await decide(env, state, body.questions, await loadPrefs(env));
-    const wantDepth = askedDepth(prompt);
-    if (wantDepth != null) decision.depth = wantDepth;
-    if (String(body.search || "").toLowerCase() === "yes") decision.needs_web = 0.95;
-    if (String(body.search || "").toLowerCase() === "no") decision.needs_web = 0.02;
-
-    // Choosing the web ends the conversation: he asked for a search, so it
-    // searches. No second round, no further questions.
-    const wantsSearch =
-      String(body.search || "").toLowerCase() === "yes" ||
-      // He asked outright, in the prompt, so it searches. Not a probability.
-      /^\s*(?:please\s+|can you\s+|could you\s+)?(?:search|look up|google|web search|check the web)\b/i.test(prompt) ||
-      said.some((s) => String(s.id) === "web" && /search|web|look/i.test(String(s.a)));
-    if (wantsSearch) decision.needs_web = 0.95;
-
-    // Otherwise ask while it is still unsure. It does not stop at a round count:
-    // once the fixed questions are used up the model writes the next one from
-    // his own answers, and the exchange ends when it has nothing left to ask.
-    if (explicit) step("instruction", "taken as written, nothing to ask");
-    let asks = explicit || wantsSearch || said.length >= ASK_LIMIT ? [] : clarifyQuestions(decision, said);
-    if (!explicit && !asks.length && !wantsSearch && said.length < ASK_LIMIT && (said.length > 0 || (typeof decision.clarify === "number" && decision.clarify >= 0.5))) {
-      asks = await nextQuestions(env, prompt, said, decision, body);
-    }
-    if (asks.length) {
-      step("clarify", asks.length + (asks.length === 1 ? " question" : " questions"));
-      return json({
-        prompt,
-        learned: prefsHint((await loadPrefs(env))),
-        clarify: { round: said.length, max: null, questions: asks, said },
-        decision: slimDecision(decision),
-        answer: null,
-        cards: null,
-        thinking,
-      });
-    }
-  } catch (err) {
-    decisionError = err.message;
-    failures.push("decision: " + err.message);
-    // Nothing held the state: not the ladder, not the Decisions API. Only now is
-    // a rewrite worth what it costs.
-    if (/context window|5021|too large|exceeded|no decision model/i.test(err.message)) {
-      const compressed = await compressState(env, rawState, Math.max(2000, widest - cardTokens));
-      if (compressed) {
-        step("compress", compressed.model + " rewrote " + compressed.from + " tokens down to " + compressed.to);
-        fitted = fitState({ prompt: compressed.text, told: [], learned, card: SHAPE_CARD });
-      } else {
-        step("compress", "no model could rewrite it, so the state was cut to fit");
-        fitted = fitState({ prompt, told, learned, card: SHAPE_CARD });
-      }
-      state = fitted.state;
-      try {
-        decision = await decide(env, state, body.questions, await loadPrefs(env));
-        decisionError = null;
-      } catch (again) {
-        // Last resort: the question alone still needs a decision. A refused
-        // rewrite is no reason to route blind.
-        step("state", "the rewritten state was refused too, retried with the question alone");
-        try {
-          fitted = fitState({ prompt, told: [], learned, card: SHAPE_CARD });
-          state = fitted.state;
-          decision = await decide(env, state, body.questions, await loadPrefs(env));
-          decisionError = null;
-        } catch (third) {
-          decisionError = third.message;
-          failures.push("question alone: " + third.message);
-        }
-      }
-    }
-  }
+  // 1. Decide — she has already answered, at the door.
+  let decision = decisionFrom(ara);
+  let decisionError = decision ? null : "no decision";
   if (decision && learned) decision.preferences = learned;
   if (ara.bound) step("ara", ara.move + (ara.route ? " · " + ara.route : ""));
-  step("decide", decision
-    ? "domain " + decision.domain + " · intent " + decision.intent + " · depth " + decision.depth + (decision.needs_web != null ? " · web " + decision.needs_web : "") +
-      (decision.shape ? " · shape " + decision.shape : "") +
-      (fitted.trimmed ? " · trimmed " + fitted.dropped + (fitted.dropped === 1 ? " card" : " cards") + (fitted.promptCut ? ", prompt cut" : "") : "")
-    : "clef-flash failed: " + decisionError);
+  step("decide", decision ? "action " + decision.action : "no decision: " + decisionError);
 
   // 2. Cache — answered before?
   const key = await cacheKeyFor(prompt, contextCards, body, env);
