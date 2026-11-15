@@ -2886,6 +2886,34 @@ function fakeBrowser(pages, opts) {
   check("with the store silent the ordinary path still runs", d.provider !== "store", d.provider);
 }
 
+// The bound store is used when the account provides one, with no hostname hop.
+{
+  calls = [];
+  const realFetch = globalThis.fetch;
+  let asked = null;
+  globalThis.fetch = async () => { throw new Error("the public hop should not be used when the store is bound"); };
+  try {
+    const env = makeEnv({
+      TRUTH_RESOLVE_URL: "",
+      TRUTH: {
+        fetch: async (url, init) => {
+          asked = { url: String(url), body: init && init.body ? JSON.parse(init.body) : null };
+          return new Response(
+            JSON.stringify({ status: "ok", layer: "master", id: "demand-template", query: "demand template", answer: "The bound demand template." }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        },
+      },
+    });
+    const d = await (await post("/chat", { prompt: "demand template", cards: [] }, env)).json();
+    check("a bound store answers without a public hop", d.provider === "store" && d.truth && d.truth.remote === true, { provider: d.provider, truth: d.truth });
+    check("and it is called on its own route", asked && asked.url === "https://truth/api/truth/resolve" && asked.body.input === "demand template", asked);
+    check("the card is the answer from the binding", d.cards[0] && d.cards[0].a === "The bound demand template.", d.cards[0]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
 

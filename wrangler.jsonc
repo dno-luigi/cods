@@ -100,6 +100,16 @@
         "type": "service",
         "service": "orproxy",
         "environment": "production"
+      },
+      // The truth store, bound the same way the other apps bind it: this is the
+      // store that holds a saved answer this Worker does not keep itself. It is
+      // read-only here - nothing is written through it.
+      {
+        "name": "TRUTH",
+        "type": "service",
+        "service": "truth",
+        "environment": "production",
+        "entrypoint": "default"
       }
     ]
   }

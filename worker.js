@@ -6519,16 +6519,20 @@ function truthResolveUrl(env) {
 async function remoteTruth(env, question) {
   const url = truthResolveUrl(env);
   const q = String(question || "").trim();
-  if (!url || !q) return null;
+  // The binding when the account has one: a call between Workers on this
+  // account, not an HTTP hop through a public hostname that may not answer.
+  const bound = env && env.TRUTH && typeof env.TRUTH.fetch === "function" ? env.TRUTH : null;
+  if ((!url && !bound) || !q) return null;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 3000);
+  const init = {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ input: q }),
+    signal: ctrl.signal,
+  };
   try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ input: q }),
-      signal: ctrl.signal,
-    });
+    const res = bound ? await bound.fetch("https://truth/api/truth/resolve", init) : await fetch(url, init);
     if (!res || !res.ok) return null;
     const d = await res.json();
     const answer = String((d && d.answer) || "").trim();
