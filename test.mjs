@@ -2782,6 +2782,49 @@ function fakeBrowser(pages, opts) {
   check("nothing replays what he already sent", page.indexOf("you asked before") === -1 && page.indexOf("action: 'suggest'") === -1, "history");
 }
 
+// Off - the question answered from what is already stored.
+{
+  const html = await (await worker.fetch(new Request("https://x/"), makeEnv())).text();
+  check("the picker offers Off", html.includes('data-pick="none"'));
+  check("Off travels as preset none", html.includes("b.preset = 'none'") && html.includes("b.off = true"));
+}
+
+{
+  calls = [];
+  const kv = new Map();
+  const rec = {
+    id: "t_abc123",
+    question: "what is a habeas corpus",
+    answer: "A writ that tests the lawfulness of detention.",
+    sources: [{ title: "Cornell LII", url: "https://www.law.cornell.edu/wex/habeas_corpus" }],
+    status: "master",
+    confidence: 0.9,
+    seen: 3,
+    updated: "2026-11-01T00:00:00.000Z",
+  };
+  kv.set("truths:index", JSON.stringify([{ id: rec.id, question: rec.question, status: rec.status, confidence: rec.confidence, sources: 1, seen: rec.seen, updated: rec.updated }]));
+  kv.set("truth:" + rec.id, JSON.stringify(rec));
+  const env = makeEnv({ KV: { get: async (k) => kv.get(k) || null, put: async (k, v) => kv.set(k, v), delete: async (k) => kv.delete(k) } });
+  const d = await (await post("/chat", { prompt: "What is a habeas corpus", preset: "none", cards: [] }, env)).json();
+  check("Off answers from the store", d.provider === "store", d.provider);
+  check("Off names the layer", d.source === "cache" && d.cacheSource === "master", { source: d.source, cacheSource: d.cacheSource });
+  check("Off names the record", d.truth && d.truth.id === rec.id, d.truth);
+  check("Off traces the hit", Array.isArray(d.trace) && d.trace.includes("cache:hit"), d.trace);
+  check("Off calls no model", calls.length === 0, calls);
+  check("Off keeps the sources", d.cards[0].sources && d.cards[0].sources.length === 1, d.cards[0]);
+  check("serving it counts as a sighting", JSON.parse(kv.get("truth:" + rec.id)).seen === 4, JSON.parse(kv.get("truth:" + rec.id)).seen);
+}
+
+{
+  const d = await (await post("/chat", { prompt: "what is 2+2", preset: "none", cards: [] }, makeEnv())).json();
+  check("Off miss is not disguised as stored", d.provider !== "store" && d.source !== "cache", { provider: d.provider, source: d.source });
+  check(
+    "Off miss says nothing is stored",
+    Array.isArray(d.thinking) && d.thinking.some((s) => String(s.detail || "").includes("nothing stored")),
+    d.thinking && d.thinking.map((s) => s.detail)
+  );
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
 

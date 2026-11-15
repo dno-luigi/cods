@@ -1578,6 +1578,7 @@ function askBody(p, ctx) {
   var b = { prompt: p, cards: ctx, stream: true };
   var m = S.model;
   if (!m) return b;
+  if (m.off) { b.preset = 'none'; b.off = true; return b; }
   if (m.openrouter) { b.model = m.preset ? 'preset:' + m.preset : 'openrouter:' + m.model; return b; }
   if (m.proxy) { b.proxy = true; if (m.preset) b.preset = m.preset; }
   else if (m.cf) { b.model = m.cf; b.cf_models = [m.cf]; }
@@ -1649,6 +1650,7 @@ function paintModel() {
 
 function pickFromStore(store, label) {
   store = String(store || '');
+  if (store === 'none') return { label: label || 'Off — stored', store: 'none', off: true };
   if (store.indexOf('openrouter:') === 0) return { label: label || store.slice(11), store: store, openrouter: true, model: store.slice(11) };
   if (store.indexOf('preset:') === 0) return { label: label || ('preset: ' + store.slice(7)), store: store, openrouter: true, preset: store.slice(7) };
   if (store.indexOf('proxy:') === 0) return { label: label || ('preset: ' + store.slice(6)), store: store, proxy: true, preset: store.slice(6) };
@@ -1687,7 +1689,7 @@ function openModels() {
   $('sheet').classList.add('show');
   fetch('/models').then(function (r) { return r.json(); }).then(function (d) {
     MODELS = d;
-    var out = '<div class="row"><button data-pick="0">auto — decision model</button></div>';
+    var out = '<div class="row"><button data-pick="none">Off &mdash; from what is stored</button><button data-pick="0">auto &mdash; decision model</button></div>';
     out += '<div class="sect"><h4>Cloudflare</h4><div class="row">';
     (d.workers || []).forEach(function (m, i) { out += '<button data-pick="' + (i + 1) + '">' + esc(m.label) + '</button>'; });
     out += '</div></div>';
@@ -1722,6 +1724,7 @@ document.addEventListener('click', function (e) {
   if (!b) return;
   var v = b.getAttribute('data-pick') || '';
   e.preventDefault();
+  if (v === 'none') return keepModel({ label: 'Off — stored', store: 'none', off: true });
   if (v === '0') return keepModel(null);
   if (v === 'x') {
     var typed = (window.prompt('Any OpenRouter model id, @cf model, or preset name', 'openai/gpt-4o-mini') || '').trim();
@@ -3969,6 +3972,9 @@ function normalized(s) {
 // What this question should run on: an explicit pick, the model this person
 // chose last time, or nothing so the usual order applies.
 async function pickModel(env, body) {
+  // Off is a state, not a preset: it asks for what is already stored, so it
+  // resolves before any preset or model is considered.
+  if (body.off === true || String(body.preset || "").trim() === "none") return { off: true };
   // An audit is one of his presets, so "audit" is just "run that preset". There
   // is no separate audit contract to speak of, and nothing here invents one.
   if (body.audit === true) {
@@ -6452,6 +6458,43 @@ async function approvedHit(env, prompt) {
   return store.items[await approvedHash(prompt)] || null;
 }
 
+// Off answers from what the store already holds. It reads the truth records the
+// page keeps - master first, then the rest by confidence - and names the layer
+// it came from so a stored answer is never mistaken for a generated one.
+async function storedHit(env, question) {
+  const box = truthStore(env);
+  const q = normalized(question);
+  if (!box || !q) return null;
+  let list = [];
+  try {
+    list = await truthIndex(env, box);
+  } catch (err) {
+    list = [];
+  }
+  const rows = (Array.isArray(list) ? list : []).filter(
+    (r) => r && r.id && normalized(r.question || "") === q
+  );
+  if (!rows.length) return null;
+  rows.sort(
+    (a, b) =>
+      (b.status === "master" ? 1 : 0) - (a.status === "master" ? 1 : 0) ||
+      (b.confidence || 0) - (a.confidence || 0)
+  );
+  for (const row of rows) {
+    let rec = null;
+    try {
+      const raw = await box.get("truth:" + row.id);
+      rec = raw ? JSON.parse(raw) : null;
+    } catch (err) {
+      rec = null;
+    }
+    if (!rec || !String(rec.answer || "").trim()) continue;
+    await touchTruth(env, rec.id);
+    return { id: rec.id, record: rec, layer: rec.status === "master" ? "master" : "provisional" };
+  }
+  return null;
+}
+
 // A separate admin Worker owns ranking when one is bound. Until then the
 // main Worker keeps the store itself, so nothing waits on a second deploy.
 async function adminProxy(env, request, path, raw) {
@@ -6764,6 +6807,32 @@ async function handleChat(request, env, emit) {
         thinking,
       });
     }
+  }
+
+  // 0c. Off - the question, answered from what is already stored. A hit says
+  // provider "store" and names the layer; a miss says so and falls through to
+  // the ordinary path, where the answer names the model that made it.
+  if (pick.off) {
+    const hit = await storedHit(env, prompt);
+    if (hit) {
+      step("stored", hit.layer + " · " + hit.id);
+      return json({
+        prompt,
+        answer: hit.record.answer,
+        response: hit.record.answer,
+        cards: [{ q: prompt, a: hit.record.answer, provider: "store", sources: hit.record.sources || [] }],
+        provider: "store",
+        route: "cache",
+        source: "cache",
+        cacheSource: hit.layer,
+        truth: { layer: hit.layer, id: hit.id, key: "truth:" + hit.id },
+        trace: ["cache:hit", "truth:" + hit.id],
+        approved: false,
+        cached: true,
+        thinking,
+      });
+    }
+    step("stored", "nothing stored for that question — answering from the model");
   }
 
   const contextCards = Array.isArray(body.cards) ? body.cards.filter((c) => c && c.q) : [];
