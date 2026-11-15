@@ -7292,6 +7292,7 @@ async function handleChat(request, env, emit) {
         provider: cards[0].provider,
         route,
         decision,
+        ara: araInfo,
         sources,
         trace: cards[0].trace,
         searchError,
