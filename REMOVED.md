@@ -117,3 +117,17 @@ on this branch, newest last: `e4fdcfc` (clef still in place),
 `a18c399`…`5f9eea7` (clef removed, labels and health), `9f33f98` and the commit
 that carries this file (test sections). `git show <commit> -- worker.js` or
 `git diff e4fdcfc..HEAD -- test.mjs` is the full record.
+
+---
+
+## 2026-11-15, later: the test files themselves
+
+The owner's instruction was to delete the tests rather than adapt them, because
+he learns from her decisions and her rows, not from a suite the agent wrote.
+
+Removed: `test.mjs` here, `test.mjs` in mind, `test/` in ARA, and the `test`
+scripts in each `package.json` (mind's `ci` too, which only ran the tests).
+
+Restore with `git checkout e4fdcfc -- test.mjs` (cards and mind) or
+`git checkout <commit> -- test/` (ARA). The sections listed above are in
+`e4fdcfc` for cards and in `f5a1b0f`-era commits for mind.

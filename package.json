@@ -7,8 +7,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "check": "node --check worker.js",
-    "test": "node test.mjs"
+    "check": "node --check worker.js"
   },
   "devDependencies": {
     "wrangler": "^4.154.0"
