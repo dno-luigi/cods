@@ -504,11 +504,11 @@ code{font-size:12.5px;background:#00000044;padding:1px 4px;border-radius:4px}
 .empty h3{font-size:15px;margin-bottom:6px;color:var(--text)}
 .empty p{font-size:12px;line-height:1.8}
 .input{padding:10px 12px;background:var(--panel);border-top:1px solid var(--line);display:flex;gap:8px;flex:0 0 auto}
-.input input{flex:1;padding:12px;background:var(--bg);border:1px solid var(--line);border-radius:9px;color:var(--text);font-size:15px;outline:none}
+.input input{flex:1;min-width:0;padding:12px;background:var(--bg);border:1px solid var(--line);border-radius:9px;color:var(--text);font-size:15px;outline:none}
 .input input:focus{border-color:var(--p)}
 .input button{padding:12px 18px;background:var(--p);color:#fff;border:none;border-radius:9px;font-size:15px;min-width:70px}
 .input button:disabled{opacity:.55}
-.input .chip{padding:10px 10px;background:var(--bg);color:var(--dim);border:1px solid var(--line);font-size:11px;min-width:0;max-width:76px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.input .chip{flex:0 0 auto;padding:10px 10px;background:var(--bg);color:var(--dim);border:1px solid var(--line);font-size:11px;min-width:0;max-width:76px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .selbar{position:fixed;left:10px;right:10px;bottom:78px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px 10px;display:none;align-items:center;gap:6px;z-index:40;box-shadow:0 8px 24px #0008}
 .selbar.show{display:flex}
 .selbar .icon{font-size:11px;padding:6px 8px}
