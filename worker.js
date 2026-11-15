@@ -6503,6 +6503,50 @@ async function storedHit(env, question) {
   return null;
 }
 
+// The store the other apps ask, read when this one does not hold the question.
+// It is an open read route on the truth Worker: no key, nothing written, and a
+// three second fence so a slow store can never hold up an answer. Any miss, any
+// error, and the ordinary path runs exactly as it did before.
+const TRUTH_RESOLVE_DEFAULT = "https://truth.ai-n.workers.dev/api/truth/resolve";
+
+function truthResolveUrl(env) {
+  if (env && Object.prototype.hasOwnProperty.call(env, "TRUTH_RESOLVE_URL")) {
+    return String(env.TRUTH_RESOLVE_URL || "");
+  }
+  return TRUTH_RESOLVE_DEFAULT;
+}
+
+async function remoteTruth(env, question) {
+  const url = truthResolveUrl(env);
+  const q = String(question || "").trim();
+  if (!url || !q) return null;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 3000);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input: q }),
+      signal: ctrl.signal,
+    });
+    if (!res || !res.ok) return null;
+    const d = await res.json();
+    const answer = String((d && d.answer) || "").trim();
+    if (!answer) return null;
+    return {
+      id: (d && d.id) || null,
+      layer: (d && d.layer) || "truth",
+      query: (d && d.query) || q,
+      answer,
+      sources: cleanSources((d && d.sources) || []),
+    };
+  } catch (err) {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // A separate admin Worker owns ranking when one is bound. Until then the
 // main Worker keeps the store itself, so nothing waits on a second deploy.
 async function adminProxy(env, request, path, raw) {
@@ -6804,6 +6848,27 @@ async function handleChat(request, env, emit) {
         cacheSource: held.layer,
         truth: { layer: held.layer, id: held.id, key: "truth:" + held.id },
         trace: ["cache:hit", "truth:" + held.id],
+        approved: false,
+        cached: true,
+        thinking,
+      });
+    }
+    // Not held here: the other store may hold it, and a saved answer beats a
+    // model asking what kind you mean.
+    const far = await remoteTruth(env, prompt);
+    if (far) {
+      step("stored", far.layer + " · " + far.id + " · truth worker");
+      return json({
+        prompt,
+        answer: far.answer,
+        response: far.answer,
+        cards: [{ q: prompt, a: far.answer, provider: "store", sources: far.sources }],
+        provider: "store",
+        route: "cache",
+        source: "cache",
+        cacheSource: far.layer,
+        truth: { layer: far.layer, id: far.id, query: far.query, remote: true, key: "truth:" + far.id },
+        trace: ["cache:hit", "truth-worker:" + far.id],
         approved: false,
         cached: true,
         thinking,

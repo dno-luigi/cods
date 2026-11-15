@@ -78,6 +78,8 @@ function makeEnv(extra) {
         },
       },
       KV: { get: async (k) => kv.get(k) || null, put: async (k, v) => kv.set(k, v), delete: async (k) => kv.delete(k) },
+      // Off by default: a test only reaches the truth worker when it says so.
+      TRUTH_RESOLVE_URL: "",
     },
     extra || {}
   );
@@ -2852,6 +2854,36 @@ function fakeBrowser(pages, opts) {
 {
   const d = await (await post("/chat", { prompt: "what is 2+2", cards: [] }, makeEnv())).json();
   check("an unsaved question still reaches the answer path", d.provider !== "store", d.provider);
+}
+
+// A question cods does not hold is asked of the truth worker before any model.
+{
+  calls = [];
+  const realFetch = globalThis.fetch;
+  let asked = null;
+  globalThis.fetch = async (url, init) => {
+    asked = { url: String(url), body: init && init.body ? JSON.parse(init.body) : null };
+    return new Response(
+      JSON.stringify({ status: "ok", layer: "master", id: "demand-template", query: "demand template", answer: "The saved demand template." }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    );
+  };
+  try {
+    const env = makeEnv({ TRUTH_RESOLVE_URL: "https://truth.test/api/truth/resolve" });
+    const d = await (await post("/chat", { prompt: "Demand Template?", cards: [] }, env)).json();
+    check("a question the other store holds is routed to it", d.provider === "store" && d.cacheSource === "master", { provider: d.provider, cacheSource: d.cacheSource });
+    check("and the card is the saved answer", d.cards[0] && d.cards[0].a === "The saved demand template.", d.cards[0]);
+    check("it says the answer came from the truth worker", d.truth && d.truth.remote === true && d.truth.id === "demand-template", d.truth);
+    check("it asks with the question as typed", asked && asked.body && asked.body.input === "Demand Template?", asked);
+    check("and no model is called", calls.length === 0, calls);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+{
+  const d = await (await post("/chat", { prompt: "what is 2+2", cards: [] }, makeEnv())).json();
+  check("with the store silent the ordinary path still runs", d.provider !== "store", d.provider);
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");
