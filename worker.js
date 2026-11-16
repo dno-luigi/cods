@@ -1048,7 +1048,7 @@ function cardHTML(c) {
       '<span class="dots" data-tts="' + id + '">' + (S.speaking === c.id ? 'stop' : 'play') + '</span>' +
       (c.more ? '<span class="dots" data-full="' + id + '">' + (c.showFull ? 'short' : 'long') + '</span>' : '') +
       '<span class="dots" data-dots="' + id + '">more</span></span></div>' +
-      marker(c) + '<div class="body card-a">' + cardBody(c, c.showFull && c.more ? c.more : c.a) + '</div>' + meta(c) + shots(c) + notes(c) + fb(c) + '</div>' +
+      marker(c) + '<div class="body card-a">' + cardBody(c, c.showFull && c.more ? c.more : c.a) + '</div>' + meta(c) + shots(c) + notes(c) + askTaps(c) + fb(c) + '</div>' +
     '<div class="via">via ' + esc(c.provider) + (c.provider === 'working' && c.step ? ' · ' + esc(c.step) : '') + '</div></div>';
 }
 // Flip with the slip. The old path toggled the state and re-rendered, which
@@ -1071,6 +1071,39 @@ function slipFlip(id) {
     delete SLIPPING[id];
   }, 300);
 }
+// Her question, answered on the card itself. The tap writes the same record the
+// modal writes, so answering here teaches her exactly what typing there did.
+function askTaps(c) {
+  var ask = c && c.ask;
+  if (!ask || !ask.questions || !ask.questions.length) return "";
+  var q = ask.questions[0];
+  var opts = (q.options || []).slice(0, 6);
+  return '<div class="notes" style="margin-top:10px"><div class="notes-h">needs your word</div>' +
+    '<div style="font-size:12.5px;line-height:1.5;margin-bottom:8px">' + esc(q.q || "") + '</div>' +
+    (opts.length
+      ? '<div class="row">' + opts.map(function (o, i) {
+          return '<button class="relbtn" data-cask="' + esc(c.id) + '|' + i + '">' + esc(String(o)) + '</button>';
+        }).join('') + '</div>'
+      : '') +
+    '</div>';
+}
+function answerOnCard(spec) {
+  var bits = String(spec || '').split('|');
+  var c = byId(bits[0]);
+  var pick = Number(bits[1]);
+  if (!c || !c.ask || !c.ask.questions || !c.ask.questions.length) return;
+  var q = c.ask.questions[0];
+  var options = q.options || [];
+  var answer = options[pick] != null ? String(options[pick]) : '';
+  if (!answer) return;
+  var said = (c.ask.said || []).slice();
+  said.push({ id: q.id, q: q.q, a: answer });
+  var prompt = c.q;
+  c.ask = null;
+  render();
+  sendPrompt(prompt, { clarify: said });
+}
+
 function render() {
   $('count').textContent = String(S.cards.length);
   var box = $('cards');
@@ -2651,6 +2684,12 @@ $('cards').addEventListener('click', function (e) {
     speak(byId(spk.getAttribute('data-tts')));
     return;
   }
+  var cask = t.closest('[data-cask]');
+  if (cask) {
+    e.stopPropagation();
+    answerOnCard(cask.getAttribute('data-cask'));
+    return;
+  }
   var b = t.closest('.relbtn');
   if (b) {
     e.stopPropagation();
@@ -4224,20 +4263,41 @@ async function noteAttempt(env, domain, model, ok) {
 // when the binding is present she must decide, and a refusal, a timeout or no
 // decision stops the request before any model is called. Unbound (tests, local
 // dev) falls through untouched.
-async function askAra(env, text) {
+async function askAra(env, text, stored) {
   const binder = env && env.ARA;
   if (!binder || typeof binder.fetch !== "function") return { ok: true, bound: false };
   try {
     const res = await binder.fetch("https://ara/decide", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: String(text || ""), domain: "cards", surface: "cards" }),
+      body: JSON.stringify({
+        text: String(text || ""),
+        domain: "cards",
+        surface: "cards",
+        ...(stored ? { stored } : {})
+      }),
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) return { ok: false, bound: true, reason: "ara_status_" + res.status };
     const data = await res.json();
     if (!data || data.refused || !data.move) return { ok: false, bound: true, reason: "ara_no_decision" };
-    return { ok: true, bound: true, id: data.id ?? null, move: data.move, route: data.route ?? null, question: data.question ?? null, options: Array.isArray(data.options) ? data.options : null };
+    // Her question comes back as `clarify`. Read here, it reaches the card; left
+    // unread, a model answers a question she already said she could not place.
+    const clar = data.clarify && typeof data.clarify === "object" ? data.clarify : null;
+    const firstQ = clar && Array.isArray(clar.questions) && clar.questions[0] ? clar.questions[0] : null;
+    const offered = Array.isArray(data.options) ? data.options : Array.isArray(firstQ && firstQ.options) ? firstQ.options : null;
+    return {
+      ok: true,
+      bound: true,
+      id: data.id ?? null,
+      move: data.move,
+      route: data.route ?? null,
+      question: data.question ?? (clar && clar.text) ?? (firstQ && firstQ.q) ?? null,
+      options: offered
+        ? offered.map((o) => (typeof o === "string" ? o : String((o && (o.label || o.value)) || ""))).filter(Boolean)
+        : null,
+      clarify: clar
+    };
   } catch {
     return { ok: false, bound: true, reason: "ara_error" };
   }
@@ -6911,7 +6971,26 @@ async function handleChat(request, env, emit) {
   // before the shortcuts: a signed-off answer, a stored one and the other
   // store's are all answers this worker would otherwise give without her seeing
   // the question at all.
-  const ara = await askAra(env, prompt);
+  // What the store already holds, read without writing anything: she sees the
+  // pair before she decides, so her question is about what is there rather than
+  // about nothing. Mind reads it the same way, in the same order.
+  const storeOff = body.use_cache === false || body.audit === true;
+  const heldNow = storeOff ? null : await storedHit(env, prompt).catch(() => null);
+  // Truth is the source, so when this Worker's own store is empty the pair is
+  // read from there before she is asked — the order mind reads them in. A miss
+  // here is the same miss mind has.
+  const farNow = storeOff || heldNow ? null : await remoteTruth(env, prompt);
+  const pairNow = heldNow
+    ? {
+        layer: heldNow.layer,
+        answer: heldNow.record && heldNow.record.answer,
+        key: "truth:" + heldNow.id,
+        id: heldNow.id
+      }
+    : farNow
+      ? { layer: farNow.layer, answer: farNow.answer, key: "truth:" + farNow.id, id: farNow.id }
+      : null;
+  const ara = await askAra(env, prompt, pairNow);
   if (!ara.ok) {
     step("ara", "no decision (" + ara.reason + ")");
     return json({ error: { code: "ara_no_decision", message: "ARA did not decide (" + ara.reason + ")." } }, 502);
@@ -6928,7 +7007,9 @@ async function handleChat(request, env, emit) {
   // She does not know what he is wanting. Her question goes on the card with her
   // own options, so nothing has to be typed: tapping one is the answer, and not
   // answering it costs him nothing.
-  if (ara.bound && ara.move === "none") {
+  // Either she said none of these fits, or she asked him what he wants: both end
+  // on the card asking, and nothing is written behind her.
+  if (ara.bound && (ara.move === "none" || ara.clarify)) {
     step("ara", "no action fits, so the card asks");
     return json({
       prompt,
@@ -6980,8 +7061,10 @@ async function handleChat(request, env, emit) {
   // saved for it instead of reaching a model that has to ask what kind you mean.
   // A miss falls through to the ordinary path, where the answer names the model
   // that made it.
-  if (body.use_cache !== false && body.audit !== true && mayShortcut) {
-    const held = await storedHit(env, prompt);
+  // The store is read for every ask except the ones that want something newer
+  // than it holds: a search or a page fetch is that request.
+  if (body.use_cache !== false && body.audit !== true && ara.move !== "search" && ara.move !== "fetch") {
+    const held = heldNow || (await storedHit(env, prompt));
     if (held && looksLikeClarifier(held.record.answer, [])) {
       // The record is a question asking what to do, not an answer to it. Serving
       // it would put that question on screen instead of doing the work.
@@ -7013,7 +7096,7 @@ async function handleChat(request, env, emit) {
     }
     // Not held here: the other store may hold it, and a saved answer beats a
     // model asking what kind you mean.
-    const far = await remoteTruth(env, prompt);
+    const far = farNow || (await remoteTruth(env, prompt));
     if (far && looksLikeClarifier(far.answer, [])) {
       step("stored", "the other store holds a question, not an answer, so it is decided fresh");
     } else if (far) {
