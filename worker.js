@@ -1101,7 +1101,7 @@ function answerOnCard(spec) {
   var prompt = c.q;
   c.ask = null;
   render();
-  sendPrompt(prompt, { clarify: said });
+  sendPrompt(prompt, { clarify: said, answered: true });
 }
 
 function render() {
@@ -7009,7 +7009,25 @@ async function handleChat(request, env, emit) {
   // answering it costs him nothing.
   // Either she said none of these fits, or she asked him what he wants: both end
   // on the card asking, and nothing is written behind her.
-  if (ara.bound && (ara.move === "none" || ara.clarify)) {
+  const answeredBefore = body.answered === true;
+  // The other answer on that card is "leave it", and leaving it writes nothing.
+  if (
+    answeredBefore &&
+    (Array.isArray(body.clarify) ? body.clarify : []).some((c) => /^leave it/i.test(String((c && c.a) || "")))
+  ) {
+    return json({
+      prompt,
+      answer: "Left alone — nothing looked up and nothing written.",
+      response: "Left alone — nothing looked up and nothing written.",
+      cards: [{ q: prompt, a: "Left alone — nothing looked up and nothing written.", provider: "you" }],
+      provider: "you",
+      route: "left alone",
+      ara: araInfo,
+      thinking,
+    });
+  }
+  // He answered it on the card: asking the same thing again would be a loop.
+  if (ara.bound && !answeredBefore && (ara.move === "none" || ara.clarify)) {
     step("ara", "no action fits, so the card asks");
     return json({
       prompt,
